@@ -17,8 +17,8 @@ import java.util.concurrent.atomic.AtomicLong
 object MiniSlipstreamSocksBridge {
     private const val TAG = "MiniSlipstreamSocksBridge"
     private const val BUFFER_SIZE = 65536
-    private const val MAX_ACTIVE_CLIENTS = 32
-    private const val OVERLOAD_CLOSE_BATCH = 8
+    private const val MAX_ACTIVE_CLIENTS = 128
+    private const val OVERLOAD_CLOSE_BATCH = 16
     private const val CONNECT_TIMEOUT_MS = 5000
     private const val READ_TIMEOUT_MS = 30000
     private const val DNS_TIMEOUT_MS = 5000
