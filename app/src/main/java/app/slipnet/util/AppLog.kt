@@ -8,11 +8,18 @@ import java.util.Locale
 
 object AppLog {
     private const val FILE_NAME = "vaydns-debug.log"
+    private const val FLUSH_INTERVAL_MS = 30_000L
+    private const val MAX_FILE_SIZE_BYTES = 2_000_000L
+    private const val MAX_BUFFER_CHARS = 64 * 1024
     private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    private val lock = Any()
+    private val pending = StringBuilder()
     @Volatile private var appContext: Context? = null
+    @Volatile private var flusherStarted = false
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        startFlusher()
         i("AppLog", "log initialized")
     }
 
@@ -26,25 +33,56 @@ object AppLog {
     private fun write(priority: Int, tag: String, message: String, error: Throwable?) {
         android.util.Log.println(priority, tag, message)
         if (error != null) android.util.Log.e(tag, message, error)
-        val context = appContext ?: return
-        val line = buildString {
-            append(stamp.format(Date()))
-            append(' ')
-            append(level(priority))
-            append('/')
-            append(tag)
-            append(": ")
-            append(message)
+        var shouldFlush = priority >= android.util.Log.ERROR
+        synchronized(lock) {
+            pending.append(stamp.format(Date()))
+            pending.append(' ')
+            pending.append(level(priority))
+            pending.append('/')
+            pending.append(tag)
+            pending.append(": ")
+            pending.append(message)
             if (error != null) {
-                append('\n')
-                append(android.util.Log.getStackTraceString(error))
+                pending.append('\n')
+                pending.append(android.util.Log.getStackTraceString(error))
             }
-            append('\n')
+            pending.append('\n')
+            shouldFlush = shouldFlush || pending.length >= MAX_BUFFER_CHARS
+        }
+        if (shouldFlush) flush()
+    }
+
+    private fun startFlusher() {
+        if (flusherStarted) return
+        synchronized(lock) {
+            if (flusherStarted) return
+            flusherStarted = true
+        }
+        Thread({
+            while (true) {
+                try {
+                    Thread.sleep(FLUSH_INTERVAL_MS)
+                    flush()
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }, "app-log-flusher").also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    private fun flush() {
+        val context = appContext ?: return
+        val chunk = synchronized(lock) {
+            if (pending.isEmpty()) return
+            pending.toString().also { pending.setLength(0) }
         }
         runCatching {
             val f = file(context)
-            if (f.length() > 2_000_000) f.writeText("")
-            f.appendText(line)
+            if (f.length() > MAX_FILE_SIZE_BYTES) f.writeText("")
+            f.appendText(chunk)
         }
     }
 
