@@ -2,6 +2,7 @@ package app.slipnet.tunnel
 
 import android.net.VpnService
 import app.slipnet.util.AppLog
+import java.net.DatagramSocket
 
 data class ResolverConfig(
     val host: String,
@@ -59,6 +60,18 @@ object SlipstreamBridge {
             ok
         } catch (e: Throwable) {
             AppLog.e(TAG, "protectSocket fd=$fd failed", e)
+            false
+        }
+    }
+
+    fun protectDatagramSocket(socket: DatagramSocket): Boolean {
+        if (proxyOnlyMode) return true
+        return try {
+            val ok = vpnService?.protect(socket) ?: false
+            AppLog.d(TAG, "protectDatagramSocket ok=$ok")
+            ok
+        } catch (e: Throwable) {
+            AppLog.e(TAG, "protectDatagramSocket failed", e)
             false
         }
     }

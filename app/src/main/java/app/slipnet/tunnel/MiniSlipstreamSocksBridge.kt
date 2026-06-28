@@ -3,6 +3,8 @@ package app.slipnet.tunnel
 import app.slipnet.util.AppLog
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -20,6 +22,7 @@ object MiniSlipstreamSocksBridge {
     private const val CONNECT_TIMEOUT_MS = 5000
     private const val READ_TIMEOUT_MS = 30000
     private const val DNS_TIMEOUT_MS = 5000
+    private const val UDP_BUFFER_SIZE = 65535
     private val REMOTE_DNS_FALLBACKS = listOf("1.1.1.1", "8.8.8.8")
 
     private val running = AtomicBoolean(false)
@@ -232,43 +235,91 @@ object MiniSlipstreamSocksBridge {
 
     private fun handleFwdUdp(input: InputStream, output: OutputStream) {
         writeSocksReply(output, 0x00)
-        while (running.get()) {
-            val hdr = ByteArray(3)
-            try {
-                input.readFullyStrict(hdr)
-            } catch (_: Throwable) {
+        DatagramSocket().use { udpSocket ->
+            udpSocket.soTimeout = 1000
+            if (!SlipstreamBridge.protectDatagramSocket(udpSocket)) {
+                AppLog.w(TAG, "FWD_UDP protect datagram socket failed")
                 return
             }
-            val payloadLen = ((hdr[0].toInt() and 0xFF) shl 8) or (hdr[1].toInt() and 0xFF)
-            val headerLen = hdr[2].toInt() and 0xFF
-            val addrLen = headerLen - 3
-            if (payloadLen <= 0 || addrLen <= 0) return
-            val addrBytes = ByteArray(addrLen)
-            val payload = ByteArray(payloadLen)
-            input.readFullyStrict(addrBytes)
-            input.readFullyStrict(payload)
-            val dest = parseUdpDest(addrBytes)
-            if (dest?.second != 53) {
-                AppLog.d(TAG, "FWD_UDP drop non-dns dest=${dest?.first}:${dest?.second}")
-                continue
+            val reader = Thread({
+                val buf = ByteArray(UDP_BUFFER_SIZE)
+                while (running.get() && !udpSocket.isClosed) {
+                    try {
+                        val packet = DatagramPacket(buf, buf.size)
+                        udpSocket.receive(packet)
+                        val payload = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
+                        val addrBytes = socksAddrBytes(packet.address, packet.port)
+                        val headerLen = 3 + addrBytes.size
+                        val respHeader = byteArrayOf(
+                            ((payload.size shr 8) and 0xFF).toByte(),
+                            (payload.size and 0xFF).toByte(),
+                            headerLen.toByte()
+                        )
+                        synchronized(output) {
+                            output.write(respHeader)
+                            output.write(addrBytes)
+                            output.write(payload)
+                            output.flush()
+                        }
+                        rxBytes.addAndGet(payload.size.toLong())
+                    } catch (_: java.net.SocketTimeoutException) {
+                        continue
+                    } catch (e: Throwable) {
+                        if (running.get() && !udpSocket.isClosed) AppLog.d(TAG, "FWD_UDP recv failed: ${e.message}")
+                        return@Thread
+                    }
+                }
+            }, "mini-slip-udp-down")
+            reader.isDaemon = true
+            threads.add(reader)
+            reader.start()
+            try {
+                while (running.get()) {
+                    val hdr = ByteArray(3)
+                    try {
+                        input.readFullyStrict(hdr)
+                    } catch (_: Throwable) {
+                        return
+                    }
+                    val payloadLen = ((hdr[0].toInt() and 0xFF) shl 8) or (hdr[1].toInt() and 0xFF)
+                    val headerLen = hdr[2].toInt() and 0xFF
+                    val addrLen = headerLen - 3
+                    if (payloadLen <= 0 || addrLen <= 0) return
+                    val addrBytes = ByteArray(addrLen)
+                    val payload = ByteArray(payloadLen)
+                    input.readFullyStrict(addrBytes)
+                    input.readFullyStrict(payload)
+                    val dest = parseUdpDest(addrBytes) ?: continue
+                    if (dest.second == 53) {
+                        val response = forwardDns(dest.first, payload) ?: run {
+                            dnsFail.incrementAndGet()
+                            continue
+                        }
+                        dnsOk.incrementAndGet()
+                        val respHeader = byteArrayOf(
+                            ((response.size shr 8) and 0xFF).toByte(),
+                            (response.size and 0xFF).toByte(),
+                            headerLen.toByte()
+                        )
+                        synchronized(output) {
+                            output.write(respHeader)
+                            output.write(addrBytes)
+                            output.write(response)
+                            output.flush()
+                        }
+                        AppLog.d(TAG, "FWD_UDP dns ${payload.size}->${response.size} via remote tcp")
+                        continue
+                    }
+                    val address = runCatching { InetAddress.getByName(dest.first) }.getOrNull() ?: continue
+                    udpSocket.send(DatagramPacket(payload, payload.size, address, dest.second))
+                    txBytes.addAndGet(payload.size.toLong())
+                    AppLog.d(TAG, "FWD_UDP ${payload.size} -> ${dest.first}:${dest.second} direct")
+                }
+            } finally {
+                runCatching { udpSocket.close() }
+                runCatching { reader.join(200) }
+                threads.remove(reader)
             }
-            val response = forwardDns(dest.first, payload) ?: run {
-                dnsFail.incrementAndGet()
-                continue
-            }
-            dnsOk.incrementAndGet()
-            val respHeader = byteArrayOf(
-                ((response.size shr 8) and 0xFF).toByte(),
-                (response.size and 0xFF).toByte(),
-                headerLen.toByte()
-            )
-            synchronized(output) {
-                output.write(respHeader)
-                output.write(addrBytes)
-                output.write(response)
-                output.flush()
-            }
-            AppLog.d(TAG, "FWD_UDP dns ${payload.size}->${response.size} via remote tcp")
         }
     }
 
@@ -446,6 +497,19 @@ object MiniSlipstreamSocksBridge {
         }
         0x04 -> InetAddress.getByAddress(raw.copyOfRange(1, 17)).hostAddress
         else -> null
+    }
+
+    private fun socksAddrBytes(address: InetAddress, port: Int): ByteArray {
+        val addr = address.address
+        val portBytes = byteArrayOf(((port shr 8) and 0xFF).toByte(), (port and 0xFF).toByte())
+        return when (addr.size) {
+            4 -> byteArrayOf(0x01) + addr + portBytes
+            16 -> byteArrayOf(0x04) + addr + portBytes
+            else -> {
+                val host = (address.hostAddress ?: address.toString()).toByteArray(Charsets.US_ASCII)
+                byteArrayOf(0x03, host.size.toByte()) + host + portBytes
+            }
+        }
     }
 
     private fun InputStream.readFullyStrict(buf: ByteArray) {
