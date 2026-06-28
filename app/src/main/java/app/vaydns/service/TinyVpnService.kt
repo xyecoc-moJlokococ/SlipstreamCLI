@@ -137,7 +137,9 @@ class TinyVpnService : VpnService() {
                 .setSession("Slipstream CLI")
                 .setMtu(1280)
                 .addAddress("10.255.0.2", 32)
+                .addAddress("fd00::2", 128)
                 .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
                 .addDnsServer(choice.selectedHost)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }

@@ -213,10 +213,6 @@ object MiniSlipstreamSocksBridge {
             writeSocksReply(clientOutput, 0x05)
             return
         }
-        if (req.rawAddr[0] == 0x04.toByte()) {
-            writeSocksReply(clientOutput, 0x05)
-            return
-        }
         var remote: Socket? = null
         try {
             remote = openSlipstreamSocks(req.rawAddr, req.portBytes)
