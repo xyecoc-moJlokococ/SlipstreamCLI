@@ -35,6 +35,8 @@ object MiniSlipstreamSocksBridge {
     private val connectFail = AtomicLong(0)
     private val dnsOk = AtomicLong(0)
     private val dnsFail = AtomicLong(0)
+    private val udpDirectPackets = AtomicLong(0)
+    private val udpDnsPackets = AtomicLong(0)
     private val activeClients = AtomicInteger(0)
 
     @Volatile private var serverSocket: ServerSocket? = null
@@ -66,6 +68,8 @@ object MiniSlipstreamSocksBridge {
         connectFail.set(0)
         dnsOk.set(0)
         dnsFail.set(0)
+        udpDirectPackets.set(0)
+        udpDnsPackets.set(0)
         activeClients.set(0)
 
         return runCatching {
@@ -307,13 +311,19 @@ object MiniSlipstreamSocksBridge {
                             output.write(response)
                             output.flush()
                         }
-                        AppLog.d(TAG, "FWD_UDP dns ${payload.size}->${response.size} via remote tcp")
+                        val dnsCount = udpDnsPackets.incrementAndGet()
+                        if (dnsCount % 64L == 0L) {
+                            AppLog.d(TAG, "FWD_UDP dns packets=$dnsCount dnsOk=${dnsOk.get()} dnsFail=${dnsFail.get()}")
+                        }
                         continue
                     }
                     val address = runCatching { InetAddress.getByName(dest.first) }.getOrNull() ?: continue
                     udpSocket.send(DatagramPacket(payload, payload.size, address, dest.second))
                     txBytes.addAndGet(payload.size.toLong())
-                    AppLog.d(TAG, "FWD_UDP ${payload.size} -> ${dest.first}:${dest.second} direct")
+                    val directCount = udpDirectPackets.incrementAndGet()
+                    if (directCount % 256L == 0L) {
+                        AppLog.d(TAG, "FWD_UDP direct packets=$directCount active=${activeClients.get()}")
+                    }
                 }
             } finally {
                 runCatching { udpSocket.close() }
