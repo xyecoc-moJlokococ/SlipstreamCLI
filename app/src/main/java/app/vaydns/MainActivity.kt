@@ -17,6 +17,7 @@ import android.text.InputType
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -44,6 +45,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var password: EditText
     private lateinit var mode: Spinner
     private lateinit var auth: Spinner
+    private lateinit var fileLogging: CheckBox
     private lateinit var connectButton: Button
     private lateinit var connectProgress: ProgressBar
     private lateinit var status: TextView
@@ -69,7 +71,7 @@ class MainActivity : android.app.Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
-        SlipstreamBridge.setLogFilePath(AppLog.file(this).absolutePath)
+        configureNativeLogging()
         setContentView(buildUi())
         loadConfig()
         handler.post(tick)
@@ -144,6 +146,15 @@ class MainActivity : android.app.Activity() {
         auth = spinner(listOf("no-auth", "login/password"))
         username = edit("username")
         password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        fileLogging = CheckBox(this).apply {
+            text = "Write debug log"
+            isChecked = AppLog.isFileLoggingEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, enabled ->
+                AppLog.setFileLoggingEnabled(this@MainActivity, enabled)
+                configureNativeLogging()
+                toast(if (enabled) "file logging enabled" else "file logging disabled")
+            }
+        }
         connectProgress = ProgressBar(this).apply {
             isIndeterminate = true
             visibility = View.GONE
@@ -163,7 +174,7 @@ class MainActivity : android.app.Activity() {
             text = "Share log"
             setOnClickListener { shareLogFile() }
         }
-        listOf(status, domain, resolverMode, resolverRow, resolverPort, listenPort, mode, auth, username, password, connectProgress, connectButton, saveButton, shareLog)
+        listOf(status, domain, resolverMode, resolverRow, resolverPort, listenPort, mode, auth, username, password, fileLogging, connectProgress, connectButton, saveButton, shareLog)
             .forEach { root.addView(it, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT) }
         return root
     }
@@ -421,6 +432,10 @@ class MainActivity : android.app.Activity() {
         ResolverSelector.preferredLocalResolver(this).orEmpty()
 
     private fun shareLogFile() {
+        if (!AppLog.isFileLoggingEnabled(this)) {
+            toast("file logging is disabled")
+            return
+        }
         val file = AppLog.file(this)
         if (!file.exists()) file.writeText("empty log\n")
         val uri: Uri = FileProvider.getUriForFile(this, "$packageName.files", file)
@@ -429,6 +444,11 @@ class MainActivity : android.app.Activity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }, "Share log"))
+    }
+
+    private fun configureNativeLogging() {
+        val path = if (AppLog.isFileLoggingEnabled(this)) AppLog.file(this).absolutePath else ""
+        SlipstreamBridge.setLogFilePath(path)
     }
 
     private fun runStartupPermissionFlow() {

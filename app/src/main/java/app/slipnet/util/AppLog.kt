@@ -7,8 +7,10 @@ import java.util.Date
 import java.util.Locale
 
 object AppLog {
+    private const val PREFS = "app_log"
+    private const val KEY_FILE_LOGGING_ENABLED = "file_logging_enabled"
     private const val FILE_NAME = "vaydns-debug.log"
-    private const val FLUSH_INTERVAL_MS = 30_000L
+    private const val FLUSH_INTERVAL_MS = 15_000L
     private const val MAX_FILE_SIZE_BYTES = 2_000_000L
     private const val MAX_BUFFER_CHARS = 64 * 1024
     private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -16,14 +18,34 @@ object AppLog {
     private val pending = StringBuilder()
     @Volatile private var appContext: Context? = null
     @Volatile private var flusherStarted = false
+    @Volatile private var fileLoggingEnabled = false
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        startFlusher()
+        fileLoggingEnabled = isFileLoggingEnabled(context)
+        if (fileLoggingEnabled) startFlusher()
         i("AppLog", "log initialized")
     }
 
     fun file(context: Context): File = File(context.filesDir, FILE_NAME)
+
+    fun isFileLoggingEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_FILE_LOGGING_ENABLED, false)
+
+    fun setFileLoggingEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_FILE_LOGGING_ENABLED, enabled)
+            .apply()
+        fileLoggingEnabled = enabled
+        if (!enabled) {
+            synchronized(lock) { pending.setLength(0) }
+        } else {
+            startFlusher()
+            i("AppLog", "file logging enabled")
+        }
+    }
 
     fun d(tag: String, message: String) = write(android.util.Log.DEBUG, tag, message, null)
     fun i(tag: String, message: String) = write(android.util.Log.INFO, tag, message, null)
@@ -33,6 +55,7 @@ object AppLog {
     private fun write(priority: Int, tag: String, message: String, error: Throwable?) {
         android.util.Log.println(priority, tag, message)
         if (error != null) android.util.Log.e(tag, message, error)
+        if (!fileLoggingEnabled) return
         var shouldFlush = priority >= android.util.Log.ERROR
         synchronized(lock) {
             pending.append(stamp.format(Date()))

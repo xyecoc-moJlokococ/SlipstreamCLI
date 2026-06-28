@@ -63,7 +63,7 @@ class TinyVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
-        SlipstreamBridge.setLogFilePath(AppLog.file(this).absolutePath)
+        configureNativeLogging()
         createChannel()
     }
 
@@ -81,6 +81,7 @@ class TinyVpnService : VpnService() {
     }
 
     private fun startTunnel() {
+        configureNativeLogging()
         if (starting || tunnelActive) {
             AppLog.w(TAG, "VPN start ignored starting=$starting active=$tunnelActive")
             return
@@ -451,6 +452,11 @@ class TinyVpnService : VpnService() {
 
     private fun restartSlipstreamPath(reason: String) {
         restartSlipstreamPath(reason, forcedChoice = null)
+    }
+
+    private fun configureNativeLogging() {
+        val path = if (AppLog.isFileLoggingEnabled(this)) AppLog.file(this).absolutePath else ""
+        SlipstreamBridge.setLogFilePath(path)
     }
 
     private fun restartSlipstreamPath(reason: String, forcedChoice: ResolverChoice?) {
