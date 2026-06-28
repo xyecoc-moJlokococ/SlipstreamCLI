@@ -1,6 +1,7 @@
 package app.vaydns
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.TrafficStats
@@ -10,6 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.widget.ArrayAdapter
@@ -50,6 +53,11 @@ class MainActivity : android.app.Activity() {
     private var rxBase = 0L
     private var txBase = 0L
     private var lastLogAt = 0L
+    private var pendingStartVpn = false
+    private var startupPermissionFlowActive = false
+    private var notificationRequestShown = false
+    private var startupVpnRequestShown = false
+    private var batteryRequestShown = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -62,10 +70,10 @@ class MainActivity : android.app.Activity() {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
         SlipstreamBridge.setLogFilePath(AppLog.file(this).absolutePath)
-        maybeAskNotifications()
         setContentView(buildUi())
         loadConfig()
         handler.post(tick)
+        handler.post { runStartupPermissionFlow() }
     }
 
     override fun onDestroy() {
@@ -75,7 +83,33 @@ class MainActivity : android.app.Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_VPN && resultCode == RESULT_OK) startVpn()
+        when (requestCode) {
+            REQ_VPN -> {
+                if (resultCode == RESULT_OK) {
+                    continuePreflight()
+                } else {
+                    pendingStartVpn = false
+                    connecting = false
+                    updateStatus()
+                    toast("VPN permission is required")
+                }
+            }
+            REQ_VPN_STARTUP, REQ_BATTERY -> continueStartupPermissionFlow()
+            REQ_BACKGROUND_SETTINGS -> markBackgroundSettingsPrompted()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQ_NOTIFICATIONS -> {
+                if (pendingStartVpn) {
+                    continuePreflight()
+                } else {
+                    continueStartupPermissionFlow()
+                }
+            }
+        }
     }
 
     private fun buildUi(): View {
@@ -194,11 +228,20 @@ class MainActivity : android.app.Activity() {
         updateStatus()
         ConfigStore.save(this, c)
         if (c.mode == Config.Mode.VPN) {
-            val intent = VpnService.prepare(this)
-            if (intent != null) startActivityForResult(intent, REQ_VPN) else startVpn()
+            pendingStartVpn = true
+            continuePreflight()
         } else {
             startProxy(c)
         }
+    }
+
+    private fun continuePreflight() {
+        if (!pendingStartVpn) return
+        if (requestNotificationsIfNeeded()) return
+        if (requestVpnConsentIfNeeded(REQ_VPN)) return
+        requestBatteryOptimizationIfNeeded()
+        pendingStartVpn = false
+        startVpn()
     }
 
     private fun startProxy(c: Config) {
@@ -388,10 +431,103 @@ class MainActivity : android.app.Activity() {
         }, "Share log"))
     }
 
-    private fun maybeAskNotifications() {
+    private fun runStartupPermissionFlow() {
+        if (startupPermissionFlowActive) return
+        startupPermissionFlowActive = true
+        continueStartupPermissionFlow()
+    }
+
+    private fun continueStartupPermissionFlow() {
+        if (!startupPermissionFlowActive || pendingStartVpn) return
+        if (requestNotificationsIfNeeded()) return
+        if (requestVpnConsentIfNeeded(REQ_VPN_STARTUP)) return
+        if (requestBatteryOptimizationIfNeeded()) return
+        maybeShowBackgroundSettingsPrompt()
+        startupPermissionFlowActive = false
+    }
+
+    private fun requestNotificationsIfNeeded(): Boolean {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 12)
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            if (prefs.getBoolean(KEY_NOTIFICATIONS_PROMPTED, false)) return false
+            if (notificationRequestShown) return false
+            notificationRequestShown = true
+            prefs.edit().putBoolean(KEY_NOTIFICATIONS_PROMPTED, true).apply()
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+            return true
         }
+        return false
+    }
+
+    private fun requestVpnConsentIfNeeded(requestCode: Int): Boolean {
+        val intent = VpnService.prepare(this) ?: return false
+        if (requestCode == REQ_VPN_STARTUP) {
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            if (prefs.getBoolean(KEY_VPN_STARTUP_PROMPTED, false)) return false
+            if (startupVpnRequestShown) return false
+            startupVpnRequestShown = true
+            prefs.edit().putBoolean(KEY_VPN_STARTUP_PROMPTED, true).apply()
+        }
+        startActivityForResult(intent, requestCode)
+        return true
+    }
+
+    private fun requestBatteryOptimizationIfNeeded(): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return false
+        val powerManager = getSystemService(PowerManager::class.java)
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) return false
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_BATTERY_PROMPTED, false)) return false
+        if (batteryRequestShown) return false
+        batteryRequestShown = true
+        prefs.edit().putBoolean(KEY_BATTERY_PROMPTED, true).apply()
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        return runCatching {
+            startActivityForResult(intent, REQ_BATTERY)
+            true
+        }.getOrElse {
+            AppLog.w(TAG, "battery optimization request failed: ${it.message}")
+            openAppBatterySettings()
+            true
+        }
+    }
+
+    private fun maybeShowBackgroundSettingsPrompt() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_BACKGROUND_PROMPTED, false)) return
+        AlertDialog.Builder(this)
+            .setTitle("Background work")
+            .setMessage("Allow Slipstream CLI to keep working in the background if your Android skin shows such an option.")
+            .setPositiveButton("Open settings") { _, _ ->
+                markBackgroundSettingsPrompted()
+                openAppBatterySettings()
+            }
+            .setNegativeButton("Later") { _, _ -> markBackgroundSettingsPrompted() }
+            .setOnCancelListener { markBackgroundSettingsPrompted() }
+            .show()
+    }
+
+    private fun openAppBatterySettings() {
+        val intents = listOf(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            },
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        )
+        for (intent in intents) {
+            if (runCatching { startActivityForResult(intent, REQ_BACKGROUND_SETTINGS); true }.getOrDefault(false)) {
+                return
+            }
+        }
+    }
+
+    private fun markBackgroundSettingsPrompted() {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_BACKGROUND_PROMPTED, true)
+            .apply()
     }
 
     private fun formatBytes(value: Long): String {
@@ -408,5 +544,14 @@ class MainActivity : android.app.Activity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQ_VPN = 100
+        private const val REQ_VPN_STARTUP = 101
+        private const val REQ_BATTERY = 102
+        private const val REQ_BACKGROUND_SETTINGS = 103
+        private const val REQ_NOTIFICATIONS = 104
+        private const val PREFS = "permission_flow"
+        private const val KEY_BACKGROUND_PROMPTED = "background_prompted"
+        private const val KEY_BATTERY_PROMPTED = "battery_prompted"
+        private const val KEY_NOTIFICATIONS_PROMPTED = "notifications_prompted"
+        private const val KEY_VPN_STARTUP_PROMPTED = "vpn_startup_prompted"
     }
 }
