@@ -72,7 +72,7 @@ object HevSocks5Tunnel {
         appendLine("  connect-timeout: 8000")
         appendLine("  tcp-read-write-timeout: 120000")
         appendLine("  udp-read-write-timeout: 60000")
-        appendLine("  log-level: debug")
+        appendLine("  log-level: warn")
     }
 
     data class TrafficStats(val txPackets: Long, val txBytes: Long, val rxPackets: Long, val rxBytes: Long)

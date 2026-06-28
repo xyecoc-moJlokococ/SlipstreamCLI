@@ -53,6 +53,7 @@ object AppLog {
     fun e(tag: String, message: String, error: Throwable? = null) = write(android.util.Log.ERROR, tag, message, error)
 
     private fun write(priority: Int, tag: String, message: String, error: Throwable?) {
+        if (!fileLoggingEnabled && priority < android.util.Log.WARN) return
         android.util.Log.println(priority, tag, message)
         if (error != null) android.util.Log.e(tag, message, error)
         if (!fileLoggingEnabled) return
