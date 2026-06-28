@@ -33,6 +33,7 @@ class TinyVpnService : VpnService() {
     @Volatile private var recovering = false
     @Volatile private var stopping = false
     @Volatile private var starting = false
+    @Volatile private var resolverOptimizerRunning = false
     private var rxBase = 0L
     private var txBase = 0L
     private var lastRx = 0L
@@ -109,7 +110,7 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.proxyOnlyMode = false
             resetTrafficBase()
             failedAutoResolvers.clear()
-            val choice = ResolverSelector.choose(this, config, "vpn_start")
+            val choice = ResolverSelector.chooseFast(this, config, "vpn_start")
             currentResolver = choice
             val bridgePort = config.listenPort
             val slipstreamPort = config.listenPort + 1
@@ -158,6 +159,7 @@ class TinyVpnService : VpnService() {
             )
             handler.removeCallbacks(diagnostics)
             handler.post(diagnostics)
+            startBackgroundResolverOptimization(config, choice)
         } catch (e: Throwable) {
             AppLog.e(TAG, "VPN start failed", e)
             runCatching { HevSocks5Tunnel.stop() }
@@ -199,6 +201,7 @@ class TinyVpnService : VpnService() {
         tunnelActive = false
         currentConfig = null
         currentResolver = null
+        resolverOptimizerRunning = false
         failedAutoResolvers.clear()
         readyFalseSince = 0
         handler.removeCallbacks(diagnostics)
@@ -445,6 +448,10 @@ class TinyVpnService : VpnService() {
     }
 
     private fun restartSlipstreamPath(reason: String) {
+        restartSlipstreamPath(reason, forcedChoice = null)
+    }
+
+    private fun restartSlipstreamPath(reason: String, forcedChoice: ResolverChoice?) {
         val config = currentConfig ?: run {
             AppLog.e(TAG, "recovery skipped: config is missing reason=$reason")
             return
@@ -463,6 +470,7 @@ class TinyVpnService : VpnService() {
         val recoveryId = recoveryCount
         AppLog.w(TAG, "recovery#$recoveryId start reason=$reason")
         Thread({
+            val previousChoice = currentResolver
             try {
                 val bridgePort = config.listenPort
                 val slipstreamPort = config.listenPort + 1
@@ -472,6 +480,7 @@ class TinyVpnService : VpnService() {
                 val fastPathRecovery = reason.startsWith("traffic_no_response") ||
                     reason.startsWith("traffic_slow_response") ||
                     reason.startsWith("traffic_low_bandwidth") ||
+                    reason.startsWith("resolver_speed_upgrade") ||
                     reason.startsWith("bridge_failures")
                 val failureStormRecovery = reason.startsWith("bridge_failure_storm")
                 val resolverUnreachableRecovery = reason.startsWith("resolver_unreachable")
@@ -511,8 +520,8 @@ class TinyVpnService : VpnService() {
                     AppLog.w(TAG, "recovery#$recoveryId keep resolver sticky for reason=$reason; clearing failed auto resolvers=${failedAutoResolvers.joinToString()}")
                     failedAutoResolvers.clear()
                 }
-                val quickChoice = if (autoFastRecovery) quickAutoRecoveryChoice(config, recoveryId, reason) else null
-                val choice = quickChoice ?: if (reuseCurrentResolver && currentResolver != null) {
+                val quickChoice = if (forcedChoice == null && autoFastRecovery) quickAutoRecoveryChoice(config, recoveryId, reason) else null
+                val choice = forcedChoice ?: quickChoice ?: if (reuseCurrentResolver && currentResolver != null) {
                     AppLog.w(TAG, "recovery#$recoveryId reusing resolver ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
                     currentResolver!!
                 } else {
@@ -576,10 +585,110 @@ class TinyVpnService : VpnService() {
                 )
             } catch (e: Throwable) {
                 AppLog.e(TAG, "recovery#$recoveryId failed", e)
+                if (forcedChoice != null && previousChoice != null && tunnelActive) {
+                    restoreResolverAfterFailedUpgrade(config, previousChoice, recoveryId)
+                }
             } finally {
                 recovering = false
             }
         }, "slipstream-recovery").start()
+    }
+
+    private fun restoreResolverAfterFailedUpgrade(config: Config, choice: ResolverChoice, recoveryId: Int) {
+        runCatching {
+            val bridgePort = config.listenPort
+            val slipstreamPort = config.listenPort + 1
+            AppLog.w(
+                TAG,
+                "recovery#$recoveryId restoring previous resolver " +
+                    "${choice.selectedHost}:${choice.port} after failed speed upgrade"
+            )
+            runCatching { MiniSlipstreamSocksBridge.stop() }
+            runCatching { SlipstreamBridge.stopClient() }
+            SlipstreamBridge.setVpnService(this)
+            SlipstreamBridge.proxyOnlyMode = false
+            SlipstreamBridge.startClient(
+                config.domain,
+                ResolverListConfig(choice.hosts, choice.port, true),
+                slipstreamPort,
+                choice.qnameMtu
+            ).getOrThrow()
+            if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
+                throw IllegalStateException(
+                    "previous resolver not ready after failed speed upgrade: " +
+                        "${choice.selectedHost}:${choice.port}"
+                )
+            }
+            MiniSlipstreamSocksBridge.start(
+                listenHost = "127.0.0.1",
+                listenPort = bridgePort,
+                slipstreamHost = "127.0.0.1",
+                slipstreamPort = slipstreamPort,
+                dnsHost = choice.selectedHost,
+                username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
+                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+            ).getOrThrow()
+            currentResolver = choice
+            readyFalseSince = 0
+            slowResponseSince = 0
+            lowBandwidthSince = 0
+            resolverHealthFailures = 0
+            lastResolverHealthCheckAt = System.currentTimeMillis()
+            lastProgressAt = System.currentTimeMillis()
+            AppLog.w(
+                TAG,
+                "recovery#$recoveryId restored previous resolver ${choice.selectedHost}:${choice.port} " +
+                    "ready=${SlipstreamBridge.isReady()}"
+            )
+        }.onFailure {
+            AppLog.e(TAG, "recovery#$recoveryId failed to restore previous resolver", it)
+        }
+    }
+
+    private fun startBackgroundResolverOptimization(config: Config, initialChoice: ResolverChoice) {
+        if (config.resolverMode != Config.ResolverMode.AUTO) return
+        if (resolverOptimizerRunning) return
+        resolverOptimizerRunning = true
+        Thread({
+            try {
+                Thread.sleep(BACKGROUND_RESOLVER_PROBE_DELAY_MS)
+                if (!tunnelActive || !SlipstreamBridge.isRunning() || recovering) return@Thread
+                AppLog.i(TAG, "background resolver download probe start current=${initialChoice.selectedHost}:${initialChoice.port}")
+                val best = ResolverSelector.chooseFastestByDownload(
+                    this,
+                    config,
+                    "background_speed",
+                    failedAutoResolvers
+                ) ?: run {
+                    AppLog.w(TAG, "background resolver speed probe found no usable resolver")
+                    return@Thread
+                }
+                val current = currentResolver
+                if (!tunnelActive || current == null) return@Thread
+                if (best.selectedHost == current.selectedHost && best.port == current.port) {
+                    AppLog.i(
+                        TAG,
+                        "background resolver download probe kept current=${current.selectedHost}:${current.port} " +
+                            "totalMs=${best.latencyMs}"
+                    )
+                    return@Thread
+                }
+                if (recovering || System.currentTimeMillis() - lastRecoveryAt <= BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS) {
+                    AppLog.w(TAG, "background resolver switch skipped: recovery busy/cooling down best=${best.selectedHost}:${best.port}")
+                    return@Thread
+                }
+                AppLog.w(
+                    TAG,
+                    "background resolver download upgrade ${current.selectedHost}:${current.port} -> " +
+                        "${best.selectedHost}:${best.port} totalMs=${best.latencyMs}"
+                )
+                restartSlipstreamPath("resolver_speed_upgrade_${best.selectedHost}_${best.latencyMs}ms", best)
+            } catch (e: Throwable) {
+                AppLog.e(TAG, "background resolver download probe failed", e)
+            } finally {
+                resolverOptimizerRunning = false
+            }
+        }, "resolver-speed-optimizer").start()
     }
 
     private fun quickAutoRecoveryChoice(config: Config, recoveryId: Int, reason: String): ResolverChoice? {
@@ -708,6 +817,8 @@ class TinyVpnService : VpnService() {
         private const val RESOLVER_HEALTH_RECOVERY_COOLDOWN_MS = 5_000L
         private const val HEAVY_UPLOAD_DELTA_BYTES = 256L * 1024L
         private const val HEAVY_UPLOAD_GRACE_MS = 120_000L
+        private const val BACKGROUND_RESOLVER_PROBE_DELAY_MS = 1_500L
+        private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
     }

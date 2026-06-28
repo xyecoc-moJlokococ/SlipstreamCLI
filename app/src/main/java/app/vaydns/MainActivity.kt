@@ -296,8 +296,8 @@ class MainActivity : android.app.Activity() {
         connectProgress.visibility = if (connecting || resolverProgress.active) View.VISIBLE else View.GONE
         connectButton.text = when {
             stopping -> "Disconnecting"
-            connecting || resolverProgress.active -> "Connecting..."
             running -> "Disconnect"
+            connecting || resolverProgress.active -> "Connecting..."
             else -> "Connect"
         }
         status.text = buildString {

@@ -136,14 +136,68 @@ object SlipstreamBridge {
         }
     }
 
+    fun startProbeClient(
+        domain: String,
+        resolver: ResolverListConfig,
+        listenPort: Int,
+        qnameMtu: Int = 0
+    ): Result<Unit> {
+        if (!loaded) return Result.failure(IllegalStateException("libslipstream is not loaded"))
+        val hosts = resolver.hosts.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        require(hosts.isNotEmpty()) { "resolver is empty" }
+        AppLog.i(
+            TAG,
+            "probe start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
+                "mode=authoritative transport=tcp cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
+                "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
+                "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
+        )
+        val code = nativeStartProbeClient(
+            domain,
+            hosts.toTypedArray(),
+            IntArray(hosts.size) { resolver.port },
+            BooleanArray(hosts.size) { resolver.authoritative },
+            listenPort,
+            DEFAULT_LISTEN_HOST,
+            "",
+            5000,
+            false,
+            true,
+            true,
+            10000,
+            120000,
+            "tcp",
+            DEFAULT_PACING_GAIN_PROBE,
+            DEFAULT_DNS_TCP_PACKET_LOOP_BURST,
+            true,
+            qnameMtu.coerceAtLeast(0)
+        )
+        return if (code == 0) {
+            AppLog.i(TAG, "probe slipstream started")
+            Result.success(Unit)
+        } else {
+            val err = nativeGetLastError() ?: "native probe error $code"
+            AppLog.e(TAG, "probe slipstream start failed: $err")
+            Result.failure(RuntimeException(err))
+        }
+    }
+
     fun stopClient() {
         if (!loaded) return
         AppLog.i(TAG, "stop slipstream")
         runCatching { nativeStopSlipstreamClient() }
     }
 
+    fun stopProbeClient(listenPort: Int = 0) {
+        if (!loaded) return
+        AppLog.i(TAG, "stop probe slipstream port=$listenPort")
+        runCatching { nativeStopProbeClient(listenPort) }
+    }
+
     fun isRunning(): Boolean = loaded && runCatching { nativeIsClientRunning() }.getOrDefault(false)
+    fun isProbeRunning(listenPort: Int = 0): Boolean = loaded && runCatching { nativeIsProbeRunning(listenPort) }.getOrDefault(false)
     fun isReady(): Boolean = loaded && runCatching { nativeIsQuicReady() }.getOrDefault(false)
+    fun isProbeReady(listenPort: Int = 0): Boolean = loaded && runCatching { nativeIsProbeReady(listenPort) }.getOrDefault(false)
     fun port(): Int = currentPort
     fun lastError(): String? = if (loaded) runCatching { nativeGetLastError() }.getOrNull() else null
 
@@ -169,8 +223,31 @@ object SlipstreamBridge {
     ): Int
 
     private external fun nativeStopSlipstreamClient()
+    private external fun nativeStartProbeClient(
+        domain: String,
+        resolverHosts: Array<String>,
+        resolverPorts: IntArray,
+        resolverAuthoritative: BooleanArray,
+        listenPort: Int,
+        listenHost: String,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        gsoEnabled: Boolean,
+        debugPoll: Boolean,
+        debugStreams: Boolean,
+        idlePollInterval: Int,
+        idleTimeoutMs: Int,
+        resolverTransport: String,
+        pacingGainProbe: Double,
+        dnsTcpPacketLoopBurst: Int,
+        qnameCompatibilityMode: Boolean,
+        qnameMtu: Int
+    ): Int
+    private external fun nativeStopProbeClient(listenPort: Int)
     private external fun nativeIsClientRunning(): Boolean
+    private external fun nativeIsProbeRunning(listenPort: Int): Boolean
     private external fun nativeIsQuicReady(): Boolean
+    private external fun nativeIsProbeReady(listenPort: Int): Boolean
     private external fun nativeGetLastError(): String?
     private external fun nativeSetLogFilePath(path: String)
 }
