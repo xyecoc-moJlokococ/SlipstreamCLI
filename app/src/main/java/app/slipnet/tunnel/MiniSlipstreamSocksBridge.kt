@@ -274,8 +274,11 @@ object MiniSlipstreamSocksBridge {
             sock.soTimeout = DNS_TIMEOUT_MS
             val input = sock.getInputStream()
             val output = sock.getOutputStream()
-            output.write(byteArrayOf(((payload.size shr 8) and 0xFF).toByte(), (payload.size and 0xFF).toByte()))
-            output.write(payload)
+            val frame = ByteArray(payload.size + 2)
+            frame[0] = ((payload.size shr 8) and 0xFF).toByte()
+            frame[1] = (payload.size and 0xFF).toByte()
+            System.arraycopy(payload, 0, frame, 2, payload.size)
+            output.write(frame)
             output.flush()
             val lenBytes = ByteArray(2)
             input.readFullyStrict(lenBytes)
@@ -323,18 +326,25 @@ object MiniSlipstreamSocksBridge {
                 val user = username.orEmpty().toByteArray()
                 val pass = password.orEmpty().toByteArray()
                 require(user.size <= 255 && pass.size <= 255) { "auth too long" }
-                output.write(byteArrayOf(0x01, user.size.toByte()))
-                output.write(user)
-                output.write(pass.size)
-                output.write(pass)
+                val authFrame = ByteArray(3 + user.size + pass.size)
+                authFrame[0] = 0x01
+                authFrame[1] = user.size.toByte()
+                System.arraycopy(user, 0, authFrame, 2, user.size)
+                authFrame[2 + user.size] = pass.size.toByte()
+                System.arraycopy(pass, 0, authFrame, 3 + user.size, pass.size)
+                output.write(authFrame)
                 output.flush()
                 val auth = ByteArray(2)
                 input.readFullyStrict(auth)
                 if (auth[1] != 0x00.toByte()) error("upstream auth failed")
             }
-            output.write(byteArrayOf(0x05, cmd.toByte(), 0x00))
-            output.write(rawAddr)
-            output.write(portBytes)
+            val commandFrame = ByteArray(3 + rawAddr.size + portBytes.size)
+            commandFrame[0] = 0x05
+            commandFrame[1] = cmd.toByte()
+            commandFrame[2] = 0x00
+            System.arraycopy(rawAddr, 0, commandFrame, 3, rawAddr.size)
+            System.arraycopy(portBytes, 0, commandFrame, 3 + rawAddr.size, portBytes.size)
+            output.write(commandFrame)
             output.flush()
             val header = ByteArray(4)
             input.readFullyStrict(header)
@@ -358,8 +368,8 @@ object MiniSlipstreamSocksBridge {
                     copy(clientInput, remoteOutput, txBytes)
                     runCatching { remote.shutdownOutput() }
                 } finally {
-                    runCatching { remote.close() }
-                    runCatching { client.close() }
+                    closeSocketNow(remote)
+                    closeSocketNow(client)
                     threads.remove(Thread.currentThread())
                 }
             }, "mini-slip-up")
@@ -370,12 +380,18 @@ object MiniSlipstreamSocksBridge {
                 copy(remoteInput, clientOutput, rxBytes)
                 runCatching { client.shutdownOutput() }
             } finally {
-                runCatching { remote.close() }
-                runCatching { client.close() }
+                closeSocketNow(remote)
+                closeSocketNow(client)
                 runCatching { up.join(500) }
                 remotes.remove(remote)
             }
         }
+    }
+
+    private fun closeSocketNow(socket: Socket) {
+        runCatching { socket.shutdownInput() }
+        runCatching { socket.shutdownOutput() }
+        runCatching { socket.close() }
     }
 
     private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong) {
@@ -389,7 +405,6 @@ object MiniSlipstreamSocksBridge {
             if (n <= 0) return
             try {
                 output.write(buf, 0, n)
-                output.flush()
             } catch (_: Throwable) {
                 return
             }
