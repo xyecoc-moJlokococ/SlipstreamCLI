@@ -146,13 +146,6 @@ class TinyVpnService : VpnService() {
                 .addDnsServer(choice.selectedHost)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
-            if (ResolverSelector.isWhitelistLikelyEnabled(this)) {
-                BYPASS_ON_WHITELIST_PACKAGES.forEach { pkg ->
-                    runCatching { builder.addDisallowedApplication(pkg) }
-                        .onSuccess { AppLog.w(TAG, "whitelist network detected; bypass VPN for $pkg to avoid split-path UDP") }
-                        .onFailure { AppLog.w(TAG, "whitelist bypass failed for $pkg: ${it.message}") }
-                }
-            }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
 
             HevSocks5Tunnel.start(
@@ -876,6 +869,5 @@ class TinyVpnService : VpnService() {
         private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
-        private val BYPASS_ON_WHITELIST_PACKAGES = listOf("com.supercell.brawlstars")
     }
 }
