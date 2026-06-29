@@ -347,6 +347,8 @@ object ResolverSelector {
         return NetworkProfile(sha256(raw), label, whitelistEnabled)
     }
 
+    fun isWhitelistLikelyEnabled(context: Context): Boolean = isWhitelistLikelyEnabled(context, null)
+
     private fun isWhitelistLikelyEnabled(context: Context, network: Network?): Boolean {
         return runCatching {
             val target = network ?: activeNonVpnNetwork(context)

@@ -43,6 +43,8 @@ class TinyVpnService : VpnService() {
     private var lastBridgeRx = 0L
     private var lastBridgeTx = 0L
     private var lastBridgeFailures = 0L
+    private var bridgeFailureWatchStartAt = 0L
+    private var bridgeFailureWatchBase = 0L
     private var lastProgressAt = 0L
     private var lastHeavyUploadAt = 0L
     private var slowResponseSince = 0L
@@ -144,6 +146,13 @@ class TinyVpnService : VpnService() {
                 .addDnsServer(choice.selectedHost)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
+            if (ResolverSelector.isWhitelistLikelyEnabled(this)) {
+                BYPASS_ON_WHITELIST_PACKAGES.forEach { pkg ->
+                    runCatching { builder.addDisallowedApplication(pkg) }
+                        .onSuccess { AppLog.w(TAG, "whitelist network detected; bypass VPN for $pkg to avoid split-path UDP") }
+                        .onFailure { AppLog.w(TAG, "whitelist bypass failed for $pkg: ${it.message}") }
+                }
+            }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
 
             HevSocks5Tunnel.start(
@@ -242,6 +251,8 @@ class TinyVpnService : VpnService() {
         lastBridgeRx = 0
         lastBridgeTx = 0
         lastBridgeFailures = 0
+        bridgeFailureWatchStartAt = 0
+        bridgeFailureWatchBase = 0
         lastProgressAt = System.currentTimeMillis()
         lastHeavyUploadAt = 0
         slowResponseSince = 0
@@ -308,6 +319,7 @@ class TinyVpnService : VpnService() {
             lastBridgeTx = bridge.txBytes
             lastBridgeFailures = failureTotal
         }
+        updateBridgeFailureWatch(now, running, ready, failureTotal)
         AppLog.i(
             TAG,
             "diag running=$running ready=$ready hevRunning=${HevSocks5Tunnel.isRunning()} " +
@@ -411,6 +423,39 @@ class TinyVpnService : VpnService() {
             if (now - lastRecoveryAt > RECOVERY_COOLDOWN_MS) {
                 restartSlipstreamPath("native_not_running")
             }
+        }
+    }
+
+    private fun updateBridgeFailureWatch(now: Long, running: Boolean, ready: Boolean, failureTotal: Long) {
+        if (!running || !ready || recovering) {
+            bridgeFailureWatchStartAt = 0
+            bridgeFailureWatchBase = failureTotal
+            return
+        }
+        if (failureTotal <= bridgeFailureWatchBase) {
+            bridgeFailureWatchStartAt = 0
+            bridgeFailureWatchBase = failureTotal
+            return
+        }
+        if (bridgeFailureWatchStartAt == 0L) {
+            bridgeFailureWatchStartAt = now
+            bridgeFailureWatchBase = (failureTotal - 1).coerceAtLeast(0)
+            return
+        }
+        val accumulated = failureTotal - bridgeFailureWatchBase
+        if (
+            accumulated >= ACCUMULATED_FAILURE_RECOVERY_TOTAL &&
+            now - bridgeFailureWatchStartAt >= ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS &&
+            now - lastRecoveryAt > RECOVERY_COOLDOWN_MS
+        ) {
+            AppLog.w(
+                TAG,
+                "bridge accumulated failures total=$failureTotal accumulated=$accumulated " +
+                    "windowMs=${now - bridgeFailureWatchStartAt}; restarting path"
+            )
+            bridgeFailureWatchStartAt = 0
+            bridgeFailureWatchBase = failureTotal
+            restartSlipstreamPath("bridge_failures_accumulated_${accumulated}")
         }
     }
 
@@ -823,11 +868,14 @@ class TinyVpnService : VpnService() {
         private const val RESOLVER_HEALTH_CHECK_INTERVAL_MS = 15_000L
         private const val RESOLVER_HEALTH_FAILURES_BEFORE_ROTATE = 2
         private const val RESOLVER_HEALTH_RECOVERY_COOLDOWN_MS = 5_000L
+        private const val ACCUMULATED_FAILURE_RECOVERY_TOTAL = 24L
+        private const val ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS = 20_000L
         private const val HEAVY_UPLOAD_DELTA_BYTES = 256L * 1024L
         private const val HEAVY_UPLOAD_GRACE_MS = 120_000L
         private const val BACKGROUND_RESOLVER_PROBE_DELAY_MS = 1_500L
         private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
+        private val BYPASS_ON_WHITELIST_PACKAGES = listOf("com.supercell.brawlstars")
     }
 }
