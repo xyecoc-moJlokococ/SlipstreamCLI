@@ -54,7 +54,7 @@ object HevSocks5Tunnel {
 
     private fun buildConfig(address: String, port: Int, username: String?, password: String?): String = buildString {
         appendLine("tunnel:")
-        appendLine("  mtu: 1280")
+        appendLine("  mtu: 1500")
         appendLine("  ipv4: 10.255.0.2")
         appendLine("  ipv6: 'fd00::2'")
         appendLine()
@@ -69,6 +69,9 @@ object HevSocks5Tunnel {
         appendLine()
         appendLine("misc:")
         appendLine("  task-stack-size: 32768")
+        appendLine("  tcp-buffer-size: 1048576")
+        appendLine("  udp-recv-buffer-size: 1048576")
+        appendLine("  udp-copy-buffer-nums: 64")
         appendLine("  connect-timeout: 8000")
         appendLine("  tcp-read-write-timeout: 120000")
         appendLine("  udp-read-write-timeout: 60000")

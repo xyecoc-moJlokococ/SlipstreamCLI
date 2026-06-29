@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 object MiniSlipstreamSocksBridge {
     private const val TAG = "MiniSlipstreamSocksBridge"
     private const val BUFFER_SIZE = 65536
+    private const val SOCKET_BUFFER_SIZE = 1024 * 1024
     private const val MAX_ACTIVE_CLIENTS = 128
     private const val OVERLOAD_CLOSE_BATCH = 16
     private const val CONNECT_TIMEOUT_MS = 5000
@@ -135,7 +136,7 @@ object MiniSlipstreamSocksBridge {
             clients.add(socket)
             try {
                 socket.use {
-                    it.tcpNoDelay = true
+                    configureBridgeSocket(it)
                     it.soTimeout = 30000
                     val input = it.getInputStream()
                     val output = it.getOutputStream()
@@ -212,11 +213,6 @@ object MiniSlipstreamSocksBridge {
     }
 
     private fun handleConnect(req: SocksRequest, client: Socket, clientInput: InputStream, clientOutput: OutputStream) {
-        if (req.port == 853) {
-            AppLog.w(TAG, "CONNECT ${req.host}:${req.port} blocked: Private DNS/DoT is unsupported in this tunnel")
-            writeSocksReply(clientOutput, 0x05)
-            return
-        }
         var remote: Socket? = null
         try {
             remote = openSlipstreamSocks(req.rawAddr, req.portBytes)
@@ -310,8 +306,8 @@ object MiniSlipstreamSocksBridge {
 
     private fun openSlipstreamSocksCommand(cmd: Int, rawAddr: ByteArray, portBytes: ByteArray): Socket {
         val sock = Socket()
+        configureBridgeSocket(sock)
         sock.connect(InetSocketAddress(slipstreamHost, slipstreamPort), CONNECT_TIMEOUT_MS)
-        sock.tcpNoDelay = true
         sock.soTimeout = CONNECT_TIMEOUT_MS
         remotes.add(sock)
         try {
@@ -399,6 +395,13 @@ object MiniSlipstreamSocksBridge {
             }
             counter.addAndGet(n.toLong())
         }
+    }
+
+    private fun configureBridgeSocket(socket: Socket) {
+        runCatching { socket.tcpNoDelay = true }
+        runCatching { socket.receiveBufferSize = SOCKET_BUFFER_SIZE }
+        runCatching { socket.sendBufferSize = SOCKET_BUFFER_SIZE }
+        runCatching { socket.setPerformancePreferences(0, 2, 1) }
     }
 
     private fun writeSocksReply(output: OutputStream, rep: Int) {

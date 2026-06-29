@@ -138,12 +138,13 @@ class TinyVpnService : VpnService() {
 
             val builder = Builder()
                 .setSession("Slipstream CLI")
-                .setMtu(1280)
+                .setMtu(1500)
                 .addAddress("10.255.0.2", 32)
                 .addAddress("fd00::2", 128)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer(choice.selectedHost)
+                .addDnsServer(VPN_DNS_PRIMARY)
+                .addDnsServer(VPN_DNS_SECONDARY)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
@@ -699,6 +700,7 @@ class TinyVpnService : VpnService() {
             try {
                 Thread.sleep(BACKGROUND_RESOLVER_PROBE_DELAY_MS)
                 if (!tunnelActive || !SlipstreamBridge.isRunning() || recovering) return@Thread
+                if (!waitForBackgroundResolverProbeWindow()) return@Thread
                 AppLog.i(TAG, "background resolver download probe start current=${initialChoice.selectedHost}:${initialChoice.port}")
                 val best = ResolverSelector.chooseFastestByDownload(
                     this,
@@ -735,6 +737,32 @@ class TinyVpnService : VpnService() {
                 resolverOptimizerRunning = false
             }
         }, "resolver-speed-optimizer").start()
+    }
+
+    private fun waitForBackgroundResolverProbeWindow(): Boolean {
+        val deadline = System.currentTimeMillis() + BACKGROUND_RESOLVER_PROBE_MAX_WAIT_MS
+        var quietSince = 0L
+        var previousHev = HevSocks5Tunnel.stats()
+        while (tunnelActive && SlipstreamBridge.isRunning() && !recovering && System.currentTimeMillis() < deadline) {
+            Thread.sleep(BACKGROUND_RESOLVER_PROBE_POLL_MS)
+            val bridge = MiniSlipstreamSocksBridge.stats()
+            val hev = HevSocks5Tunnel.stats()
+            val txDelta = (hev.txBytes - previousHev.txBytes).coerceAtLeast(0)
+            val rxDelta = (hev.rxBytes - previousHev.rxBytes).coerceAtLeast(0)
+            previousHev = hev
+            val quiet = bridge.activeClients <= BACKGROUND_RESOLVER_PROBE_MAX_ACTIVE_CLIENTS &&
+                txDelta <= BACKGROUND_RESOLVER_PROBE_MAX_DELTA_BYTES &&
+                rxDelta <= BACKGROUND_RESOLVER_PROBE_MAX_DELTA_BYTES
+            val now = System.currentTimeMillis()
+            if (quiet) {
+                if (quietSince == 0L) quietSince = now
+                if (now - quietSince >= BACKGROUND_RESOLVER_PROBE_QUIET_MS) return true
+            } else {
+                quietSince = 0L
+            }
+        }
+        AppLog.w(TAG, "background resolver download probe skipped: tunnel stayed busy")
+        return false
     }
 
     private fun quickAutoRecoveryChoice(config: Config, recoveryId: Int, reason: String): ResolverChoice? {
@@ -837,6 +865,8 @@ class TinyVpnService : VpnService() {
         const val ACTION_STOP = "app.vaydns.STOP"
         private const val CHANNEL = "vaydns"
         private const val TAG = "TinyVpnService"
+        private const val VPN_DNS_PRIMARY = "1.1.1.1"
+        private const val VPN_DNS_SECONDARY = "8.8.8.8"
         private const val DIAGNOSTICS_INTERVAL_MS = 5_000L
         private const val READY_RECOVERY_MS = 3_000L
         private const val READY_RECOVERY_AFTER_UPLOAD_MS = 3_000L
@@ -865,7 +895,12 @@ class TinyVpnService : VpnService() {
         private const val ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS = 20_000L
         private const val HEAVY_UPLOAD_DELTA_BYTES = 256L * 1024L
         private const val HEAVY_UPLOAD_GRACE_MS = 120_000L
-        private const val BACKGROUND_RESOLVER_PROBE_DELAY_MS = 1_500L
+        private const val BACKGROUND_RESOLVER_PROBE_DELAY_MS = 30_000L
+        private const val BACKGROUND_RESOLVER_PROBE_MAX_WAIT_MS = 120_000L
+        private const val BACKGROUND_RESOLVER_PROBE_POLL_MS = 3_000L
+        private const val BACKGROUND_RESOLVER_PROBE_QUIET_MS = 9_000L
+        private const val BACKGROUND_RESOLVER_PROBE_MAX_ACTIVE_CLIENTS = 2
+        private const val BACKGROUND_RESOLVER_PROBE_MAX_DELTA_BYTES = 2L * 1024L
         private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
