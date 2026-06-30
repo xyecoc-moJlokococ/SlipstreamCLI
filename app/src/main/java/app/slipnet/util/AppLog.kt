@@ -24,8 +24,12 @@ object AppLog {
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        fileLoggingEnabled = isFileLoggingEnabled(context)
-        if (fileLoggingEnabled) startFlusher()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_FILE_LOGGING_ENABLED, true)
+            .apply()
+        fileLoggingEnabled = true
+        startFlusher()
         i("AppLog", "log initialized")
     }
 
@@ -34,7 +38,7 @@ object AppLog {
 
     fun isFileLoggingEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_FILE_LOGGING_ENABLED, false)
+            .getBoolean(KEY_FILE_LOGGING_ENABLED, true)
 
     fun setFileLoggingEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

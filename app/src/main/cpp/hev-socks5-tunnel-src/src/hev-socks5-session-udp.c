@@ -108,17 +108,54 @@ hev_socks5_session_udp_fwd_f (HevSocks5SessionUDP *self, unsigned int num)
     return 1;
 }
 
+/* Guard against a malformed/garbage SOCKS addr pointer coming from the
+ * UDP-in-TCP carrier before it is dereferenced by hev_socks5_addr_into_lwip().
+ * This is a defensive bounds check only; it does not change the data path or
+ * add any locking, so it cannot stall the tun2socks pump. */
+static int
+socks5_addr_is_inside_buf (const HevSocks5Addr *addr, const char *start,
+                           const char *end)
+{
+    const char *p = (const char *)addr;
+    size_t len;
+
+    if (!p || p < start || p >= end)
+        return 0;
+
+    switch (addr->atype) {
+    case HEV_SOCKS5_ADDR_TYPE_IPV4:
+        len = 1 + 4 + 2;
+        break;
+    case HEV_SOCKS5_ADDR_TYPE_IPV6:
+        len = 1 + 16 + 2;
+        break;
+    case HEV_SOCKS5_ADDR_TYPE_NAME:
+        if ((size_t)(end - p) < 2)
+            return 0;
+        len = 1 + 1 + addr->domain.len + 2;
+        break;
+    default:
+        return 0;
+    }
+
+    return (size_t)(end - p) >= len;
+}
+
 static int
 hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self, unsigned int num)
 {
     char buf[UDP_BUF_SIZE * num];
+    const char *buf_start = buf;
+    const char *buf_end = buf + sizeof (buf);
     HevSocks5UDPMsg msgv[num];
     int i, res;
 
+    memset (msgv, 0, sizeof (msgv));
     for (i = 0; i < num; i++) {
         msgv[i].buf = buf + UDP_BUF_SIZE * i;
         msgv[i].len = UDP_BUF_SIZE;
     }
+
 
     res = hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (self), msgv, num, 1);
     if (res <= 0) {
@@ -139,12 +176,18 @@ hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self, unsigned int num)
             ip_2_ip4 (&saddr)->addr = self->addr;
             port = self->port;
         } else {
+            if (!socks5_addr_is_inside_buf (msgv[i].addr, buf_start, buf_end)) {
+                LOG_D ("%p socks5 session udp fwd b addr invalid", self);
+                continue;
+            }
+
             ret = hev_socks5_addr_into_lwip (msgv[i].addr, &saddr, &port);
             if (ret < 0) {
                 LOG_D ("%p socks5 session udp fwd b addr", self);
-                return -1;
+                continue;
             }
         }
+
 
         b = pbuf_alloc_reference (msgv[i].buf, msgv[i].len, PBUF_REF);
         if (!b) {

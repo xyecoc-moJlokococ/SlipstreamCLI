@@ -108,6 +108,9 @@ int
 hev_socks5_addr_into_lwip (const HevSocks5Addr *addr, ip_addr_t *ip,
                            u16_t *port)
 {
+    if (!addr || !ip || !port)
+        return -1;
+
     switch (addr->atype) {
     case HEV_SOCKS5_ADDR_TYPE_IPV4:
         memcpy (ip, addr->ipv4.addr, 4);

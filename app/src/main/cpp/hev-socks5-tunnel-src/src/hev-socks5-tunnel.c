@@ -842,7 +842,8 @@ hev_socks5_tunnel_stop (void)
     }
 
     res = write (fd, &res, 1);
-    assert (res > 0 && "socks5 tunnel write event");
+    if (res <= 0)
+        LOG_W ("socks5 tunnel write event");
 }
 
 void

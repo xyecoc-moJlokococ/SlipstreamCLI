@@ -514,6 +514,7 @@ class MainActivity : android.app.Activity() {
     private fun configureNativeLogging() {
         val path = if (AppLog.isFileLoggingEnabled(this)) AppLog.file(this).absolutePath else ""
         SlipstreamBridge.setLogFilePath(path)
+        HevSocks5Tunnel.setCrashLogPath(AppLog.crashFile(this).absolutePath)
     }
 
     private fun runStartupPermissionFlow() {

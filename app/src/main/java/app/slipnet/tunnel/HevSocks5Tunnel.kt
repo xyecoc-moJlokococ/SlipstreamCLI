@@ -40,6 +40,10 @@ object HevSocks5Tunnel {
         if (loaded) runCatching { nativeStop() }
     }
 
+    fun setCrashLogPath(path: String) {
+        if (loaded) runCatching { nativeSetCrashLogPath(path) }
+    }
+
     fun isRunning(): Boolean = loaded && runCatching { nativeIsRunning() }.getOrDefault(false)
 
     fun stats(): TrafficStats {
@@ -72,6 +76,7 @@ object HevSocks5Tunnel {
         appendLine("  tcp-buffer-size: 1048576")
         appendLine("  udp-recv-buffer-size: 1048576")
         appendLine("  udp-copy-buffer-nums: 64")
+
         appendLine("  connect-timeout: 8000")
         appendLine("  tcp-read-write-timeout: 120000")
         appendLine("  udp-read-write-timeout: 60000")
@@ -84,6 +89,7 @@ object HevSocks5Tunnel {
     private external fun nativeStop()
     private external fun nativeSetRejectQuic(enabled: Boolean)
     private external fun nativeSetRejectNonDnsUdp(enabled: Boolean)
+    private external fun nativeSetCrashLogPath(path: String)
     private external fun nativeIsRunning(): Boolean
     private external fun nativeGetStats(): LongArray?
 }
