@@ -98,8 +98,8 @@ object MiniSlipstreamSocksBridge {
         runCatching { acceptThread?.interrupt() }
         runCatching { acceptThread?.join(200) }
         acceptThread = null
-        clients.forEach { runCatching { it.close() } }
-        remotes.forEach { runCatching { it.close() } }
+        clients.forEach { closeSocketNow(it) }
+        remotes.forEach { closeSocketNow(it) }
         clients.clear()
         remotes.clear()
         threads.forEach { it.interrupt() }
@@ -147,7 +147,7 @@ object MiniSlipstreamSocksBridge {
                     }
                     when (req.cmd) {
                         0x01 -> handleConnect(req, it, input, output)
-                        0x05 -> handleFwdUdp(input, output)
+                        0x05 -> handleFwdUdp(it, input, output)
                         else -> writeSocksReply(output, 0x07)
                     }
                 }
@@ -173,8 +173,8 @@ object MiniSlipstreamSocksBridge {
             "overload cleanup reason=$reason active=${activeClients.get()} " +
                 "closingClients=${clientSnapshot.size} closingRemotes=${remoteSnapshot.size}"
         )
-        clientSnapshot.forEach { runCatching { it.close() } }
-        remoteSnapshot.forEach { runCatching { it.close() } }
+        clientSnapshot.forEach { closeSocketNow(it) }
+        remoteSnapshot.forEach { closeSocketNow(it) }
     }
 
     private fun readSocksGreeting(input: InputStream, output: OutputStream): Boolean {
@@ -230,7 +230,7 @@ object MiniSlipstreamSocksBridge {
         }
     }
 
-    private fun handleFwdUdp(input: InputStream, output: OutputStream) {
+    private fun handleFwdUdp(client: Socket, input: InputStream, output: OutputStream) {
         var remote: Socket? = null
         try {
             remote = openSlipstreamFwdUdp()
@@ -238,12 +238,12 @@ object MiniSlipstreamSocksBridge {
             writeSocksReply(output, 0x00)
             remote.soTimeout = READ_TIMEOUT_MS
             AppLog.d(TAG, "FWD_UDP upstream OK")
-            bridgeSockets(remote, input, output, remote)
+            bridgeSockets(client, input, output, remote)
         } catch (e: Throwable) {
             connectFail.incrementAndGet()
             AppLog.w(TAG, "FWD_UDP upstream failed: ${e.message}")
             writeSocksReply(output, 0x05)
-            runCatching { remote?.close() }
+            remote?.let { closeSocketNow(it) }
         }
     }
 

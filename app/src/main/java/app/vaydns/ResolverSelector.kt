@@ -359,10 +359,13 @@ object ResolverSelector {
             connection.readTimeout = CAPTIVE_CHECK_TIMEOUT_MS
             connection.useCaches = false
             connection.setRequestProperty("User-Agent", "SlipstreamCLI-NetworkProbe")
+            connection.setRequestProperty("Connection", "close")
             try {
                 val code = connection.responseCode
                 code != 204
             } finally {
+                runCatching { connection.inputStream.close() }
+                runCatching { connection.errorStream?.close() }
                 connection.disconnect()
             }
         }.getOrElse {
@@ -539,6 +542,36 @@ object ResolverSelector {
         val port = config.resolverPort
         val cached = loadResolverCache(context, config)
         if (cached != null && !cached.needsFullRefresh) {
+            val bestCached = cached.resolvers
+                .filter { it.host !in skipHosts }
+                .minByOrNull { it.totalMs }
+            if (bestCached != null) {
+                AppLog.i(
+                    TAG,
+                    "background resolver cache kept without speed refresh reason=$reason " +
+                        "network=${cached.profile.label} selected=${bestCached.host}:$port totalMs=${bestCached.totalMs}"
+                )
+                lastProgress = Progress(
+                    active = false,
+                    reason = reason,
+                    phase = "done",
+                    tested = cached.resolvers.size,
+                    total = cached.resolvers.size,
+                    alive = cached.resolvers.size,
+                    selected = bestCached.host
+                )
+                return ResolverChoice(
+                    hosts = listOf(bestCached.host),
+                    port = port,
+                    selectedHost = bestCached.host,
+                    source = "auto-speed-cache",
+                    qnameMtu = bestCached.qnameMtu,
+                    testedCount = cached.resolvers.size,
+                    aliveCount = cached.resolvers.size,
+                    skippedCount = skipHosts.size,
+                    latencyMs = bestCached.totalMs
+                )
+            }
             val cachedCandidates = cached.resolvers.map { it.host }
                 .filter { it !in skipHosts }
                 .distinct()

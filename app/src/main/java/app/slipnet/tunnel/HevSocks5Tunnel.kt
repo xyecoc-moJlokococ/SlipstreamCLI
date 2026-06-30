@@ -30,7 +30,7 @@ object HevSocks5Tunnel {
         val config = buildConfig(socksAddress, socksPort, username, password)
         AppLog.i(TAG, "start tun2socks socks=$socksAddress:$socksPort")
         AppLog.d(TAG, config)
-        nativeSetRejectQuic(false)
+        nativeSetRejectQuic(true)
         nativeSetRejectNonDnsUdp(false)
         val code = nativeStart(config, tunFd.fd)
         return if (code == 0) Result.success(Unit) else Result.failure(RuntimeException("hev start error $code"))

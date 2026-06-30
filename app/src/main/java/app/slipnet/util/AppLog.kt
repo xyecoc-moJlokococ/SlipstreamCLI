@@ -10,8 +10,10 @@ object AppLog {
     private const val PREFS = "app_log"
     private const val KEY_FILE_LOGGING_ENABLED = "file_logging_enabled"
     private const val FILE_NAME = "vaydns-debug.log"
+    private const val CRASH_FILE_NAME = "vaydns-crash.log"
     private const val FLUSH_INTERVAL_MS = 15_000L
     private const val MAX_FILE_SIZE_BYTES = 2_000_000L
+    private const val MAX_CRASH_FILE_SIZE_BYTES = 512_000L
     private const val MAX_BUFFER_CHARS = 64 * 1024
     private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     private val lock = Any()
@@ -28,6 +30,7 @@ object AppLog {
     }
 
     fun file(context: Context): File = File(context.filesDir, FILE_NAME)
+    fun crashFile(context: Context): File = File(context.filesDir, CRASH_FILE_NAME)
 
     fun isFileLoggingEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -51,6 +54,22 @@ object AppLog {
     fun i(tag: String, message: String) = write(android.util.Log.INFO, tag, message, null)
     fun w(tag: String, message: String) = write(android.util.Log.WARN, tag, message, null)
     fun e(tag: String, message: String, error: Throwable? = null) = write(android.util.Log.ERROR, tag, message, error)
+
+    fun recordCrash(thread: Thread, error: Throwable) {
+        val context = appContext ?: return
+        val report = buildString {
+            appendLine("time=${stamp.format(Date())}")
+            appendLine("thread=${thread.name} id=${thread.id} state=${thread.state}")
+            appendLine("message=${error::class.java.name}: ${error.message.orEmpty()}")
+            appendLine(android.util.Log.getStackTraceString(error))
+            appendLine("----")
+        }
+        runCatching {
+            val f = crashFile(context)
+            if (f.length() > MAX_CRASH_FILE_SIZE_BYTES) f.writeText("")
+            f.appendText(report)
+        }
+    }
 
     private fun write(priority: Int, tag: String, message: String, error: Throwable?) {
         if (!fileLoggingEnabled && priority < android.util.Log.WARN) return

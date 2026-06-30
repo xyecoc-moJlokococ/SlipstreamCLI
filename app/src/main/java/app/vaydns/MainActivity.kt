@@ -2,6 +2,8 @@ package app.vaydns
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.TrafficStats
@@ -21,6 +23,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -75,6 +78,7 @@ class MainActivity : android.app.Activity() {
         setContentView(buildUi())
         loadConfig()
         handler.post(tick)
+        handler.post { maybeShowNewCrashReport() }
         handler.post { runStartupPermissionFlow() }
     }
 
@@ -174,7 +178,11 @@ class MainActivity : android.app.Activity() {
             text = "Share log"
             setOnClickListener { shareLogFile() }
         }
-        listOf(status, domain, resolverMode, resolverRow, resolverPort, listenPort, mode, auth, username, password, fileLogging, connectProgress, connectButton, saveButton, shareLog)
+        val crashReport = Button(this).apply {
+            text = "Crash report"
+            setOnClickListener { showCrashReport() }
+        }
+        listOf(status, domain, resolverMode, resolverRow, resolverPort, listenPort, mode, auth, username, password, fileLogging, connectProgress, connectButton, saveButton, shareLog, crashReport)
             .forEach { root.addView(it, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT) }
         return root
     }
@@ -446,6 +454,63 @@ class MainActivity : android.app.Activity() {
         }, "Share log"))
     }
 
+    private fun showCrashReport() {
+        val file = AppLog.crashFile(this)
+        markCrashReportSeen(file.length())
+        val reportText = if (file.exists() && file.length() > 0) {
+            file.readText().takeLast(MAX_CRASH_DIALOG_CHARS)
+        } else {
+            "No crash report saved yet."
+        }
+        val reportView = TextView(this).apply {
+            setTextIsSelectable(true)
+            textSize = 12f
+            text = reportText
+            setPadding(24, 16, 24, 16)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(reportView)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Crash report")
+            .setView(scroll)
+            .setPositiveButton("Copy") { _, _ ->
+                val clipboard = getSystemService(ClipboardManager::class.java)
+                clipboard.setPrimaryClip(ClipData.newPlainText("Slipstream crash report", reportText))
+                toast("crash report copied")
+            }
+            .setNeutralButton("Share") { _, _ -> shareCrashReport() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun maybeShowNewCrashReport() {
+        val file = AppLog.crashFile(this)
+        val size = file.length()
+        if (size <= 0L) return
+        val prefs = getSharedPreferences(CRASH_PREFS, MODE_PRIVATE)
+        if (size <= prefs.getLong(KEY_CRASH_SEEN_SIZE, 0L)) return
+        showCrashReport()
+    }
+
+    private fun markCrashReportSeen(size: Long) {
+        getSharedPreferences(CRASH_PREFS, MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_CRASH_SEEN_SIZE, size)
+            .apply()
+    }
+
+    private fun shareCrashReport() {
+        val file = AppLog.crashFile(this)
+        if (!file.exists() || file.length() == 0L) file.writeText("No crash report saved yet.\n")
+        val uri: Uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, "Share crash report"))
+    }
+
     private fun configureNativeLogging() {
         val path = if (AppLog.isFileLoggingEnabled(this)) AppLog.file(this).absolutePath else ""
         SlipstreamBridge.setLogFilePath(path)
@@ -573,5 +638,8 @@ class MainActivity : android.app.Activity() {
         private const val KEY_BATTERY_PROMPTED = "battery_prompted"
         private const val KEY_NOTIFICATIONS_PROMPTED = "notifications_prompted"
         private const val KEY_VPN_STARTUP_PROMPTED = "vpn_startup_prompted"
+        private const val MAX_CRASH_DIALOG_CHARS = 64 * 1024
+        private const val CRASH_PREFS = "crash_report"
+        private const val KEY_CRASH_SEEN_SIZE = "seen_size"
     }
 }
