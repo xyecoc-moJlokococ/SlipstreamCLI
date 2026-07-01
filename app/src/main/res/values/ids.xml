@@ -1,0 +1,27 @@
+<resources>
+    <item name="main_scroll" type="id" />
+    <item name="main_content" type="id" />
+    <item name="profile_spinner" type="id" />
+    <item name="profile_name" type="id" />
+    <item name="profile_summary" type="id" />
+    <item name="add_profile_button" type="id" />
+    <item name="edit_profile_button" type="id" />
+    <item name="delete_profile_button" type="id" />
+    <item name="domain_field" type="id" />
+    <item name="resolver_mode_spinner" type="id" />
+    <item name="resolver_host_field" type="id" />
+    <item name="use_local_dns_button" type="id" />
+    <item name="resolver_port_field" type="id" />
+    <item name="listen_port_field" type="id" />
+    <item name="mode_spinner" type="id" />
+    <item name="auth_spinner" type="id" />
+    <item name="username_field" type="id" />
+    <item name="password_field" type="id" />
+    <item name="file_logging_checkbox" type="id" />
+    <item name="connect_progress" type="id" />
+    <item name="connect_button" type="id" />
+    <item name="save_config_button" type="id" />
+    <item name="share_log_button" type="id" />
+    <item name="crash_report_button" type="id" />
+    <item name="status_text" type="id" />
+</resources>

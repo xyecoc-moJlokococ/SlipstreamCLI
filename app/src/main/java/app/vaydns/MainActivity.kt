@@ -5,7 +5,9 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.net.TrafficStats
 import android.net.Uri
 import android.net.VpnService
@@ -16,11 +18,16 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -40,6 +47,7 @@ class MainActivity : android.app.Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var domain: EditText
     private lateinit var resolverHost: EditText
+    private lateinit var resolverHostContainer: View
     private lateinit var resolverPort: EditText
     private lateinit var resolverMode: Spinner
     private lateinit var useLocalDns: Button
@@ -49,9 +57,13 @@ class MainActivity : android.app.Activity() {
     private lateinit var mode: Spinner
     private lateinit var auth: Spinner
     private lateinit var fileLogging: CheckBox
+    private lateinit var profileName: EditText
     private lateinit var connectButton: Button
     private lateinit var connectProgress: ProgressBar
     private lateinit var status: TextView
+    private var profiles: List<ConfigProfile> = emptyList()
+    private var activeConfig: Config? = null
+    private var editorVisible = false
     private var proxyStarted = false
     @Volatile private var stopping = false
     @Volatile private var connecting = false
@@ -75,8 +87,9 @@ class MainActivity : android.app.Activity() {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
         configureNativeLogging()
-        setContentView(buildUi())
         loadConfig()
+        setContentView(buildUi())
+        updateStatus()
         handler.post(tick)
         handler.post { maybeShowNewCrashReport() }
         handler.post { runStartupPermissionFlow() }
@@ -85,6 +98,15 @@ class MainActivity : android.app.Activity() {
     override fun onDestroy() {
         handler.removeCallbacks(tick)
         super.onDestroy()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (editorVisible) {
+            showMainScreen()
+        } else {
+            super.onBackPressed()
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -118,25 +140,100 @@ class MainActivity : android.app.Activity() {
         }
     }
 
-    private fun buildUi(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(28, 28, 28, 28)
+    private fun buildUi(): View = buildMainUi()
+
+    private fun buildMainUi(): View {
+        editorVisible = false
+        val root = screenRoot()
+        root.addView(profileListCard(), sectionParams())
+        addActionsCard(root)
+        addDiagnosticsCard(root)
+        root.requestFocus()
+        return scrollScreen(root)
+    }
+
+    private fun profileListCard(): LinearLayout =
+        card().apply {
+            addView(sectionTitle("Profiles"))
+            val activeId = ConfigStore.activeProfileId(this@MainActivity)
+            profiles.forEach { profile ->
+                addView(profileRow(profile, profile.id == activeId), fieldParams())
+            }
+            addView(button("NEW PROFILE", primary = true).apply {
+                id = R.id.add_profile_button
+                setOnClickListener { showProfileEditor(null) }
+            }, fieldParams())
         }
-        status = TextView(this).apply { textSize = 14f }
-        domain = edit("domain")
-        resolverHost = edit("resolver host")
-        useLocalDns = Button(this).apply {
-            text = "Use local DNS"
+
+    private fun profileRow(profile: ConfigProfile, selected: Boolean): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ContextCompat.getDrawable(this@MainActivity, if (selected) R.drawable.bg_profile_selected else R.drawable.bg_input)
+            setPadding(dp(14), 0, dp(8), 0)
+            minimumHeight = dp(64)
+            setOnClickListener { selectProfile(profile) }
+            val domainView = TextView(this@MainActivity).apply {
+                text = profile.config.domain.ifBlank { profile.name }
+                textSize = 17f
+                typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                setTextColor(color(R.color.slipnet_text_primary))
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val edit = iconButton(R.drawable.ic_edit_profile, "Edit profile").apply {
+                id = R.id.edit_profile_button
+                setOnClickListener { showProfileEditor(profile) }
+            }
+            val delete = iconButton(R.drawable.ic_delete_profile, "Delete profile").apply {
+                id = R.id.delete_profile_button
+                setOnClickListener { confirmDeleteProfile(profile) }
+            }
+            addView(domainView, LinearLayout.LayoutParams(0, dp(64), 1f))
+            addView(edit, LinearLayout.LayoutParams(dp(44), dp(44)))
+            addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+                leftMargin = dp(4)
+            })
+        }
+
+    private fun showProfileEditor(profile: ConfigProfile?) {
+        val config = profile?.config ?: activeConfig ?: ConfigStore.load(this)
+        editorVisible = true
+        setContentView(buildProfileEditorUi(profile, config))
+        applyConfigToFields(config)
+        updateStatus()
+    }
+
+    private fun buildProfileEditorUi(profile: ConfigProfile?, config: Config): View {
+        val root = screenRoot()
+        root.addView(row(
+            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            button(if (profile == null) "CREATE PROFILE" else "SAVE PROFILE", primary = true).apply {
+                id = R.id.save_config_button
+                setOnClickListener { saveProfileFromEditor(profile) }
+            }
+        ), sectionParams())
+
+        profileName = edit("profile name").apply {
+            id = R.id.profile_name
+            setText(profile?.name ?: config.domain.ifBlank { "New profile" })
+        }
+        domain = edit("domain").apply { id = R.id.domain_field }
+        resolverHost = edit("resolver host").apply { id = R.id.resolver_host_field }
+        useLocalDns = button("USE LOCAL DNS").apply {
+            id = R.id.use_local_dns_button
             setOnClickListener { fillLocalDns() }
         }
         val resolverRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             addView(resolverHost, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(useLocalDns, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(useLocalDns, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)).apply {
+                leftMargin = dp(8)
+            })
         }
-        resolverPort = edit("resolver port", InputType.TYPE_CLASS_NUMBER)
+        resolverPort = edit("resolver port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.resolver_port_field }
         resolverMode = spinner(listOf("manual dns", "auto dns")).apply {
+            id = R.id.resolver_mode_spinner
             setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                     updateResolverUi()
@@ -145,13 +242,142 @@ class MainActivity : android.app.Activity() {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             })
         }
-        listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER)
-        mode = spinner(listOf("proxy", "vpn"))
-        auth = spinner(listOf("no-auth", "login/password"))
-        username = edit("username")
-        password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
-        fileLogging = CheckBox(this).apply {
+        listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
+        mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
+        auth = spinner(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
+        username = edit("username").apply { id = R.id.username_field }
+        password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
+            id = R.id.password_field
+        }
+        fileLogging = debugLogCheckbox()
+
+        root.addView(card().apply {
+            addView(sectionTitle(if (profile == null) "New Profile" else "Profile Config"))
+            addView(labeledField("Profile name", profileName), fieldParams())
+            addView(labeledField("Domain", domain), fieldParams())
+            addView(labeledField("DNS mode", resolverMode), fieldParams())
+            resolverHostContainer = labeledField("Resolver host", resolverRow)
+            addView(resolverHostContainer, fieldParams())
+            addView(row(
+                labeledField("Resolver port", resolverPort),
+                labeledField("Local port", listenPort)
+            ), fieldParams())
+            addView(labeledField("Connection mode", mode), fieldParams())
+            addView(labeledField("Auth mode", auth), fieldParams())
+            addView(labeledField("Username", username), fieldParams())
+            addView(labeledField("Password", password), fieldParams())
+            addView(fileLogging, fieldParams())
+            if (profile != null) {
+                addView(button("DELETE PROFILE").apply {
+                    id = R.id.delete_profile_button
+                    setOnClickListener { confirmDeleteProfile(profile) }
+                }, fieldParams())
+            }
+        }, sectionParams())
+
+        root.requestFocus()
+        return scrollScreen(root)
+    }
+
+    private fun screenRoot(): LinearLayout {
+        window.statusBarColor = color(R.color.slipnet_bg)
+        if (Build.VERSION.SDK_INT >= 26) {
+            window.navigationBarColor = color(R.color.slipnet_bg)
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(true)
+        }
+        return LinearLayout(this).apply {
+            id = R.id.main_content
+            orientation = LinearLayout.VERTICAL
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setPadding(dp(20), dp(20), dp(20), dp(24))
+        }
+    }
+
+    private fun scrollScreen(root: LinearLayout): ScrollView =
+        ScrollView(this).apply {
+            id = R.id.main_scroll
+            isFillViewport = true
+            clipToPadding = false
+            setBackgroundColor(color(R.color.slipnet_bg))
+            setOnApplyWindowInsetsListener { _, insets ->
+                root.setPadding(
+                    dp(20),
+                    dp(20) + insets.systemWindowInsetTop,
+                    dp(20),
+                    dp(24) + insets.systemWindowInsetBottom
+                )
+                insets
+            }
+            addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            post {
+                root.requestFocus()
+                scrollTo(0, 0)
+            }
+        }
+
+    private fun showMainScreen() {
+        editorVisible = false
+        loadConfig()
+        setContentView(buildMainUi())
+        updateStatus()
+    }
+
+    private fun addActionsCard(root: LinearLayout) {
+        connectProgress = ProgressBar(this).apply {
+            id = R.id.connect_progress
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
+            visibility = View.GONE
+        }
+        connectButton = button("CONNECT", primary = true).apply {
+            id = R.id.connect_button
+            setOnClickListener { toggle() }
+        }
+        val connectFrame = FrameLayout(this).apply {
+            addView(connectButton, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(54)))
+            addView(connectProgress, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER_VERTICAL or Gravity.START).apply {
+                leftMargin = dp(22)
+            })
+        }
+        val shareLog = button("SHARE LOG").apply {
+            id = R.id.share_log_button
+            setOnClickListener { shareLogFile() }
+        }
+        val crashReport = button("CRASH REPORT").apply {
+            id = R.id.crash_report_button
+            setOnClickListener { showCrashReport() }
+        }
+        root.addView(card().apply {
+            addView(sectionTitle("Actions"))
+            addView(connectFrame, fieldParams())
+            addView(row(shareLog, crashReport), fieldParams())
+        }, sectionParams())
+    }
+
+    private fun addDiagnosticsCard(root: LinearLayout) {
+        status = TextView(this).apply {
+            id = R.id.status_text
+            textSize = 12f
+            setLineSpacing(0f, 1.05f)
+            setTextIsSelectable(true)
+            setTextColor(color(R.color.slipnet_text_secondary))
+        }
+        root.addView(card().apply {
+            addView(sectionTitle("Diagnostics"))
+            addView(status, fieldParams())
+        }, sectionParams())
+    }
+
+    private fun debugLogCheckbox(): CheckBox =
+        CheckBox(this).apply {
+            id = R.id.file_logging_checkbox
             text = "Write debug log"
+            textSize = 14f
+            setTextColor(color(R.color.slipnet_text_secondary))
+            buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
             isChecked = AppLog.isFileLoggingEnabled(this@MainActivity)
             setOnCheckedChangeListener { _, enabled ->
                 AppLog.setFileLoggingEnabled(this@MainActivity, enabled)
@@ -159,48 +385,128 @@ class MainActivity : android.app.Activity() {
                 toast(if (enabled) "file logging enabled" else "file logging disabled")
             }
         }
-        connectProgress = ProgressBar(this).apply {
-            isIndeterminate = true
-            visibility = View.GONE
+
+    private fun labeledField(label: String, field: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_text_muted))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(field, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        connectButton = Button(this).apply {
-            text = "Connect"
-            setOnClickListener { toggle() }
-        }
-        val saveButton = Button(this).apply {
-            text = "Save config"
-            setOnClickListener {
-                ConfigStore.save(this@MainActivity, readConfig())
-                toast("saved")
-            }
-        }
-        val shareLog = Button(this).apply {
-            text = "Share log"
-            setOnClickListener { shareLogFile() }
-        }
-        val crashReport = Button(this).apply {
-            text = "Crash report"
-            setOnClickListener { showCrashReport() }
-        }
-        listOf(status, domain, resolverMode, resolverRow, resolverPort, listenPort, mode, auth, username, password, fileLogging, connectProgress, connectButton, saveButton, shareLog, crashReport)
-            .forEach { root.addView(it, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT) }
-        return root
-    }
 
     private fun edit(hint: String, type: Int = InputType.TYPE_CLASS_TEXT): EditText =
         EditText(this).apply {
-            this.hint = hint
+            this.hint = ""
             inputType = type
             setSingleLine(true)
+            textSize = 15f
+            setTextColor(color(R.color.slipnet_text_primary))
+            setHintTextColor(color(R.color.slipnet_text_muted))
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
+            setPadding(dp(14), 0, dp(14), 0)
+            minHeight = dp(48)
         }
 
     private fun spinner(items: List<String>): Spinner =
         Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, items)
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
+            minimumHeight = dp(48)
+            setPadding(dp(8), 0, dp(8), 0)
+            adapter = darkAdapter(items)
         }
 
+    private fun darkAdapter(items: List<String>): ArrayAdapter<String> =
+        object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                super.getView(position, convertView, parent).also { tintSpinnerText(it) }
+
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+                super.getDropDownView(position, convertView, parent).also { tintSpinnerText(it) }
+        }.apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+
+    private fun tintSpinnerText(view: View) {
+        (view as? TextView)?.apply {
+            setTextColor(color(R.color.slipnet_text_primary))
+            textSize = 15f
+        }
+    }
+
+    private fun button(text: String, primary: Boolean = false): Button =
+        Button(this).apply {
+            this.text = text
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(color(if (primary) R.color.slipnet_button_text_primary else R.color.slipnet_text_primary))
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                if (primary) R.drawable.bg_button_primary else R.drawable.bg_button_secondary
+            )
+            minHeight = dp(48)
+            setPadding(dp(12), 0, dp(12), 0)
+        }
+
+    private fun iconButton(iconRes: Int, description: String): ImageButton =
+        ImageButton(this).apply {
+            contentDescription = description
+            setImageResource(iconRes)
+            imageTintList = ColorStateList.valueOf(color(R.color.slipnet_text_secondary))
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button)
+            scaleType = ImageView.ScaleType.CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+
+    private fun card(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_card)
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+        }
+
+    private fun sectionTitle(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(color(R.color.slipnet_text_primary))
+        }
+
+    private fun row(vararg views: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            views.forEachIndexed { index, view ->
+                addView(view, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (index > 0) leftMargin = dp(8)
+                })
+            }
+        }
+
+    private fun fieldParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(10)
+        }
+
+    private fun sectionParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(14)
+        }
+
+    private fun color(id: Int): Int = ContextCompat.getColor(this, id)
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
     private fun loadConfig() {
-        val c = ConfigStore.load(this)
+        profiles = ConfigStore.loadProfiles(this)
+        activeConfig = ConfigStore.load(this)
+    }
+
+    private fun applyConfigToFields(c: Config) {
+        if (!editorVisible) return
         domain.setText(c.domain)
         resolverHost.setText(c.resolverHost)
         resolverPort.setText(c.resolverPort.toString())
@@ -213,7 +519,47 @@ class MainActivity : android.app.Activity() {
         updateResolverUi()
     }
 
+    private fun selectProfile(profile: ConfigProfile) {
+        ConfigStore.setActiveProfile(this, profile.id)
+        activeConfig = profile.config
+        profiles = ConfigStore.loadProfiles(this)
+        setContentView(buildMainUi())
+        updateStatus()
+    }
+
+    private fun confirmDeleteProfile(profile: ConfigProfile) {
+        if (profiles.size <= 1) {
+            toast("cannot delete last profile")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Delete profile")
+            .setMessage(profile.config.domain.ifBlank { profile.name })
+            .setPositiveButton("Delete") { _, _ -> deleteProfile(profile) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteProfile(profile: ConfigProfile) {
+        ConfigStore.deleteProfile(this, profile.id)
+        toast("profile deleted")
+        showMainScreen()
+    }
+
+    private fun saveProfileFromEditor(profile: ConfigProfile?) {
+        val config = readConfig()
+        if (profile == null) {
+            ConfigStore.addProfile(this, profileName.text.toString(), config)
+            toast("profile created")
+        } else {
+            ConfigStore.saveProfile(this, profile.copy(name = profileName.text.toString(), config = config))
+            toast("profile saved")
+        }
+        showMainScreen()
+    }
+
     private fun readConfig(): Config {
+        if (!editorVisible) return currentConfig()
         val resolverModeValue = if (resolverMode.selectedItemPosition == 1) {
             Config.ResolverMode.AUTO
         } else {
@@ -236,6 +582,13 @@ class MainActivity : android.app.Activity() {
             password = password.text.toString()
         )
     }
+
+    private fun currentConfig(): Config =
+        if (editorVisible && ::domain.isInitialized) {
+            readConfig()
+        } else {
+            activeConfig ?: ConfigStore.load(this)
+        }
 
     private fun toggle() {
         if (proxyStarted || SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning()) {
@@ -347,6 +700,8 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun updateStatus() {
+        if (!::connectProgress.isInitialized || !::connectButton.isInitialized || !::status.isInitialized) return
+        val config = currentConfig()
         val uid = applicationInfo.uid
         val rx = (TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0) - rxBase
         val tx = (TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0) - txBase
@@ -357,18 +712,17 @@ class MainActivity : android.app.Activity() {
         val resolverProgress = ResolverSelector.lastProgress
         connectProgress.visibility = if (connecting || resolverProgress.active) View.VISIBLE else View.GONE
         connectButton.text = when {
-            stopping -> "Disconnecting"
-            running -> "Disconnect"
-            connecting || resolverProgress.active -> "Connecting..."
-            else -> "Connect"
+            stopping -> "DISCONNECTING"
+            running -> "DISCONNECT"
+            connecting || resolverProgress.active -> "CONNECTING..."
+            else -> "CONNECT"
         }
         status.text = buildString {
             appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
             appendLine("transport=tcp resolver=authoritative cc=authoritative-fast")
             appendLine("upstream=qname")
-            if (resolverMode.selectedItemPosition == 1) {
-                val localDns = currentAutoResolverHost()
-                appendLine("resolver mode=auto local=${localDns.ifBlank { "-" }} host=${resolverHost.text}")
+            if (config.resolverMode == Config.ResolverMode.AUTO) {
+                appendLine("resolver mode=auto")
                 appendLine(
                     "dns probe ${resolverProgress.tested}/${resolverProgress.total} phase=${resolverProgress.phase.ifBlank { "-" }} " +
                         "alive=${resolverProgress.alive} current=${resolverProgress.currentHost.ifBlank { "-" }} " +
@@ -379,7 +733,7 @@ class MainActivity : android.app.Activity() {
                     "ok=${resolverProgress.speedOk}"
                 )
             } else {
-                appendLine("resolver mode=manual host=${resolverHost.text}")
+                appendLine("resolver mode=manual host=${config.resolverHost.ifBlank { "-" }}")
             }
             appendLine("app rx=${formatBytes(rx)} tx=${formatBytes(tx)}")
             appendLine("vpn rx=${formatBytes(hev.rxBytes)} tx=${formatBytes(hev.txBytes)}")
@@ -424,16 +778,11 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun updateResolverUi() {
+        if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized) return
         val manual = resolverMode.selectedItemPosition == 0
         resolverHost.isEnabled = manual
+        resolverHostContainer.visibility = if (manual) View.VISIBLE else View.GONE
         useLocalDns.visibility = if (manual) View.VISIBLE else View.GONE
-        if (!manual) {
-            val host = currentAutoResolverHost()
-            if (host.isNotBlank() && resolverHost.text.toString() != host) {
-                resolverHost.setText(host)
-                AppLog.i(TAG, "auto DNS UI updated local=$host")
-            }
-        }
     }
 
     private fun currentAutoResolverHost(): String =
