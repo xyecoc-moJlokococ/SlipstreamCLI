@@ -292,7 +292,7 @@ class MainActivity : android.app.Activity() {
     private fun buildProfileEditorUi(profile: ConfigProfile?, config: Config): View {
         val root = screenRoot()
         root.addView(row(
-            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            backButton().apply { setOnClickListener { showMainScreen() } },
             button(if (profile == null) "CREATE PROFILE" else "SAVE PROFILE", primary = true).apply {
                 id = R.id.save_config_button
                 setOnClickListener { saveProfileFromEditor(profile) }
@@ -415,7 +415,7 @@ class MainActivity : android.app.Activity() {
         diagnosticsVisible = true
         val root = screenRoot()
         root.addView(row(
-            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            backButton().apply { setOnClickListener { showMainScreen() } },
             button("SHARE LOG").apply {
                 id = R.id.share_log_button
                 setOnClickListener { shareLogFile() }
@@ -520,7 +520,7 @@ class MainActivity : android.app.Activity() {
     private fun buildGlobalSettingsUi(): View {
         val root = screenRoot()
         root.addView(row(
-            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            backButton().apply { setOnClickListener { showMainScreen() } },
             button("SAVE SETTINGS", primary = true).apply {
                 id = R.id.save_global_settings_button
                 setOnClickListener { saveGlobalSettingsFromEditor() }
@@ -679,6 +679,13 @@ class MainActivity : android.app.Activity() {
             )
             minHeight = dp(48)
             setPadding(dp(12), 0, dp(12), 0)
+        }
+
+    private fun backButton(): Button =
+        button("BACK").apply {
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_button_secondary_static)
+            stateListAnimator = null
+            isHapticFeedbackEnabled = false
         }
 
     private fun iconButton(iconRes: Int, description: String): ImageButton =
