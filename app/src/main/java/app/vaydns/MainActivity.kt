@@ -28,6 +28,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -91,6 +92,8 @@ class MainActivity : android.app.Activity() {
     private var drawerDragging = false
     private var closeDrawerAfterBuild = false
     private var suppressGlobalSettingsSave = false
+    private var screenAnimating = false
+    private val screenTransitionInterpolator = AccelerateDecelerateInterpolator()
     private var proxyStarted = false
     private var connectButtonColor = 0
     private var connectButtonRunning = false
@@ -147,11 +150,11 @@ class MainActivity : android.app.Activity() {
             return
         }
         if (editorVisible) {
-            showMainScreen()
+            showMainScreen(ScreenTransition.BACK)
         } else if (settingsVisible) {
-            showMainScreen()
+            showMainScreen(ScreenTransition.BACK)
         } else if (diagnosticsVisible) {
-            showMainScreen()
+            showMainScreen(ScreenTransition.BACK)
         } else {
             super.onBackPressed()
         }
@@ -189,6 +192,68 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun buildUi(): View = buildMainUi()
+
+    private enum class ScreenTransition {
+        FORWARD,
+        BACK,
+        NONE
+    }
+
+    private fun navigateTo(view: View, transition: ScreenTransition = ScreenTransition.FORWARD) {
+        val content = findViewById<ViewGroup>(android.R.id.content)
+        val old = if (content.childCount > 0) content.getChildAt(content.childCount - 1) else null
+        if (old == null || transition == ScreenTransition.NONE) {
+            setContentView(view)
+            requestInsets(findViewById(android.R.id.content))
+            return
+        }
+        old.animate().cancel()
+        view.animate().cancel()
+        if (screenAnimating && content.childCount > 1) {
+            for (i in content.childCount - 2 downTo 0) {
+                content.removeViewAt(i)
+            }
+        }
+        screenAnimating = true
+        val distance = (content.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        val direction = if (transition == ScreenTransition.BACK) -1f else 1f
+        view.translationX = distance * direction
+        view.alpha = 1f
+        content.addView(
+            view,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        )
+        requestInsets(content)
+        old.animate()
+            .translationX(-distance * direction)
+            .alpha(1f)
+            .setDuration(220L)
+            .setInterpolator(screenTransitionInterpolator)
+            .start()
+        view.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(230L)
+            .setInterpolator(screenTransitionInterpolator)
+            .withEndAction {
+                content.removeView(old)
+                old.translationX = 0f
+                old.alpha = 1f
+                screenAnimating = false
+            }
+            .start()
+    }
+
+    private fun requestInsets(view: View) {
+        if (Build.VERSION.SDK_INT >= 20) {
+            view.requestApplyInsets()
+        }
+        view.post {
+            if (Build.VERSION.SDK_INT >= 20) {
+                view.requestApplyInsets()
+            }
+        }
+    }
 
     private fun buildMainUi(): View {
         persistGlobalSettingsIfVisible()
@@ -260,7 +325,7 @@ class MainActivity : android.app.Activity() {
                 background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
                 stateListAnimator = null
                 isHapticFeedbackEnabled = false
-                setOnClickListener { showMainScreen() }
+                setOnClickListener { showMainScreen(ScreenTransition.BACK) }
             }, LinearLayout.LayoutParams(dp(40), dp(40)))
             addView(TextView(this@MainActivity).apply {
                 text = title
@@ -515,7 +580,7 @@ class MainActivity : android.app.Activity() {
         settingsVisible = false
         diagnosticsVisible = false
         currentSectionTitle = if (profile == null) "New Profile" else "Edit Profile"
-        setContentView(buildProfileEditorUi(profile, config))
+        navigateTo(buildProfileEditorUi(profile, config), ScreenTransition.FORWARD)
         applyConfigToFields(config)
         updateStatus()
     }
@@ -669,12 +734,13 @@ class MainActivity : android.app.Activity() {
             }
         }
 
-    private fun showMainScreen() {
+    private fun showMainScreen(transition: ScreenTransition = ScreenTransition.FORWARD) {
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = false
         loadConfig()
-        setContentView(buildMainUi())
+        val actualTransition = if (closeDrawerAfterBuild) ScreenTransition.NONE else transition
+        navigateTo(buildMainUi(), actualTransition)
         updateStatus()
     }
 
@@ -683,7 +749,8 @@ class MainActivity : android.app.Activity() {
         settingsVisible = false
         diagnosticsVisible = true
         currentSectionTitle = "Diagnostics"
-        setContentView(buildDiagnosticsUi())
+        val transition = if (closeDrawerAfterBuild) ScreenTransition.NONE else ScreenTransition.FORWARD
+        navigateTo(buildDiagnosticsUi(), transition)
         updateStatus()
     }
 
@@ -791,7 +858,8 @@ class MainActivity : android.app.Activity() {
         diagnosticsVisible = false
         currentSectionTitle = "Settings"
         suppressGlobalSettingsSave = true
-        setContentView(buildGlobalSettingsUi())
+        val transition = if (closeDrawerAfterBuild) ScreenTransition.NONE else ScreenTransition.FORWARD
+        navigateTo(buildGlobalSettingsUi(), transition)
         val global = ConfigStore.loadGlobalSettings(this)
         listenPort.setText(global.listenPort.toString())
         mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
@@ -1078,7 +1146,7 @@ class MainActivity : android.app.Activity() {
         ConfigStore.setActiveProfile(this, profile.id)
         activeConfig = profile.config
         profiles = ConfigStore.loadProfiles(this)
-        setContentView(buildMainUi())
+        navigateTo(buildMainUi(), ScreenTransition.NONE)
         updateStatus()
     }
 
@@ -1475,7 +1543,7 @@ class MainActivity : android.app.Activity() {
             return
         }
         loadConfig()
-        setContentView(buildMainUi())
+        navigateTo(buildMainUi(), ScreenTransition.FORWARD)
         updateStatus()
         toast("profile imported")
         AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name}")
