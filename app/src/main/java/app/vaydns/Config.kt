@@ -9,6 +9,7 @@ data class Config(
     val resolverHost: String,
     val resolverPort: Int,
     val resolverMode: ResolverMode,
+    val resolverTransport: ResolverTransport,
     val listenPort: Int,
     val mode: Mode,
     val authMode: AuthMode,
@@ -18,6 +19,7 @@ data class Config(
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
+    enum class ResolverTransport { UDP, TCP }
 }
 
 data class ConfigProfile(
@@ -40,6 +42,10 @@ object ConfigStore {
             resolverMode = Config.ResolverMode.valueOf(
                 p.getString("resolverMode", Config.ResolverMode.MANUAL.name)
                     ?: Config.ResolverMode.MANUAL.name
+            ),
+            resolverTransport = enumValue(
+                p.getString("resolverTransport", Config.ResolverTransport.TCP.name),
+                Config.ResolverTransport.TCP
             ),
             listenPort = p.getInt("listenPort", 1080),
             mode = Config.Mode.valueOf(p.getString("mode", Config.Mode.PROXY.name) ?: Config.Mode.PROXY.name),
@@ -175,6 +181,7 @@ object ConfigStore {
             .putString("resolverHost", config.resolverHost.trim())
             .putInt("resolverPort", config.resolverPort)
             .putString("resolverMode", config.resolverMode.name)
+            .putString("resolverTransport", config.resolverTransport.name)
             .putInt("listenPort", config.listenPort)
             .putString("mode", config.mode.name)
             .putString("authMode", config.authMode.name)
@@ -211,6 +218,7 @@ object ConfigStore {
             .put("resolverHost", config.resolverHost.trim())
             .put("resolverPort", config.resolverPort)
             .put("resolverMode", config.resolverMode.name)
+            .put("resolverTransport", config.resolverTransport.name)
             .put("listenPort", config.listenPort)
             .put("mode", config.mode.name)
             .put("authMode", config.authMode.name)
@@ -223,6 +231,7 @@ object ConfigStore {
             resolverHost = json.optString("resolverHost", ""),
             resolverPort = json.optInt("resolverPort", 53),
             resolverMode = enumValue(json.optString("resolverMode"), Config.ResolverMode.MANUAL),
+            resolverTransport = enumValue(json.optString("resolverTransport"), Config.ResolverTransport.TCP),
             listenPort = json.optInt("listenPort", 1080),
             mode = enumValue(json.optString("mode"), Config.Mode.PROXY),
             authMode = enumValue(json.optString("authMode"), Config.AuthMode.NO_AUTH),

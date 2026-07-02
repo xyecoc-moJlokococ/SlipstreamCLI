@@ -91,13 +91,15 @@ object SlipstreamBridge {
         domain: String,
         resolver: ResolverConfig,
         listenPort: Int,
-        qnameMtu: Int = 0
+        qnameMtu: Int = 0,
+        resolverTransport: String = "tcp"
     ): Result<Unit> {
         return startClient(
             domain,
             ResolverListConfig(listOf(resolver.host), resolver.port, resolver.authoritative),
             listenPort,
-            qnameMtu
+            qnameMtu,
+            resolverTransport
         )
     }
 
@@ -105,17 +107,19 @@ object SlipstreamBridge {
         domain: String,
         resolver: ResolverListConfig,
         listenPort: Int,
-        qnameMtu: Int = 0
+        qnameMtu: Int = 0,
+        resolverTransport: String = "tcp"
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libslipstream is not loaded"))
         val hosts = resolver.hosts.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         require(hosts.isNotEmpty()) { "resolver is empty" }
+        val transport = resolverTransport.lowercase().takeIf { it == "udp" || it == "tcp" } ?: "tcp"
         if (nativeIsClientRunning()) stopClient()
         currentPort = listenPort
         AppLog.i(
             TAG,
             "start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
-                "mode=authoritative transport=tcp cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
+                "mode=authoritative transport=$transport cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
                 "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
@@ -133,7 +137,7 @@ object SlipstreamBridge {
             false,
             10000,
             120000,
-            "tcp",
+            transport,
             DEFAULT_PACING_GAIN_PROBE,
             DEFAULT_DNS_TCP_PACKET_LOOP_BURST,
             true,

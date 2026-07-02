@@ -121,7 +121,8 @@ class TinyVpnService : VpnService() {
                 config.domain,
                 ResolverListConfig(choice.hosts, choice.port, true),
                 slipstreamPort,
-                choice.qnameMtu
+                choice.qnameMtu,
+                config.resolverTransport.name.lowercase()
             ).getOrThrow()
             require(waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
                 "slipstream not ready after ${START_READY_TIMEOUT_MS}ms resolver=${choice.selectedHost}:${choice.port}"
@@ -160,6 +161,7 @@ class TinyVpnService : VpnService() {
             AppLog.i(
                 TAG,
                 "VPN connected resolver=${choice.selectedHost}:${choice.port} source=${choice.source} " +
+                    "transport=${config.resolverTransport.name.lowercase()} " +
                     "qnameMtu=${if (choice.qnameMtu > 0) choice.qnameMtu else "max"} " +
                     "tested=${choice.testedCount} alive=${choice.aliveCount} skipped=${choice.skippedCount}"
             )
@@ -592,7 +594,8 @@ class TinyVpnService : VpnService() {
                     config.domain,
                     ResolverListConfig(choice.hosts, choice.port, true),
                     slipstreamPort,
-                    choice.qnameMtu
+                    choice.qnameMtu,
+                    config.resolverTransport.name.lowercase()
                 ).getOrThrow()
                 if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
                     runCatching { SlipstreamBridge.stopClient() }
@@ -659,7 +662,8 @@ class TinyVpnService : VpnService() {
                 config.domain,
                 ResolverListConfig(choice.hosts, choice.port, true),
                 slipstreamPort,
-                choice.qnameMtu
+                choice.qnameMtu,
+                config.resolverTransport.name.lowercase()
             ).getOrThrow()
             if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
                 throw IllegalStateException(

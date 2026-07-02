@@ -50,6 +50,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var resolverHostContainer: View
     private lateinit var resolverPort: EditText
     private lateinit var resolverMode: Spinner
+    private lateinit var resolverTransport: Spinner
     private lateinit var useLocalDns: Button
     private lateinit var listenPort: EditText
     private lateinit var username: EditText
@@ -242,6 +243,7 @@ class MainActivity : android.app.Activity() {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             })
         }
+        resolverTransport = spinner(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
         mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         auth = spinner(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
@@ -260,6 +262,9 @@ class MainActivity : android.app.Activity() {
             addView(resolverHostContainer, fieldParams())
             addView(row(
                 labeledField("Resolver port", resolverPort),
+                labeledField("Transport", resolverTransport)
+            ), fieldParams())
+            addView(row(
                 labeledField("Local port", listenPort)
             ), fieldParams())
             addView(labeledField("Connection mode", mode), fieldParams())
@@ -511,6 +516,7 @@ class MainActivity : android.app.Activity() {
         resolverHost.setText(c.resolverHost)
         resolverPort.setText(c.resolverPort.toString())
         resolverMode.setSelection(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
+        resolverTransport.setSelection(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
         listenPort.setText(c.listenPort.toString())
         mode.setSelection(if (c.mode == Config.Mode.VPN) 1 else 0)
         auth.setSelection(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
@@ -575,6 +581,11 @@ class MainActivity : android.app.Activity() {
             resolverHost = host,
             resolverPort = resolverPort.text.toString().toIntOrNull() ?: 53,
             resolverMode = resolverModeValue,
+            resolverTransport = if (resolverTransport.selectedItemPosition == 1) {
+                Config.ResolverTransport.TCP
+            } else {
+                Config.ResolverTransport.UDP
+            },
             listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
             mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
             authMode = if (auth.selectedItemPosition == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
@@ -630,7 +641,8 @@ class MainActivity : android.app.Activity() {
                     c.domain,
                     ResolverListConfig(choice.hosts, choice.port, true),
                     slipstreamPort,
-                    choice.qnameMtu
+                    choice.qnameMtu,
+                    c.resolverTransport.name.lowercase()
                 ).getOrThrow()
                 MiniSlipstreamSocksBridge.start(
                     listenHost = "127.0.0.1",
@@ -719,7 +731,7 @@ class MainActivity : android.app.Activity() {
         }
         status.text = buildString {
             appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
-            appendLine("transport=tcp resolver=authoritative cc=authoritative-fast")
+            appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=authoritative cc=authoritative-fast")
             appendLine("upstream=qname")
             if (config.resolverMode == Config.ResolverMode.AUTO) {
                 appendLine("resolver mode=auto")
