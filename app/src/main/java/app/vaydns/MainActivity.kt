@@ -252,6 +252,28 @@ class MainActivity : android.app.Activity() {
             }
         }
 
+    private fun topBarBack(title: String): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(iconButton(R.drawable.ic_arrow_back, "Back").apply {
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
+                stateListAnimator = null
+                isHapticFeedbackEnabled = false
+                setOnClickListener { showMainScreen() }
+            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_text_primary))
+                setSingleLine(true)
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                leftMargin = dp(10)
+            })
+        }
+
     private fun profileList(): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -491,20 +513,23 @@ class MainActivity : android.app.Activity() {
         val config = profile?.config ?: activeConfig ?: ConfigStore.load(this)
         editorVisible = true
         settingsVisible = false
+        diagnosticsVisible = false
+        currentSectionTitle = if (profile == null) "New Profile" else "Edit Profile"
         setContentView(buildProfileEditorUi(profile, config))
         applyConfigToFields(config)
         updateStatus()
     }
 
     private fun buildProfileEditorUi(profile: ConfigProfile?, config: Config): View {
+        val frame = FrameLayout(this).apply {
+            setBackgroundColor(color(R.color.slipnet_bg))
+        }
         val root = screenRoot()
-        root.addView(row(
-            backButton().apply { setOnClickListener { showMainScreen() } },
-            button(if (profile == null) "CREATE PROFILE" else "SAVE PROFILE", primary = true).apply {
-                id = R.id.save_config_button
-                setOnClickListener { saveProfileFromEditor(profile) }
-            }
-        ), sectionParams())
+        root.setPadding(dp(16), 0, dp(16), dp(82))
+        root.addView(
+            topBarBack(if (profile == null) "New Profile" else "Edit Profile"),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
+        )
 
         profileName = edit("profile name").apply {
             id = R.id.profile_name
@@ -543,7 +568,6 @@ class MainActivity : android.app.Activity() {
         }
 
         root.addView(card().apply {
-            addView(sectionTitle(if (profile == null) "New Profile" else "Profile Config"))
             addView(labeledField("Profile name", profileName), fieldParams())
             addView(labeledField("Domain", domain), fieldParams())
             addView(labeledField("DNS mode", resolverMode), fieldParams())
@@ -565,8 +589,46 @@ class MainActivity : android.app.Activity() {
         }, sectionParams())
 
         root.requestFocus()
-        return scrollScreen(root)
+        val scroll = scrollScreen(root).apply {
+            setOnApplyWindowInsetsListener { _, insets ->
+                val bottomInset = insets.systemWindowInsetBottom
+                root.setPadding(
+                    dp(16),
+                    dp(6) + insets.systemWindowInsetTop,
+                    dp(16),
+                    dp(82) + bottomInset
+                )
+                insets
+            }
+        }
+        frame.addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.addView(profileEditorActionBar(profile), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(70), Gravity.BOTTOM))
+        addDrawer(frame, "Home")
+        return frame
     }
+
+    private fun profileEditorActionBar(profile: ConfigProfile?): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_bottom_bar)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setOnApplyWindowInsetsListener { view, insets ->
+                val bottomInset = insets.systemWindowInsetBottom
+                view.setPadding(dp(16), dp(8), dp(16), dp(8) + bottomInset)
+                view.layoutParams = view.layoutParams.apply {
+                    height = dp(70) + bottomInset
+                }
+                insets
+            }
+            addView(button(if (profile == null) "CREATE PROFILE" else "SAVE PROFILE", primary = true).apply {
+                id = R.id.save_config_button
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_button_primary_static)
+                stateListAnimator = null
+                isHapticFeedbackEnabled = false
+                setOnClickListener { saveProfileFromEditor(profile) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
+        }
 
     private fun screenRoot(): LinearLayout {
         window.statusBarColor = color(R.color.slipnet_bg)
