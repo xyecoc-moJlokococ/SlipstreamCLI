@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.TrafficStats
@@ -19,8 +20,11 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
@@ -62,6 +66,9 @@ class MainActivity : android.app.Activity() {
     private lateinit var auth: Spinner
     private lateinit var fileLogging: CheckBox
     private lateinit var trafficNotification: CheckBox
+    private lateinit var localSocksAuth: CheckBox
+    private lateinit var localSocksUsername: EditText
+    private lateinit var localSocksPassword: EditText
     private lateinit var profileName: EditText
     private lateinit var connectButton: Button
     private lateinit var connectProgress: ProgressBar
@@ -74,6 +81,16 @@ class MainActivity : android.app.Activity() {
     private var editorVisible = false
     private var settingsVisible = false
     private var diagnosticsVisible = false
+    private var drawerOpen = false
+    private var currentSectionTitle = "Home"
+    private var drawerScrim: View? = null
+    private var drawerPanel: View? = null
+    private var drawerWidth = 0
+    private var drawerTouchStartX = 0f
+    private var drawerTouchStartTranslation = 0f
+    private var drawerDragging = false
+    private var closeDrawerAfterBuild = false
+    private var suppressGlobalSettingsSave = false
     private var proxyStarted = false
     private var connectButtonColor = 0
     private var connectButtonRunning = false
@@ -125,6 +142,10 @@ class MainActivity : android.app.Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (hideKeyboardIfEditing()) return
+        if (drawerOpen) {
+            closeDrawer()
+            return
+        }
         if (editorVisible) {
             showMainScreen()
         } else if (settingsVisible) {
@@ -170,9 +191,11 @@ class MainActivity : android.app.Activity() {
     private fun buildUi(): View = buildMainUi()
 
     private fun buildMainUi(): View {
+        persistGlobalSettingsIfVisible()
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = false
+        currentSectionTitle = "Home"
 
         val frame = FrameLayout(this).apply {
             id = R.id.main_content
@@ -181,7 +204,7 @@ class MainActivity : android.app.Activity() {
         val root = screenRoot().apply {
             setPadding(dp(16), 0, dp(16), dp(82))
         }
-        root.addView(mainTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
         root.addView(profileList(), compactSectionParams())
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
@@ -196,28 +219,37 @@ class MainActivity : android.app.Activity() {
         }
         frame.addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(bottomConnectBar(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(76), Gravity.BOTTOM))
+        addDrawer(frame, "Home")
         root.requestFocus()
         return frame
     }
 
-    private fun mainTopBar(): LinearLayout =
+    private fun topBar(title: String, showAdd: Boolean): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(iconButton(R.drawable.ic_menu, "Settings").apply {
+            addView(iconButton(R.drawable.ic_menu, "Menu").apply {
                 id = R.id.global_settings_button
-                setOnClickListener { showGlobalSettings() }
+                setOnClickListener { openDrawer() }
             }, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
-            addView(iconButton(R.drawable.ic_diagnostics, "Diagnostics").apply {
-                setOnClickListener { showDiagnostics() }
-            }, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(iconButton(R.drawable.ic_add, "New profile").apply {
-                id = R.id.add_profile_button
-                setOnClickListener { showProfileEditor(null) }
-            }, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
-                leftMargin = dp(8)
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_text_primary))
+                setSingleLine(true)
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                leftMargin = dp(10)
             })
+            if (showAdd) {
+                addView(iconButton(R.drawable.ic_add, "New profile").apply {
+                    id = R.id.add_profile_button
+                    setOnClickListener { showProfileEditor(null) }
+                }, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                    leftMargin = dp(8)
+                })
+            }
         }
 
     private fun profileList(): LinearLayout =
@@ -228,6 +260,181 @@ class MainActivity : android.app.Activity() {
                 addView(profileRow(profile, profile.id == activeId), fieldParams())
             }
         }
+
+    private fun addDrawer(frame: FrameLayout, selected: String) {
+        drawerOpen = false
+        val width = (resources.displayMetrics.widthPixels * 0.82f).toInt().coerceAtMost(dp(320))
+        drawerWidth = width
+        val edge = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+        }
+        val scrim = View(this).apply {
+            setBackgroundColor(Color.argb(135, 0, 0, 0))
+            alpha = 0f
+            visibility = View.GONE
+            setOnClickListener { closeDrawer() }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(color(R.color.slipnet_card))
+            setPadding(dp(18), dp(58), dp(18), dp(18))
+            setOnApplyWindowInsetsListener { view, insets ->
+                view.setPadding(dp(18), insets.systemWindowInsetTop + dp(18), dp(18), dp(18))
+                insets
+            }
+            translationX = -width.toFloat()
+            addView(TextView(this@MainActivity).apply {
+                text = "SlipstreamCLI"
+                textSize = 24f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_text_primary))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(drawerItem("Home", selected == "Home") { showMainScreen() }, drawerItemParams(first = true))
+            addView(drawerItem("Diagnostics", selected == "Diagnostics") { showDiagnostics() }, drawerItemParams())
+            addView(drawerItem("Settings", selected == "Settings") { showGlobalSettings() }, drawerItemParams())
+        }
+        drawerScrim = scrim
+        drawerPanel = panel
+        installDrawerEdgeSwipe(edge)
+        installDrawerPanelDrag(panel)
+        frame.addView(edge, FrameLayout.LayoutParams(dp(28), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.START))
+        frame.addView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.addView(panel, FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.START))
+        if (closeDrawerAfterBuild) {
+            closeDrawerAfterBuild = false
+            drawerOpen = true
+            scrim.visibility = View.VISIBLE
+            scrim.alpha = 1f
+            panel.translationX = 0f
+            panel.post { closeDrawer() }
+        }
+    }
+
+    override fun onPause() {
+        persistGlobalSettingsIfVisible()
+        super.onPause()
+    }
+
+    private fun drawerItem(text: String, selected: Boolean, action: () -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), 0, dp(18), 0)
+            background = drawerItemBackground(selected)
+            setOnClickListener {
+                persistGlobalSettingsIfVisible()
+                closeDrawerAfterBuild = true
+                action()
+            }
+            addView(TextView(this@MainActivity).apply {
+                this.text = text
+                textSize = 20f
+                typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                setTextColor(color(R.color.slipnet_text_primary))
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+        }
+
+    private fun drawerItemBackground(selected: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(28).toFloat()
+            setColor(color(if (selected) R.color.slipnet_card_soft else R.color.slipnet_card))
+        }
+
+    private fun drawerItemParams(first: Boolean = false): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
+            topMargin = dp(if (first) 34 else 10)
+        }
+
+    private fun openDrawer() {
+        val scrim = drawerScrim ?: return
+        val panel = drawerPanel ?: return
+        drawerOpen = true
+        scrim.visibility = View.VISIBLE
+        scrim.animate().alpha(1f).setDuration(160L).start()
+        panel.animate().translationX(0f).setDuration(180L).start()
+    }
+
+    private fun closeDrawer() {
+        val scrim = drawerScrim ?: return
+        val panel = drawerPanel ?: return
+        drawerOpen = false
+        scrim.animate().alpha(0f).setDuration(140L).withEndAction {
+            scrim.visibility = View.GONE
+        }.start()
+        panel.animate().translationX(-panel.width.toFloat()).setDuration(160L).start()
+    }
+
+    private fun installDrawerEdgeSwipe(edge: View) {
+        edge.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (drawerOpen) return@setOnTouchListener false
+                    drawerDragging = true
+                    drawerTouchStartX = event.rawX
+                    drawerTouchStartTranslation = -(drawerWidth.takeIf { it > 0 } ?: dp(320)).toFloat()
+                    drawerScrim?.visibility = View.VISIBLE
+                    drawerPanel?.animate()?.cancel()
+                    drawerScrim?.animate()?.cancel()
+                    drawerPanel?.translationX = drawerTouchStartTranslation
+                    drawerScrim?.alpha = 0f
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!drawerDragging) return@setOnTouchListener false
+                    val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
+                    val tx = (drawerTouchStartTranslation + event.rawX - drawerTouchStartX).coerceIn(-width.toFloat(), 0f)
+                    drawerPanel?.translationX = tx
+                    drawerScrim?.alpha = 1f - (-tx / width.toFloat())
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!drawerDragging) return@setOnTouchListener false
+                    drawerDragging = false
+                    val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
+                    if ((drawerPanel?.translationX ?: -width.toFloat()) > -width * 0.55f) {
+                        openDrawer()
+                    } else {
+                        closeDrawer()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun installDrawerPanelDrag(panel: View) {
+        panel.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (!drawerOpen) return@setOnTouchListener false
+                    drawerDragging = true
+                    drawerTouchStartX = event.rawX
+                    drawerTouchStartTranslation = panel.translationX
+                    panel.animate().cancel()
+                    drawerScrim?.animate()?.cancel()
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!drawerDragging || !drawerOpen) return@setOnTouchListener false
+                    val width = drawerWidth.takeIf { it > 0 } ?: panel.width
+                    val tx = (drawerTouchStartTranslation + event.rawX - drawerTouchStartX).coerceIn(-width.toFloat(), 0f)
+                    panel.translationX = tx
+                    drawerScrim?.alpha = 1f - (-tx / width.toFloat())
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!drawerDragging || !drawerOpen) return@setOnTouchListener false
+                    drawerDragging = false
+                    val width = drawerWidth.takeIf { it > 0 } ?: panel.width
+                    if (panel.translationX < -width * 0.35f) closeDrawer() else openDrawer()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
 
     private fun profileRow(profile: ConfigProfile, selected: Boolean): LinearLayout =
         LinearLayout(this).apply {
@@ -413,14 +620,17 @@ class MainActivity : android.app.Activity() {
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = true
+        currentSectionTitle = "Diagnostics"
+        setContentView(buildDiagnosticsUi())
+        updateStatus()
+    }
+
+    private fun buildDiagnosticsUi(): View {
+        val frame = FrameLayout(this).apply {
+            setBackgroundColor(color(R.color.slipnet_bg))
+        }
         val root = screenRoot()
-        root.addView(row(
-            backButton().apply { setOnClickListener { showMainScreen() } },
-            button("SHARE LOG").apply {
-                id = R.id.share_log_button
-                setOnClickListener { shareLogFile() }
-            }
-        ), sectionParams())
+        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
         status = TextView(this).apply {
             id = R.id.status_text
             textSize = 12f
@@ -429,15 +639,21 @@ class MainActivity : android.app.Activity() {
             setTextColor(color(R.color.slipnet_text_secondary))
         }
         root.addView(card().apply {
-            addView(sectionTitle("Diagnostics"))
             addView(status, fieldParams())
-            addView(button("CRASH REPORT").apply {
-                id = R.id.crash_report_button
-                setOnClickListener { showCrashReport() }
-            }, fieldParams())
+            addView(row(
+                button("SHARE LOG").apply {
+                    id = R.id.share_log_button
+                    setOnClickListener { shareLogFile() }
+                },
+                button("CRASH REPORT").apply {
+                    id = R.id.crash_report_button
+                    setOnClickListener { showCrashReport() }
+                }
+            ), fieldParams())
         }, sectionParams())
-        setContentView(scrollScreen(root))
-        updateStatus()
+        frame.addView(scrollScreen(root), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        addDrawer(frame, "Diagnostics")
+        return frame
     }
 
     private fun bottomConnectBar(): LinearLayout =
@@ -476,12 +692,13 @@ class MainActivity : android.app.Activity() {
 
             connectButton = Button(this@MainActivity).apply {
                 id = R.id.connect_button
-                text = "▶"
+                val initialRunning = isTunnelRunning()
+                text = if (initialRunning) "■" else "▶"
                 textSize = 18f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(color(R.color.slipnet_button_text_primary))
-                connectButtonColor = color(R.color.slipnet_accent)
-                connectButtonRunning = false
+                connectButtonColor = if (initialRunning) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
+                connectButtonRunning = initialRunning
                 connectButtonBackground = connectButtonDrawable(connectButtonColor)
                 background = connectButtonBackground
                 stateListAnimator = null
@@ -509,23 +726,29 @@ class MainActivity : android.app.Activity() {
     private fun showGlobalSettings() {
         editorVisible = false
         settingsVisible = true
+        diagnosticsVisible = false
+        currentSectionTitle = "Settings"
+        suppressGlobalSettingsSave = true
         setContentView(buildGlobalSettingsUi())
         val global = ConfigStore.loadGlobalSettings(this)
         listenPort.setText(global.listenPort.toString())
         mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
         fileLogging.isChecked = global.fileLogging
         trafficNotification.isChecked = global.trafficNotification
+        localSocksAuth.isChecked = global.localSocksAuthEnabled
+        localSocksUsername.setText(global.localSocksUsername)
+        localSocksPassword.setText(global.localSocksPassword)
+        updateLocalSocksAuthUi()
+        suppressGlobalSettingsSave = false
+        installGlobalSettingsAutoSave()
     }
 
     private fun buildGlobalSettingsUi(): View {
+        val frame = FrameLayout(this).apply {
+            setBackgroundColor(color(R.color.slipnet_bg))
+        }
         val root = screenRoot()
-        root.addView(row(
-            backButton().apply { setOnClickListener { showMainScreen() } },
-            button("SAVE SETTINGS", primary = true).apply {
-                id = R.id.save_global_settings_button
-                setOnClickListener { saveGlobalSettingsFromEditor() }
-            }
-        ), sectionParams())
+        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
         mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         fileLogging = debugLogCheckbox()
@@ -535,15 +758,29 @@ class MainActivity : android.app.Activity() {
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
         }
+        localSocksAuth = CheckBox(this).apply {
+            text = "Protect local SOCKS"
+            textSize = 14f
+            setTextColor(color(R.color.slipnet_text_secondary))
+            buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
+        }
+        localSocksUsername = edit("socks username").apply { id = R.id.local_socks_username_field }
+        localSocksPassword = edit("socks password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD).apply {
+            id = R.id.local_socks_password_field
+        }
         root.addView(card().apply {
-            addView(sectionTitle("Settings"))
             addView(labeledField("Local port", listenPort), fieldParams())
             addView(labeledField("Connection mode", mode), fieldParams())
             addView(fileLogging, fieldParams())
             addView(trafficNotification, fieldParams())
+            addView(localSocksAuth, fieldParams())
+            addView(labeledField("SOCKS username", localSocksUsername), fieldParams())
+            addView(labeledField("SOCKS password", localSocksPassword), fieldParams())
         }, sectionParams())
         root.requestFocus()
-        return scrollScreen(root)
+        frame.addView(scrollScreen(root), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        addDrawer(frame, "Settings")
+        return frame
     }
 
     private fun addActionsCard(root: LinearLayout) {
@@ -596,7 +833,6 @@ class MainActivity : android.app.Activity() {
             setTextColor(color(R.color.slipnet_text_secondary))
         }
         root.addView(card().apply {
-            addView(sectionTitle("Diagnostics"))
             addView(status, fieldParams())
         }, sectionParams())
     }
@@ -608,12 +844,6 @@ class MainActivity : android.app.Activity() {
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
-            isChecked = AppLog.isFileLoggingEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, enabled ->
-                AppLog.setFileLoggingEnabled(this@MainActivity, enabled)
-                configureNativeLogging()
-                toast(if (enabled) "file logging enabled" else "file logging disabled")
-            }
         }
 
     private fun labeledField(label: String, field: View): LinearLayout =
@@ -821,18 +1051,51 @@ class MainActivity : android.app.Activity() {
         showMainScreen()
     }
 
-    private fun saveGlobalSettingsFromEditor() {
+    private fun installGlobalSettingsAutoSave() {
+        val watcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                persistGlobalSettingsFromEditor()
+            }
+        }
+        listenPort.addTextChangedListener(watcher)
+        localSocksUsername.addTextChangedListener(watcher)
+        localSocksPassword.addTextChangedListener(watcher)
+        mode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                persistGlobalSettingsFromEditor()
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+        fileLogging.setOnCheckedChangeListener { _, _ -> persistGlobalSettingsFromEditor() }
+        trafficNotification.setOnCheckedChangeListener { _, _ -> persistGlobalSettingsFromEditor() }
+        localSocksAuth.setOnCheckedChangeListener { _, _ ->
+            updateLocalSocksAuthUi()
+            persistGlobalSettingsFromEditor()
+        }
+    }
+
+    private fun persistGlobalSettingsIfVisible() {
+        if (!settingsVisible || !::listenPort.isInitialized) return
+        persistGlobalSettingsFromEditor()
+    }
+
+    private fun persistGlobalSettingsFromEditor() {
+        if (suppressGlobalSettingsSave) return
         val settings = GlobalSettings(
             listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
             mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
             fileLogging = fileLogging.isChecked,
-            trafficNotification = trafficNotification.isChecked
+            trafficNotification = trafficNotification.isChecked,
+            localSocksAuthEnabled = localSocksAuth.isChecked,
+            localSocksUsername = localSocksUsername.text.toString().trim().ifBlank { "slipstream" },
+            localSocksPassword = localSocksPassword.text.toString().trim()
         )
         ConfigStore.saveGlobalSettings(this, settings)
         configureNativeLogging()
         activeConfig = ConfigStore.effectiveConfig(this)
-        toast("settings saved")
-        showMainScreen()
     }
 
     private fun readConfig(): Config {
@@ -873,6 +1136,18 @@ class MainActivity : android.app.Activity() {
             activeConfig ?: ConfigStore.effectiveConfig(this)
         }
 
+    private fun isTunnelRunning(): Boolean =
+        SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning() || proxyStarted
+
+    private fun localSocksCredentials(): Pair<String?, String?> {
+        val global = ConfigStore.loadGlobalSettings(this)
+        return if (global.localSocksAuthEnabled) {
+            global.localSocksUsername to global.localSocksPassword
+        } else {
+            null to null
+        }
+    }
+
     private fun toggle() {
         if (proxyStarted || SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning()) {
             stopAll()
@@ -909,6 +1184,7 @@ class MainActivity : android.app.Activity() {
                 val choice = ResolverSelector.choose(this, c, "proxy_start")
                 val bridgePort = c.listenPort
                 val slipstreamPort = c.listenPort + 1
+                val localSocks = localSocksCredentials()
                 SlipstreamBridge.startClient(
                     c.domain,
                     ResolverListConfig(choice.hosts, choice.port, true),
@@ -923,7 +1199,9 @@ class MainActivity : android.app.Activity() {
                     slipstreamPort = slipstreamPort,
                     dnsHost = choice.selectedHost,
                     username = if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) c.username else null,
-                    password = if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) c.password else null
+                    password = if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) c.password else null,
+                    localUsername = localSocks.first,
+                    localPassword = localSocks.second
                 ).getOrThrow()
                 proxyStarted = true
                 AppLog.i(
@@ -995,7 +1273,7 @@ class MainActivity : android.app.Activity() {
         var tx = rawTx - txBase
         val hev = HevSocks5Tunnel.stats()
         val bridge = MiniSlipstreamSocksBridge.stats()
-        val running = SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning() || proxyStarted
+        val running = isTunnelRunning()
         if (running) connecting = false
         val resolverProgress = ResolverSelector.lastProgress
         val idle = !running && !connecting && !resolverProgress.active && !stopping
@@ -1113,6 +1391,13 @@ class MainActivity : android.app.Activity() {
         resolverHost.isEnabled = manual
         resolverHostContainer.visibility = if (manual) View.VISIBLE else View.GONE
         useLocalDns.visibility = if (manual) View.VISIBLE else View.GONE
+    }
+
+    private fun updateLocalSocksAuthUi() {
+        if (!::localSocksAuth.isInitialized || !::localSocksUsername.isInitialized || !::localSocksPassword.isInitialized) return
+        val enabled = localSocksAuth.isChecked
+        localSocksUsername.isEnabled = enabled
+        localSocksPassword.isEnabled = enabled
     }
 
     private fun currentAutoResolverHost(): String =

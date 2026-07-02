@@ -122,6 +122,7 @@ class TinyVpnService : VpnService() {
             currentResolver = choice
             val bridgePort = config.listenPort
             val slipstreamPort = config.listenPort + 1
+            val localSocks = localSocksCredentials()
             SlipstreamBridge.startClient(
                 config.domain,
                 ResolverListConfig(choice.hosts, choice.port, true),
@@ -139,7 +140,9 @@ class TinyVpnService : VpnService() {
                 slipstreamPort = slipstreamPort,
                 dnsHost = choice.selectedHost,
                 username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
-                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
+                localUsername = localSocks.first,
+                localPassword = localSocks.second
             ).getOrThrow()
 
             val builder = Builder()
@@ -159,8 +162,8 @@ class TinyVpnService : VpnService() {
                 tunFd = tunFd ?: error("TUN fd is null"),
                 socksAddress = "127.0.0.1",
                 socksPort = bridgePort,
-                username = null,
-                password = null
+                username = localSocks.first,
+                password = localSocks.second
             ).getOrThrow()
             maybeUpdateTrafficNotification(0, 0, force = true)
             AppLog.i(
@@ -192,6 +195,15 @@ class TinyVpnService : VpnService() {
         if (local.isBlank() || local == config.resolverHost) return config
         AppLog.i(TAG, "AUTO resolverHost refreshed from active network old=${config.resolverHost.ifBlank { "-" }} new=$local")
         return config.copy(resolverHost = local)
+    }
+
+    private fun localSocksCredentials(): Pair<String?, String?> {
+        val global = ConfigStore.loadGlobalSettings(this)
+        return if (global.localSocksAuthEnabled) {
+            global.localSocksUsername to global.localSocksPassword
+        } else {
+            null to null
+        }
     }
 
     private fun stopTunnel() {
@@ -592,6 +604,7 @@ class TinyVpnService : VpnService() {
                     )
                 }
                 currentResolver = choice
+                val localSocks = localSocksCredentials()
                 Thread.sleep(if (fastPathRecovery || nativeDownFastRecovery) 150 else 750)
                 if (!tunnelActive) {
                     AppLog.w(TAG, "recovery#$recoveryId cancelled: tunnel stopped")
@@ -628,7 +641,9 @@ class TinyVpnService : VpnService() {
                     slipstreamPort = slipstreamPort,
                     dnsHost = choice.selectedHost,
                     username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
-                    password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+                    password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
+                    localUsername = localSocks.first,
+                    localPassword = localSocks.second
                 ).getOrThrow()
                 readyFalseSince = 0
                 slowResponseSince = 0
@@ -658,6 +673,7 @@ class TinyVpnService : VpnService() {
         runCatching {
             val bridgePort = config.listenPort
             val slipstreamPort = config.listenPort + 1
+            val localSocks = localSocksCredentials()
             AppLog.w(
                 TAG,
                 "recovery#$recoveryId restoring previous resolver " +
@@ -687,7 +703,9 @@ class TinyVpnService : VpnService() {
                 slipstreamPort = slipstreamPort,
                 dnsHost = choice.selectedHost,
                 username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
-                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
+                localUsername = localSocks.first,
+                localPassword = localSocks.second
             ).getOrThrow()
             currentResolver = choice
             readyFalseSince = 0

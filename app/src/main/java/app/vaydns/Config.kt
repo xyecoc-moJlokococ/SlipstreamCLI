@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
 
 data class Config(
     val domain: String,
@@ -34,7 +35,10 @@ data class GlobalSettings(
     val listenPort: Int,
     val mode: Config.Mode,
     val fileLogging: Boolean,
-    val trafficNotification: Boolean
+    val trafficNotification: Boolean,
+    val localSocksAuthEnabled: Boolean,
+    val localSocksUsername: String,
+    val localSocksPassword: String
 )
 
 object ConfigStore {
@@ -45,6 +49,9 @@ object ConfigStore {
     private const val KEY_GLOBAL_MODE = "globalMode"
     private const val KEY_GLOBAL_FILE_LOGGING = "globalFileLogging"
     private const val KEY_GLOBAL_TRAFFIC_NOTIFICATION = "globalTrafficNotification"
+    private const val KEY_GLOBAL_LOCAL_SOCKS_AUTH = "globalLocalSocksAuth"
+    private const val KEY_GLOBAL_LOCAL_SOCKS_USERNAME = "globalLocalSocksUsername"
+    private const val KEY_GLOBAL_LOCAL_SOCKS_PASSWORD = "globalLocalSocksPassword"
 
     fun load(context: Context): Config {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -71,7 +78,18 @@ object ConfigStore {
 
     fun save(context: Context, config: Config) {
         val global = loadGlobalSettings(context)
-        saveGlobalSettings(context, GlobalSettings(config.listenPort, config.mode, global.fileLogging, global.trafficNotification))
+        saveGlobalSettings(
+            context,
+            GlobalSettings(
+                config.listenPort,
+                config.mode,
+                global.fileLogging,
+                global.trafficNotification,
+                global.localSocksAuthEnabled,
+                global.localSocksUsername,
+                global.localSocksPassword
+            )
+        )
         saveLegacy(context, config)
         val profiles = loadProfiles(context)
         if (profiles.isEmpty()) {
@@ -142,6 +160,17 @@ object ConfigStore {
 
     fun loadGlobalSettings(context: Context): GlobalSettings {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val username = p.getString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: "slipstream"
+        val password = p.getString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: randomPassword().also {
+                p.edit()
+                    .putString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, username)
+                    .putString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, it)
+                    .apply()
+            }
         return GlobalSettings(
             listenPort = p.getInt(KEY_GLOBAL_LISTEN_PORT, p.getInt("listenPort", 1080)),
             mode = enumValue(
@@ -149,7 +178,10 @@ object ConfigStore {
                 Config.Mode.PROXY
             ),
             fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context)),
-            trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false)
+            trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false),
+            localSocksAuthEnabled = p.getBoolean(KEY_GLOBAL_LOCAL_SOCKS_AUTH, true),
+            localSocksUsername = username,
+            localSocksPassword = password
         )
     }
 
@@ -159,6 +191,9 @@ object ConfigStore {
             .putString(KEY_GLOBAL_MODE, settings.mode.name)
             .putBoolean(KEY_GLOBAL_FILE_LOGGING, settings.fileLogging)
             .putBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, settings.trafficNotification)
+            .putBoolean(KEY_GLOBAL_LOCAL_SOCKS_AUTH, settings.localSocksAuthEnabled)
+            .putString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, settings.localSocksUsername.ifBlank { "slipstream" })
+            .putString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, settings.localSocksPassword.ifBlank { randomPassword() })
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()
@@ -306,6 +341,16 @@ object ConfigStore {
         var index = 2
         while ("$base $index" in existing) index++
         return "$base $index"
+    }
+
+    private fun randomPassword(): String {
+        val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+        val random = SecureRandom()
+        return buildString {
+            repeat(8) {
+                append(alphabet[random.nextInt(alphabet.length)])
+            }
+        }
     }
 }
 

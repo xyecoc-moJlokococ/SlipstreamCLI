@@ -44,6 +44,8 @@ object MiniSlipstreamSocksBridge {
     @Volatile private var dnsHost = ""
     @Volatile private var username: String? = null
     @Volatile private var password: String? = null
+    @Volatile private var localUsername: String? = null
+    @Volatile private var localPassword: String? = null
 
     fun start(
         listenHost: String,
@@ -52,7 +54,9 @@ object MiniSlipstreamSocksBridge {
         slipstreamPort: Int,
         dnsHost: String,
         username: String?,
-        password: String?
+        password: String?,
+        localUsername: String? = null,
+        localPassword: String? = null
     ): Result<Unit> {
         stop()
         this.slipstreamHost = slipstreamHost
@@ -60,6 +64,8 @@ object MiniSlipstreamSocksBridge {
         this.dnsHost = dnsHost.trim()
         this.username = username?.takeIf { it.isNotBlank() }
         this.password = password?.takeIf { it.isNotBlank() }
+        this.localUsername = localUsername?.takeIf { it.isNotBlank() }
+        this.localPassword = localPassword?.takeIf { it.isNotBlank() }
         txBytes.set(0)
         rxBytes.set(0)
         connectOk.set(0)
@@ -77,7 +83,12 @@ object MiniSlipstreamSocksBridge {
             }
             serverSocket = ss
             running.set(true)
-            AppLog.i(TAG, "bridge start listen=$listenHost:$listenPort slipstream=$slipstreamHost:$slipstreamPort transportDns=$dnsHost auth=${if (this.username != null) "login/password" else "no-auth"}")
+            AppLog.i(
+                TAG,
+                "bridge start listen=$listenHost:$listenPort slipstream=$slipstreamHost:$slipstreamPort transportDns=$dnsHost " +
+                    "upstreamAuth=${if (this.username != null) "login/password" else "no-auth"} " +
+                    "localAuth=${if (this.localUsername != null && this.localPassword != null) "login/password" else "no-auth"}"
+            )
             acceptThread = Thread({
                 while (running.get()) {
                     try {
@@ -184,9 +195,43 @@ object MiniSlipstreamSocksBridge {
         if (nMethods <= 0) return false
         val methods = ByteArray(nMethods)
         input.readFullyStrict(methods)
+        val requiresAuth = !localUsername.isNullOrBlank() && !localPassword.isNullOrBlank()
+        if (requiresAuth) {
+            if (0x02.toByte() !in methods) {
+                output.write(byteArrayOf(0x05, 0xFF.toByte()))
+                output.flush()
+                return false
+            }
+            output.write(byteArrayOf(0x05, 0x02))
+            output.flush()
+            return readSocksPasswordAuth(input, output)
+        }
+        if (0x00.toByte() !in methods) {
+            output.write(byteArrayOf(0x05, 0xFF.toByte()))
+            output.flush()
+            return false
+        }
         output.write(byteArrayOf(0x05, 0x00))
         output.flush()
         return true
+    }
+
+    private fun readSocksPasswordAuth(input: InputStream, output: OutputStream): Boolean {
+        val ver = input.read()
+        if (ver != 0x01) return false
+        val userLen = input.read()
+        if (userLen < 0) return false
+        val user = ByteArray(userLen)
+        input.readFullyStrict(user)
+        val passLen = input.read()
+        if (passLen < 0) return false
+        val pass = ByteArray(passLen)
+        input.readFullyStrict(pass)
+        val ok = String(user, Charsets.UTF_8) == localUsername.orEmpty() &&
+            String(pass, Charsets.UTF_8) == localPassword.orEmpty()
+        output.write(byteArrayOf(0x01, if (ok) 0x00 else 0x01))
+        output.flush()
+        return ok
     }
 
     private fun readSocksRequest(input: InputStream): SocksRequest? {
