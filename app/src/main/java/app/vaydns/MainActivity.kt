@@ -65,6 +65,7 @@ class MainActivity : android.app.Activity() {
     private var profiles: List<ConfigProfile> = emptyList()
     private var activeConfig: Config? = null
     private var editorVisible = false
+    private var settingsVisible = false
     private var proxyStarted = false
     @Volatile private var stopping = false
     @Volatile private var connecting = false
@@ -91,6 +92,7 @@ class MainActivity : android.app.Activity() {
         loadConfig()
         setContentView(buildUi())
         updateStatus()
+        handleImportIntent(intent)
         handler.post(tick)
         handler.post { maybeShowNewCrashReport() }
         handler.post { runStartupPermissionFlow() }
@@ -101,9 +103,17 @@ class MainActivity : android.app.Activity() {
         super.onDestroy()
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleImportIntent(intent)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (editorVisible) {
+            showMainScreen()
+        } else if (settingsVisible) {
             showMainScreen()
         } else {
             super.onBackPressed()
@@ -145,6 +155,7 @@ class MainActivity : android.app.Activity() {
 
     private fun buildMainUi(): View {
         editorVisible = false
+        settingsVisible = false
         val root = screenRoot()
         root.addView(profileListCard(), sectionParams())
         addActionsCard(root)
@@ -199,6 +210,7 @@ class MainActivity : android.app.Activity() {
     private fun showProfileEditor(profile: ConfigProfile?) {
         val config = profile?.config ?: activeConfig ?: ConfigStore.load(this)
         editorVisible = true
+        settingsVisible = false
         setContentView(buildProfileEditorUi(profile, config))
         applyConfigToFields(config)
         updateStatus()
@@ -244,14 +256,11 @@ class MainActivity : android.app.Activity() {
             })
         }
         resolverTransport = spinner(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
-        listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
-        mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         auth = spinner(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
         password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
             id = R.id.password_field
         }
-        fileLogging = debugLogCheckbox()
 
         root.addView(card().apply {
             addView(sectionTitle(if (profile == null) "New Profile" else "Profile Config"))
@@ -264,14 +273,9 @@ class MainActivity : android.app.Activity() {
                 labeledField("Resolver port", resolverPort),
                 labeledField("Transport", resolverTransport)
             ), fieldParams())
-            addView(row(
-                labeledField("Local port", listenPort)
-            ), fieldParams())
-            addView(labeledField("Connection mode", mode), fieldParams())
             addView(labeledField("Auth mode", auth), fieldParams())
             addView(labeledField("Username", username), fieldParams())
             addView(labeledField("Password", password), fieldParams())
-            addView(fileLogging, fieldParams())
             if (profile != null) {
                 addView(button("DELETE PROFILE").apply {
                     id = R.id.delete_profile_button
@@ -325,9 +329,42 @@ class MainActivity : android.app.Activity() {
 
     private fun showMainScreen() {
         editorVisible = false
+        settingsVisible = false
         loadConfig()
         setContentView(buildMainUi())
         updateStatus()
+    }
+
+    private fun showGlobalSettings() {
+        editorVisible = false
+        settingsVisible = true
+        setContentView(buildGlobalSettingsUi())
+        val global = ConfigStore.loadGlobalSettings(this)
+        listenPort.setText(global.listenPort.toString())
+        mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
+        fileLogging.isChecked = global.fileLogging
+    }
+
+    private fun buildGlobalSettingsUi(): View {
+        val root = screenRoot()
+        root.addView(row(
+            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            button("SAVE SETTINGS", primary = true).apply {
+                id = R.id.save_global_settings_button
+                setOnClickListener { saveGlobalSettingsFromEditor() }
+            }
+        ), sectionParams())
+        listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
+        mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
+        fileLogging = debugLogCheckbox()
+        root.addView(card().apply {
+            addView(sectionTitle("Settings"))
+            addView(labeledField("Local port", listenPort), fieldParams())
+            addView(labeledField("Connection mode", mode), fieldParams())
+            addView(fileLogging, fieldParams())
+        }, sectionParams())
+        root.requestFocus()
+        return scrollScreen(root)
     }
 
     private fun addActionsCard(root: LinearLayout) {
@@ -355,8 +392,17 @@ class MainActivity : android.app.Activity() {
             id = R.id.crash_report_button
             setOnClickListener { showCrashReport() }
         }
+        val settings = iconButton(R.drawable.ic_more_vert, "Settings").apply {
+            id = R.id.global_settings_button
+            setOnClickListener { showGlobalSettings() }
+        }
         root.addView(card().apply {
-            addView(sectionTitle("Actions"))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(sectionTitle("Actions"), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(settings, LinearLayout.LayoutParams(dp(44), dp(44)))
+            })
             addView(connectFrame, fieldParams())
             addView(row(shareLog, crashReport), fieldParams())
         }, sectionParams())
@@ -507,7 +553,7 @@ class MainActivity : android.app.Activity() {
 
     private fun loadConfig() {
         profiles = ConfigStore.loadProfiles(this)
-        activeConfig = ConfigStore.load(this)
+        activeConfig = ConfigStore.effectiveConfig(this)
     }
 
     private fun applyConfigToFields(c: Config) {
@@ -517,8 +563,6 @@ class MainActivity : android.app.Activity() {
         resolverPort.setText(c.resolverPort.toString())
         resolverMode.setSelection(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
         resolverTransport.setSelection(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
-        listenPort.setText(c.listenPort.toString())
-        mode.setSelection(if (c.mode == Config.Mode.VPN) 1 else 0)
         auth.setSelection(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
         username.setText(c.username)
         password.setText(c.password)
@@ -564,6 +608,19 @@ class MainActivity : android.app.Activity() {
         showMainScreen()
     }
 
+    private fun saveGlobalSettingsFromEditor() {
+        val settings = GlobalSettings(
+            listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
+            mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
+            fileLogging = fileLogging.isChecked
+        )
+        ConfigStore.saveGlobalSettings(this, settings)
+        configureNativeLogging()
+        activeConfig = ConfigStore.effectiveConfig(this)
+        toast("settings saved")
+        showMainScreen()
+    }
+
     private fun readConfig(): Config {
         if (!editorVisible) return currentConfig()
         val resolverModeValue = if (resolverMode.selectedItemPosition == 1) {
@@ -576,6 +633,7 @@ class MainActivity : android.app.Activity() {
         } else {
             resolverHost.text.toString().trim()
         }
+        val global = ConfigStore.loadGlobalSettings(this)
         return Config(
             domain = domain.text.toString().trim(),
             resolverHost = host,
@@ -586,8 +644,8 @@ class MainActivity : android.app.Activity() {
             } else {
                 Config.ResolverTransport.UDP
             },
-            listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
-            mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
+            listenPort = global.listenPort,
+            mode = global.mode,
             authMode = if (auth.selectedItemPosition == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
             username = username.text.toString(),
             password = password.text.toString()
@@ -598,7 +656,7 @@ class MainActivity : android.app.Activity() {
         if (editorVisible && ::domain.isInitialized) {
             readConfig()
         } else {
-            activeConfig ?: ConfigStore.load(this)
+            activeConfig ?: ConfigStore.effectiveConfig(this)
         }
 
     private fun toggle() {
@@ -799,6 +857,22 @@ class MainActivity : android.app.Activity() {
 
     private fun currentAutoResolverHost(): String =
         ResolverSelector.preferredLocalResolver(this).orEmpty()
+
+    private fun handleImportIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme?.lowercase() != "slipstream") return
+        val imported = ConfigStore.importProfile(this, uri)
+        if (imported == null) {
+            toast("invalid slipstream link")
+            AppLog.w(TAG, "invalid slipstream import link: $uri")
+            return
+        }
+        loadConfig()
+        setContentView(buildMainUi())
+        updateStatus()
+        toast("profile imported")
+        AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name}")
+    }
 
     private fun shareLogFile() {
         if (!AppLog.isFileLoggingEnabled(this)) {

@@ -100,7 +100,7 @@ class TinyVpnService : VpnService() {
     }
 
     private fun startTunnelWorker() {
-        val config = normalizeAutoConfig(ConfigStore.load(this))
+        val config = normalizeAutoConfig(ConfigStore.effectiveConfig(this))
         currentConfig = config
         tunnelActive = true
         AppLog.i(TAG, "VPN start config=${config.copy(password = if (config.password.isBlank()) "" else "***")}")

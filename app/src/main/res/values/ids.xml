@@ -19,6 +19,8 @@
     <item name="username_field" type="id" />
     <item name="password_field" type="id" />
     <item name="file_logging_checkbox" type="id" />
+    <item name="global_settings_button" type="id" />
+    <item name="save_global_settings_button" type="id" />
     <item name="connect_progress" type="id" />
     <item name="connect_button" type="id" />
     <item name="save_config_button" type="id" />

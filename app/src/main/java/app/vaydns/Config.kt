@@ -1,6 +1,8 @@
 package app.vaydns
 
 import android.content.Context
+import android.net.Uri
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -28,13 +30,23 @@ data class ConfigProfile(
     val config: Config
 )
 
+data class GlobalSettings(
+    val listenPort: Int,
+    val mode: Config.Mode,
+    val fileLogging: Boolean
+)
+
 object ConfigStore {
     private const val PREFS = "config"
     private const val KEY_PROFILES = "profiles"
     private const val KEY_ACTIVE_PROFILE_ID = "activeProfileId"
+    private const val KEY_GLOBAL_LISTEN_PORT = "globalListenPort"
+    private const val KEY_GLOBAL_MODE = "globalMode"
+    private const val KEY_GLOBAL_FILE_LOGGING = "globalFileLogging"
 
     fun load(context: Context): Config {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val global = loadGlobalSettings(context)
         return Config(
             domain = p.getString("domain", "") ?: "",
             resolverHost = p.getString("resolverHost", "") ?: "",
@@ -47,8 +59,8 @@ object ConfigStore {
                 p.getString("resolverTransport", Config.ResolverTransport.TCP.name),
                 Config.ResolverTransport.TCP
             ),
-            listenPort = p.getInt("listenPort", 1080),
-            mode = Config.Mode.valueOf(p.getString("mode", Config.Mode.PROXY.name) ?: Config.Mode.PROXY.name),
+            listenPort = global.listenPort,
+            mode = global.mode,
             authMode = Config.AuthMode.valueOf(p.getString("authMode", Config.AuthMode.NO_AUTH.name) ?: Config.AuthMode.NO_AUTH.name),
             username = p.getString("username", "") ?: "",
             password = p.getString("password", "") ?: ""
@@ -56,6 +68,7 @@ object ConfigStore {
     }
 
     fun save(context: Context, config: Config) {
+        saveGlobalSettings(context, GlobalSettings(config.listenPort, config.mode, loadGlobalSettings(context).fileLogging))
         saveLegacy(context, config)
         val profiles = loadProfiles(context)
         if (profiles.isEmpty()) {
@@ -122,6 +135,42 @@ object ConfigStore {
         saveLegacy(context, config)
         writeProfiles(context, profiles + profile, profile.id)
         return profile
+    }
+
+    fun loadGlobalSettings(context: Context): GlobalSettings {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return GlobalSettings(
+            listenPort = p.getInt(KEY_GLOBAL_LISTEN_PORT, p.getInt("listenPort", 1080)),
+            mode = enumValue(
+                p.getString(KEY_GLOBAL_MODE, p.getString("mode", Config.Mode.PROXY.name)),
+                Config.Mode.PROXY
+            ),
+            fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context))
+        )
+    }
+
+    fun saveGlobalSettings(context: Context, settings: GlobalSettings) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_GLOBAL_LISTEN_PORT, settings.listenPort)
+            .putString(KEY_GLOBAL_MODE, settings.mode.name)
+            .putBoolean(KEY_GLOBAL_FILE_LOGGING, settings.fileLogging)
+            .putInt("listenPort", settings.listenPort)
+            .putString("mode", settings.mode.name)
+            .apply()
+        app.slipnet.util.AppLog.setFileLoggingEnabled(context, settings.fileLogging)
+    }
+
+    fun effectiveConfig(context: Context, profileConfig: Config = load(context)): Config {
+        val global = loadGlobalSettings(context)
+        return profileConfig.copy(
+            listenPort = global.listenPort,
+            mode = global.mode
+        )
+    }
+
+    fun importProfile(context: Context, uri: Uri): ConfigProfile? {
+        val imported = SlipstreamLinkParser.parse(uri, effectiveConfig(context)) ?: return null
+        return addProfile(context, imported.name, imported.config)
     }
 
     fun saveProfile(context: Context, profile: ConfigProfile): ConfigProfile {
@@ -253,4 +302,70 @@ object ConfigStore {
         while ("$base $index" in existing) index++
         return "$base $index"
     }
+}
+
+private data class ImportedProfile(val name: String, val config: Config)
+
+private object SlipstreamLinkParser {
+    fun parse(uri: Uri, base: Config): ImportedProfile? {
+        if (uri.scheme?.lowercase() != "slipstream") return null
+        val params = linkedMapOf<String, String>()
+        uri.queryParameterNames.forEach { key ->
+            uri.getQueryParameter(key)?.let { params[key.lowercase()] = it }
+        }
+        parsePayload(params["config"] ?: params["profile"] ?: params["data"])?.let { params.putAll(it) }
+
+        val host = uri.host.orEmpty().takeIf { it.isNotBlank() && it != "import" && it != "profile" }
+        val domain = first(params, "domain", "server", "sni", "host")
+            ?: host
+            ?: uri.pathSegments.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: return null
+        val resolver = first(params, "resolver", "resolverhost", "dns", "dnsserver")
+        val resolverMode = when (first(params, "resolvermode", "dnsmode")?.lowercase()) {
+            "auto" -> Config.ResolverMode.AUTO
+            "manual" -> Config.ResolverMode.MANUAL
+            else -> base.resolverMode
+        }
+        val transport = when (first(params, "transport", "resolvertransport")?.lowercase()) {
+            "udp" -> Config.ResolverTransport.UDP
+            "tcp" -> Config.ResolverTransport.TCP
+            else -> base.resolverTransport
+        }
+        val authMode = if (first(params, "username", "user").orEmpty().isNotBlank() || first(params, "password", "pass").orEmpty().isNotBlank()) {
+            Config.AuthMode.LOGIN_PASSWORD
+        } else {
+            base.authMode
+        }
+        val config = base.copy(
+            domain = domain,
+            resolverHost = resolver ?: base.resolverHost,
+            resolverPort = first(params, "resolverport", "dnsport", "port")?.toIntOrNull() ?: base.resolverPort,
+            resolverMode = resolverMode,
+            resolverTransport = transport,
+            authMode = authMode,
+            username = first(params, "username", "user") ?: base.username,
+            password = first(params, "password", "pass") ?: base.password
+        )
+        return ImportedProfile(first(params, "name", "profileName") ?: domain, config)
+    }
+
+    private fun parsePayload(value: String?): Map<String, String>? {
+        if (value.isNullOrBlank()) return null
+        val decoded = runCatching {
+            String(Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING), Charsets.UTF_8)
+        }.getOrElse { value }
+        return if (decoded.trimStart().startsWith("{")) {
+            runCatching {
+                val json = JSONObject(decoded)
+                json.keys().asSequence().associate { it.lowercase() to json.optString(it) }
+            }.getOrNull()
+        } else {
+            Uri.parse("slipstream://import?$decoded").queryParameterNames.associateWith {
+                Uri.parse("slipstream://import?$decoded").getQueryParameter(it).orEmpty()
+            }.mapKeys { it.key.lowercase() }
+        }
+    }
+
+    private fun first(params: Map<String, String>, vararg keys: String): String? =
+        keys.firstNotNullOfOrNull { params[it.lowercase()]?.takeIf { value -> value.isNotBlank() } }
 }
