@@ -1,5 +1,6 @@
 package app.vaydns
 
+import android.animation.ValueAnimator
 import android.Manifest
 import android.app.AlertDialog
 import android.content.ClipData
@@ -8,6 +9,7 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.TrafficStats
 import android.net.Uri
 import android.net.VpnService
@@ -21,6 +23,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -58,19 +61,29 @@ class MainActivity : android.app.Activity() {
     private lateinit var mode: Spinner
     private lateinit var auth: Spinner
     private lateinit var fileLogging: CheckBox
+    private lateinit var trafficNotification: CheckBox
     private lateinit var profileName: EditText
     private lateinit var connectButton: Button
     private lateinit var connectProgress: ProgressBar
+    private lateinit var connectButtonBackground: GradientDrawable
+    private lateinit var bottomStatus: TextView
+    private lateinit var trafficStatus: TextView
     private lateinit var status: TextView
     private var profiles: List<ConfigProfile> = emptyList()
     private var activeConfig: Config? = null
     private var editorVisible = false
     private var settingsVisible = false
+    private var diagnosticsVisible = false
     private var proxyStarted = false
+    private var connectButtonColor = 0
+    private var connectButtonRunning = false
     @Volatile private var stopping = false
     @Volatile private var connecting = false
     private var rxBase = 0L
     private var txBase = 0L
+    private var rateRxLast = 0L
+    private var rateTxLast = 0L
+    private var rateSampleAt = 0L
     private var lastLogAt = 0L
     private var pendingStartVpn = false
     private var startupPermissionFlowActive = false
@@ -111,9 +124,12 @@ class MainActivity : android.app.Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (hideKeyboardIfEditing()) return
         if (editorVisible) {
             showMainScreen()
         } else if (settingsVisible) {
+            showMainScreen()
+        } else if (diagnosticsVisible) {
             showMainScreen()
         } else {
             super.onBackPressed()
@@ -156,41 +172,96 @@ class MainActivity : android.app.Activity() {
     private fun buildMainUi(): View {
         editorVisible = false
         settingsVisible = false
-        val root = screenRoot()
-        root.addView(profileListCard(), sectionParams())
-        addActionsCard(root)
-        addDiagnosticsCard(root)
+        diagnosticsVisible = false
+
+        val frame = FrameLayout(this).apply {
+            id = R.id.main_content
+            setBackgroundColor(color(R.color.slipnet_bg))
+        }
+        val root = screenRoot().apply {
+            setPadding(dp(16), 0, dp(16), dp(82))
+        }
+        root.addView(mainTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+        root.addView(profileList(), compactSectionParams())
+        val scroll = scrollScreen(root).apply {
+            setOnApplyWindowInsetsListener { _, insets ->
+                root.setPadding(
+                    dp(16),
+                    dp(6) + insets.systemWindowInsetTop,
+                    dp(16),
+                    dp(82) + insets.systemWindowInsetBottom
+                )
+                insets
+            }
+        }
+        frame.addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.addView(bottomConnectBar(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(76), Gravity.BOTTOM))
         root.requestFocus()
-        return scrollScreen(root)
+        return frame
     }
 
-    private fun profileListCard(): LinearLayout =
-        card().apply {
-            addView(sectionTitle("Profiles"))
+    private fun mainTopBar(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(iconButton(R.drawable.ic_menu, "Settings").apply {
+                id = R.id.global_settings_button
+                setOnClickListener { showGlobalSettings() }
+            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(iconButton(R.drawable.ic_diagnostics, "Diagnostics").apply {
+                setOnClickListener { showDiagnostics() }
+            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(iconButton(R.drawable.ic_add, "New profile").apply {
+                id = R.id.add_profile_button
+                setOnClickListener { showProfileEditor(null) }
+            }, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                leftMargin = dp(8)
+            })
+        }
+
+    private fun profileList(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             val activeId = ConfigStore.activeProfileId(this@MainActivity)
             profiles.forEach { profile ->
                 addView(profileRow(profile, profile.id == activeId), fieldParams())
             }
-            addView(button("NEW PROFILE", primary = true).apply {
-                id = R.id.add_profile_button
-                setOnClickListener { showProfileEditor(null) }
-            }, fieldParams())
         }
 
     private fun profileRow(profile: ConfigProfile, selected: Boolean): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = ContextCompat.getDrawable(this@MainActivity, if (selected) R.drawable.bg_profile_selected else R.drawable.bg_input)
-            setPadding(dp(14), 0, dp(8), 0)
+            background = ContextCompat.getDrawable(this@MainActivity, if (selected) R.drawable.bg_profile_selected else R.drawable.bg_card)
+            setPadding(dp(12), dp(8), dp(8), dp(8))
             minimumHeight = dp(64)
             setOnClickListener { selectProfile(profile) }
-            val domainView = TextView(this@MainActivity).apply {
-                text = profile.config.domain.ifBlank { profile.name }
-                textSize = 17f
-                typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                setTextColor(color(R.color.slipnet_text_primary))
+            val marker = TextView(this@MainActivity).apply {
+                text = if (selected) "●" else "○"
+                textSize = 18f
+                gravity = Gravity.CENTER
+                setTextColor(color(R.color.slipnet_accent))
+            }
+            val textColumn = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = profile.name.ifBlank { "Manual" }
+                    textSize = 16f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(color(R.color.slipnet_text_primary))
+                    setSingleLine(true)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                addView(TextView(this@MainActivity).apply {
+                    text = maskDomain(profile.config.domain.ifBlank { profile.name })
+                    textSize = 13f
+                    setTextColor(color(R.color.slipnet_text_secondary))
+                    setSingleLine(true)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            val more = iconButton(R.drawable.ic_more_vert, "Profile menu").apply {
+                setOnClickListener { showProfileEditor(profile) }
             }
             val edit = iconButton(R.drawable.ic_edit_profile, "Edit profile").apply {
                 id = R.id.edit_profile_button
@@ -200,11 +271,13 @@ class MainActivity : android.app.Activity() {
                 id = R.id.delete_profile_button
                 setOnClickListener { confirmDeleteProfile(profile) }
             }
-            addView(domainView, LinearLayout.LayoutParams(0, dp(64), 1f))
-            addView(edit, LinearLayout.LayoutParams(dp(44), dp(44)))
-            addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
-                leftMargin = dp(4)
+            addView(marker, LinearLayout.LayoutParams(dp(34), dp(40)))
+            addView(textColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dp(8)
             })
+            addView(more, LinearLayout.LayoutParams(dp(36), dp(36)))
+            addView(edit, LinearLayout.LayoutParams(dp(36), dp(36)))
+            addView(delete, LinearLayout.LayoutParams(dp(36), dp(36)))
         }
 
     private fun showProfileEditor(profile: ConfigProfile?) {
@@ -291,7 +364,7 @@ class MainActivity : android.app.Activity() {
     private fun screenRoot(): LinearLayout {
         window.statusBarColor = color(R.color.slipnet_bg)
         if (Build.VERSION.SDK_INT >= 26) {
-            window.navigationBarColor = color(R.color.slipnet_bg)
+            window.navigationBarColor = color(R.color.slipnet_card)
         }
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(true)
@@ -330,10 +403,108 @@ class MainActivity : android.app.Activity() {
     private fun showMainScreen() {
         editorVisible = false
         settingsVisible = false
+        diagnosticsVisible = false
         loadConfig()
         setContentView(buildMainUi())
         updateStatus()
     }
+
+    private fun showDiagnostics() {
+        editorVisible = false
+        settingsVisible = false
+        diagnosticsVisible = true
+        val root = screenRoot()
+        root.addView(row(
+            button("BACK").apply { setOnClickListener { showMainScreen() } },
+            button("SHARE LOG").apply {
+                id = R.id.share_log_button
+                setOnClickListener { shareLogFile() }
+            }
+        ), sectionParams())
+        status = TextView(this).apply {
+            id = R.id.status_text
+            textSize = 12f
+            setLineSpacing(0f, 1.05f)
+            setTextIsSelectable(true)
+            setTextColor(color(R.color.slipnet_text_secondary))
+        }
+        root.addView(card().apply {
+            addView(sectionTitle("Diagnostics"))
+            addView(status, fieldParams())
+            addView(button("CRASH REPORT").apply {
+                id = R.id.crash_report_button
+                setOnClickListener { showCrashReport() }
+            }, fieldParams())
+        }, sectionParams())
+        setContentView(scrollScreen(root))
+        updateStatus()
+    }
+
+    private fun bottomConnectBar(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_bottom_bar)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setOnApplyWindowInsetsListener { view, insets ->
+                val bottomInset = insets.systemWindowInsetBottom
+                view.setPadding(dp(16), dp(8), dp(16), dp(8) + bottomInset)
+                view.layoutParams = view.layoutParams.apply {
+                    height = dp(76) + bottomInset
+                }
+                insets
+            }
+            val statusColumn = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            bottomStatus = TextView(this@MainActivity).apply {
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_accent))
+                text = "Not connected"
+                setSingleLine(true)
+            }
+            trafficStatus = TextView(this@MainActivity).apply {
+                textSize = 11f
+                setTextColor(color(R.color.slipnet_text_secondary))
+                text = "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"
+                setSingleLine(true)
+            }
+            statusColumn.addView(bottomStatus, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            statusColumn.addView(trafficStatus, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+            connectButton = Button(this@MainActivity).apply {
+                id = R.id.connect_button
+                text = "▶"
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(color(R.color.slipnet_button_text_primary))
+                connectButtonColor = color(R.color.slipnet_accent)
+                connectButtonRunning = false
+                connectButtonBackground = connectButtonDrawable(connectButtonColor)
+                background = connectButtonBackground
+                stateListAnimator = null
+                elevation = 0f
+                translationZ = 0f
+                setPadding(0, 0, 0, dp(2))
+                setOnClickListener { toggle() }
+            }
+            connectProgress = ProgressBar(this@MainActivity).apply {
+                id = R.id.connect_progress
+                isIndeterminate = true
+                indeterminateTintList = ColorStateList.valueOf(color(R.color.slipnet_button_text_primary))
+                visibility = View.GONE
+                elevation = dp(8).toFloat()
+                translationZ = dp(8).toFloat()
+            }
+            val connectFrame = FrameLayout(this@MainActivity).apply {
+                addView(connectButton, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER))
+                addView(connectProgress, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
+            }
+            addView(statusColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(connectFrame, LinearLayout.LayoutParams(dp(58), dp(58)))
+        }
 
     private fun showGlobalSettings() {
         editorVisible = false
@@ -343,6 +514,7 @@ class MainActivity : android.app.Activity() {
         listenPort.setText(global.listenPort.toString())
         mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
         fileLogging.isChecked = global.fileLogging
+        trafficNotification.isChecked = global.trafficNotification
     }
 
     private fun buildGlobalSettingsUi(): View {
@@ -357,11 +529,18 @@ class MainActivity : android.app.Activity() {
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
         mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         fileLogging = debugLogCheckbox()
+        trafficNotification = CheckBox(this).apply {
+            text = "Show traffic notification"
+            textSize = 14f
+            setTextColor(color(R.color.slipnet_text_secondary))
+            buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
+        }
         root.addView(card().apply {
             addView(sectionTitle("Settings"))
             addView(labeledField("Local port", listenPort), fieldParams())
             addView(labeledField("Connection mode", mode), fieldParams())
             addView(fileLogging, fieldParams())
+            addView(trafficNotification, fieldParams())
         }, sectionParams())
         root.requestFocus()
         return scrollScreen(root)
@@ -512,6 +691,28 @@ class MainActivity : android.app.Activity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
         }
 
+    private fun connectButtonDrawable(fillColor: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(fillColor)
+        }
+
+    private fun updateConnectButtonColor(running: Boolean) {
+        if (!::connectButtonBackground.isInitialized) return
+        if (connectButtonRunning == running) return
+        connectButtonRunning = running
+        val target = if (running) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
+        ValueAnimator.ofArgb(connectButtonColor, target).apply {
+            duration = 220L
+            addUpdateListener { animator ->
+                val value = animator.animatedValue as Int
+                connectButtonColor = value
+                connectButtonBackground.setColor(value)
+            }
+            start()
+        }
+    }
+
     private fun card(): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -545,6 +746,11 @@ class MainActivity : android.app.Activity() {
     private fun sectionParams(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(14)
+        }
+
+    private fun compactSectionParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(8)
         }
 
     private fun color(id: Int): Int = ContextCompat.getColor(this, id)
@@ -612,7 +818,8 @@ class MainActivity : android.app.Activity() {
         val settings = GlobalSettings(
             listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
             mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
-            fileLogging = fileLogging.isChecked
+            fileLogging = fileLogging.isChecked,
+            trafficNotification = trafficNotification.isChecked
         )
         ConfigStore.saveGlobalSettings(this, settings)
         configureNativeLogging()
@@ -735,10 +942,12 @@ class MainActivity : android.app.Activity() {
         try {
             resetTrafficBase()
             AppLog.i(TAG, "start vpn requested")
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, TinyVpnService::class.java).setAction(TinyVpnService.ACTION_START)
-            )
+            val intent = Intent(this, TinyVpnService::class.java).setAction(TinyVpnService.ACTION_START)
+            if (ConfigStore.loadGlobalSettings(this).trafficNotification) {
+                ContextCompat.startForegroundService(this, intent)
+            } else {
+                startService(intent)
+            }
         } catch (e: Throwable) {
             connecting = false
             AppLog.e(TAG, "failed to start vpn service", e)
@@ -770,46 +979,63 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun updateStatus() {
-        if (!::connectProgress.isInitialized || !::connectButton.isInitialized || !::status.isInitialized) return
+        if (!::connectProgress.isInitialized || !::connectButton.isInitialized) return
         val config = currentConfig()
         val uid = applicationInfo.uid
-        val rx = (TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0) - rxBase
-        val tx = (TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0) - txBase
+        val rawRx = TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0
+        val rawTx = TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0
+        var rx = rawRx - rxBase
+        var tx = rawTx - txBase
         val hev = HevSocks5Tunnel.stats()
         val bridge = MiniSlipstreamSocksBridge.stats()
         val running = SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning() || proxyStarted
         if (running) connecting = false
         val resolverProgress = ResolverSelector.lastProgress
-        connectProgress.visibility = if (connecting || resolverProgress.active) View.VISIBLE else View.GONE
-        connectButton.text = when {
-            stopping -> "DISCONNECTING"
-            running -> "DISCONNECT"
-            connecting || resolverProgress.active -> "CONNECTING..."
-            else -> "CONNECT"
+        val idle = !running && !connecting && !resolverProgress.active && !stopping
+        if (idle) {
+            rxBase = rawRx
+            txBase = rawTx
+            rateRxLast = 0
+            rateTxLast = 0
+            rateSampleAt = 0
+            rx = 0
+            tx = 0
         }
-        status.text = buildString {
-            appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
-            appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=authoritative cc=authoritative-fast")
-            appendLine("upstream=qname")
-            if (config.resolverMode == Config.ResolverMode.AUTO) {
-                appendLine("resolver mode=auto")
-                appendLine(
-                    "dns probe ${resolverProgress.tested}/${resolverProgress.total} phase=${resolverProgress.phase.ifBlank { "-" }} " +
-                        "alive=${resolverProgress.alive} current=${resolverProgress.currentHost.ifBlank { "-" }} " +
-                        "selected=${resolverProgress.selected.ifBlank { "-" }}"
-                )
-                appendLine(
-                    "speed probe ${resolverProgress.speedTested}/${resolverProgress.speedTotal} " +
-                    "ok=${resolverProgress.speedOk}"
-                )
-            } else {
-                appendLine("resolver mode=manual host=${config.resolverHost.ifBlank { "-" }}")
+        val loading = connecting || resolverProgress.active
+        connectProgress.visibility = if (loading) View.VISIBLE else View.GONE
+        if (loading) connectProgress.bringToFront()
+        connectButton.text = when {
+            loading -> ""
+            running || stopping -> "■"
+            else -> "▶"
+        }
+        updateConnectButtonColor(running)
+        updateBottomStatus(running, resolverProgress, rx, tx)
+        if (::status.isInitialized) {
+            status.text = buildString {
+                appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
+                appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=authoritative cc=authoritative-fast")
+                appendLine("upstream=qname")
+                if (config.resolverMode == Config.ResolverMode.AUTO) {
+                    appendLine("resolver mode=auto")
+                    appendLine(
+                        "dns probe ${resolverProgress.tested}/${resolverProgress.total} phase=${resolverProgress.phase.ifBlank { "-" }} " +
+                            "alive=${resolverProgress.alive} current=${resolverProgress.currentHost.ifBlank { "-" }} " +
+                            "selected=${resolverProgress.selected.ifBlank { "-" }}"
+                    )
+                    appendLine(
+                        "speed probe ${resolverProgress.speedTested}/${resolverProgress.speedTotal} " +
+                        "ok=${resolverProgress.speedOk}"
+                    )
+                } else {
+                    appendLine("resolver mode=manual host=${config.resolverHost.ifBlank { "-" }}")
+                }
+                appendLine("app rx=${formatBytes(rx)} tx=${formatBytes(tx)}")
+                appendLine("vpn rx=${formatBytes(hev.rxBytes)} tx=${formatBytes(hev.txBytes)}")
+                appendLine("bridge rx=${formatBytes(bridge.rxBytes)} tx=${formatBytes(bridge.txBytes)} ok=${bridge.connectOk}/${bridge.dnsOk} fail=${bridge.connectFail}/${bridge.dnsFail}")
+                appendLine("bridge active=${bridge.activeClients} clients=${bridge.clientSockets} remotes=${bridge.remoteSockets} threads=${bridge.threads}")
+                SlipstreamBridge.lastError()?.let { appendLine("lastError=$it") }
             }
-            appendLine("app rx=${formatBytes(rx)} tx=${formatBytes(tx)}")
-            appendLine("vpn rx=${formatBytes(hev.rxBytes)} tx=${formatBytes(hev.txBytes)}")
-            appendLine("bridge rx=${formatBytes(bridge.rxBytes)} tx=${formatBytes(bridge.txBytes)} ok=${bridge.connectOk}/${bridge.dnsOk} fail=${bridge.connectFail}/${bridge.dnsFail}")
-            appendLine("bridge active=${bridge.activeClients} clients=${bridge.clientSockets} remotes=${bridge.remoteSockets} threads=${bridge.threads}")
-            SlipstreamBridge.lastError()?.let { appendLine("lastError=$it") }
         }
         val now = System.currentTimeMillis()
         if (running && now - lastLogAt > 5000) {
@@ -832,6 +1058,33 @@ class MainActivity : android.app.Activity() {
         val uid = applicationInfo.uid
         rxBase = TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0
         txBase = TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0
+        rateRxLast = 0
+        rateTxLast = 0
+        rateSampleAt = 0
+    }
+
+    private fun updateBottomStatus(running: Boolean, progress: ResolverSelector.Progress, rx: Long, tx: Long) {
+        if (!::bottomStatus.isInitialized || !::trafficStatus.isInitialized) return
+        val now = System.currentTimeMillis()
+        val elapsedMs = (now - rateSampleAt).takeIf { rateSampleAt != 0L && it > 0 } ?: 1000L
+        val downRate = ((rx - rateRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val upRate = ((tx - rateTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        rateRxLast = rx
+        rateTxLast = tx
+        rateSampleAt = now
+
+        bottomStatus.text = when {
+            stopping -> "Disconnecting"
+            progress.active -> {
+                val total = progress.total.takeIf { it > 0 } ?: progress.speedTotal
+                val tested = if (progress.phase == "speed") progress.speedTested else progress.tested
+                if (total > 0) "DNS probing $tested/$total" else "DNS probing"
+            }
+            connecting -> "Connecting"
+            running -> "Connected"
+            else -> "Not connected"
+        }
+        trafficStatus.text = "↓ ${formatBytes(rx)} (${formatRate(downRate)})   ↑ ${formatBytes(tx)} (${formatRate(upRate)})"
     }
 
     private fun fillLocalDns() {
@@ -1060,6 +1313,31 @@ class MainActivity : android.app.Activity() {
         }
     }
 
+    private fun hideKeyboardIfEditing(): Boolean {
+        val focused = currentFocus as? EditText ?: return false
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(focused.windowToken, 0)
+        focused.clearFocus()
+        return true
+    }
+
+    private fun formatRate(value: Long): String {
+        val v = value.coerceAtLeast(0)
+        return when {
+            v >= 1024L * 1024L -> "${v / 1024L / 1024L} MiB/s"
+            v >= 1024L -> "${v / 1024L} KiB/s"
+            else -> "$v B/s"
+        }
+    }
+
+    private fun maskDomain(value: String): String {
+        val clean = value.trim()
+        if (clean.length <= 6) return clean
+        val dot = clean.indexOf('.').takeIf { it > 2 } ?: (clean.length - 3)
+        val prefix = clean.take(3)
+        val suffix = clean.drop(dot.coerceAtMost(clean.length - 1))
+        return "$prefix***$suffix"
+    }
+
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 
     companion object {
@@ -1077,5 +1355,6 @@ class MainActivity : android.app.Activity() {
         private const val MAX_CRASH_DIALOG_CHARS = 64 * 1024
         private const val CRASH_PREFS = "crash_report"
         private const val KEY_CRASH_SEEN_SIZE = "seen_size"
+        private val CONNECTED_BUTTON_COLOR = android.graphics.Color.rgb(72, 132, 82)
     }
 }

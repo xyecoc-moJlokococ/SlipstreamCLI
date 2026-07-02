@@ -33,7 +33,8 @@ data class ConfigProfile(
 data class GlobalSettings(
     val listenPort: Int,
     val mode: Config.Mode,
-    val fileLogging: Boolean
+    val fileLogging: Boolean,
+    val trafficNotification: Boolean
 )
 
 object ConfigStore {
@@ -43,6 +44,7 @@ object ConfigStore {
     private const val KEY_GLOBAL_LISTEN_PORT = "globalListenPort"
     private const val KEY_GLOBAL_MODE = "globalMode"
     private const val KEY_GLOBAL_FILE_LOGGING = "globalFileLogging"
+    private const val KEY_GLOBAL_TRAFFIC_NOTIFICATION = "globalTrafficNotification"
 
     fun load(context: Context): Config {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -68,7 +70,8 @@ object ConfigStore {
     }
 
     fun save(context: Context, config: Config) {
-        saveGlobalSettings(context, GlobalSettings(config.listenPort, config.mode, loadGlobalSettings(context).fileLogging))
+        val global = loadGlobalSettings(context)
+        saveGlobalSettings(context, GlobalSettings(config.listenPort, config.mode, global.fileLogging, global.trafficNotification))
         saveLegacy(context, config)
         val profiles = loadProfiles(context)
         if (profiles.isEmpty()) {
@@ -145,7 +148,8 @@ object ConfigStore {
                 p.getString(KEY_GLOBAL_MODE, p.getString("mode", Config.Mode.PROXY.name)),
                 Config.Mode.PROXY
             ),
-            fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context))
+            fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context)),
+            trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false)
         )
     }
 
@@ -154,6 +158,7 @@ object ConfigStore {
             .putInt(KEY_GLOBAL_LISTEN_PORT, settings.listenPort)
             .putString(KEY_GLOBAL_MODE, settings.mode.name)
             .putBoolean(KEY_GLOBAL_FILE_LOGGING, settings.fileLogging)
+            .putBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, settings.trafficNotification)
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()

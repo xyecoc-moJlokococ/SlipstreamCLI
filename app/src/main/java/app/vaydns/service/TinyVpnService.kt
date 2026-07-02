@@ -36,6 +36,9 @@ class TinyVpnService : VpnService() {
     @Volatile private var resolverOptimizerRunning = false
     private var rxBase = 0L
     private var txBase = 0L
+    private var notificationRxLast = 0L
+    private var notificationTxLast = 0L
+    private var notificationSampleAt = 0L
     private var lastRx = 0L
     private var lastTx = 0L
     private var lastTunRx = 0L
@@ -89,7 +92,9 @@ class TinyVpnService : VpnService() {
             return
         }
         starting = true
-        startForeground(1, notification("Starting"))
+        if (ConfigStore.loadGlobalSettings(this).trafficNotification) {
+            startForeground(1, notification("Starting", "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"))
+        }
         Thread({
             try {
                 startTunnelWorker()
@@ -157,7 +162,7 @@ class TinyVpnService : VpnService() {
                 username = null,
                 password = null
             ).getOrThrow()
-            startForeground(1, notification("Connected"))
+            maybeUpdateTrafficNotification(0, 0, force = true)
             AppLog.i(
                 TAG,
                 "VPN connected resolver=${choice.selectedHost}:${choice.port} source=${choice.source} " +
@@ -240,6 +245,9 @@ class TinyVpnService : VpnService() {
         val uid = applicationInfo.uid
         rxBase = TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0
         txBase = TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0
+        notificationRxLast = 0
+        notificationTxLast = 0
+        notificationSampleAt = 0
         lastRx = 0
         lastTx = 0
         lastTunRx = 0
@@ -261,6 +269,7 @@ class TinyVpnService : VpnService() {
         val uid = applicationInfo.uid
         val rx = (TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0) - rxBase
         val tx = (TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0) - txBase
+        maybeUpdateTrafficNotification(rx, tx)
         val hev = HevSocks5Tunnel.stats()
         val bridge = MiniSlipstreamSocksBridge.stats()
         val running = SlipstreamBridge.isRunning()
@@ -809,7 +818,23 @@ class TinyVpnService : VpnService() {
         return SlipstreamBridge.isReady()
     }
 
-    private fun notification(text: String): Notification {
+    private fun maybeUpdateTrafficNotification(rx: Long, tx: Long, force: Boolean = false) {
+        if (!ConfigStore.loadGlobalSettings(this).trafficNotification) {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            return
+        }
+        val now = System.currentTimeMillis()
+        val elapsedMs = (now - notificationSampleAt).takeIf { notificationSampleAt != 0L && it > 0 } ?: 1000L
+        val downRate = ((rx - notificationRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val upRate = ((tx - notificationTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        notificationRxLast = rx
+        notificationTxLast = tx
+        notificationSampleAt = now
+        val text = "↓ ${formatBytes(rx)} (${formatRate(downRate)})   ↑ ${formatBytes(tx)} (${formatRate(upRate)})"
+        startForeground(1, notification("Connected", text))
+    }
+
+    private fun notification(title: String, text: String): Notification {
         val pi = PendingIntent.getActivity(
             this,
             0,
@@ -823,12 +848,31 @@ class TinyVpnService : VpnService() {
             Notification.Builder(this)
         }
         return builder
-            .setContentTitle("Slipstream CLI")
+            .setContentTitle(title)
             .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setSmallIcon(R.drawable.ic_stat_vaydns)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
+    }
+
+    private fun formatBytes(value: Long): String {
+        val v = value.coerceAtLeast(0)
+        return when {
+            v >= 1024L * 1024L -> "${v / 1024L / 1024L} MiB"
+            v >= 1024L -> "${v / 1024L} KiB"
+            else -> "$v B"
+        }
+    }
+
+    private fun formatRate(value: Long): String {
+        val v = value.coerceAtLeast(0)
+        return when {
+            v >= 1024L * 1024L -> "${v / 1024L / 1024L} MiB/s"
+            v >= 1024L -> "${v / 1024L} KiB/s"
+            else -> "$v B/s"
+        }
     }
 
     private fun createChannel() {
