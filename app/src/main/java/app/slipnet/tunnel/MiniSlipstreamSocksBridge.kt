@@ -18,7 +18,16 @@ object MiniSlipstreamSocksBridge {
     private const val SOCKET_BUFFER_SIZE = 1024 * 1024
     private const val MAX_ACTIVE_CLIENTS = 128
     private const val OVERLOAD_CLOSE_BATCH = 16
-    private const val CONNECT_TIMEOUT_MS = 5000
+    // The SOCKS handshake reads (greeting/auth/connect-reply) traverse the DNS tunnel to the
+    // server and back. Under a heavy upload, these small control round-trips get queued behind
+    // bulk data (head-of-line blocking) and tunnel latency balloons past several seconds
+    // (observed slowResponseMs up to ~15s). A 5s timeout here caused every fresh connection a
+    // large upload tried to open (Telegram opens many parallel upload connections) to fail with
+    // "Read timed out", so large files stalled at 0 bytes while small messages -- which reuse an
+    // already-open connection -- went through. Raised to 20s to ride out congestion bursts; the
+    // drop in spurious connect failures also stops the failure-accumulation recovery from tearing
+    // down a working tunnel mid-upload.
+    private const val CONNECT_TIMEOUT_MS = 20000
     private const val READ_TIMEOUT_MS = 30000
     private const val DNS_TIMEOUT_MS = 5000
     private val REMOTE_DNS_FALLBACKS = listOf("1.1.1.1", "8.8.8.8")

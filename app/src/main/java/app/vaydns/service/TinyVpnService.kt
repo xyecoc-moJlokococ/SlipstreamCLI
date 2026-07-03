@@ -639,6 +639,14 @@ class TinyVpnService : VpnService() {
                 // "..._no_response" bridge-failure variant (sustained silence) still rotates
                 // immediately, since that's a much stronger signal the resolver is actually dead.
                 val bridgeAccumulatedRecovery = reason.startsWith("bridge_failures_accumulated")
+                // Storm (>=12 new bridge failures within one 5s diag tick) used to be treated as
+                // a strong dead-resolver signal and always paid for a full rescan. Once per-stream
+                // QUIC flow control was widened (many more concurrent CONNECTs land in the same
+                // burst), a storm can now just as easily be many parallel SOCKS CONNECTs timing
+                // out together during a legitimate large upload -- not a bad resolver. Give it the
+                // same quick same-resolver retry as "accumulated" before condemning the resolver;
+                // if the quick retry also fails, the resolver still gets marked bad on the next tick.
+                val bridgeFailureFastRetry = bridgeAccumulatedRecovery || failureStormRecovery
                 val nativeNotReadyRecovery = reason.startsWith("native_not_ready")
                 val nativeDownFastRecovery = reason == "native_not_running" &&
                     config.resolverMode == Config.ResolverMode.AUTO &&
@@ -648,11 +656,11 @@ class TinyVpnService : VpnService() {
                     !failureStormRecovery &&
                     (nativeDownFastRecovery || nativeNotReadyRecovery)
                 val reuseCurrentResolver = isNativeNoProgress ||
-                    bridgeAccumulatedRecovery ||
+                    bridgeFailureFastRetry ||
                     (fastPathRecovery && !trafficRecovery && !bridgeFailureRecovery)
                 val rotateResolver = (reason == "native_not_running" && !isNativeNoProgress) ||
                     trafficRecovery ||
-                    (bridgeFailureRecovery && !bridgeAccumulatedRecovery) ||
+                    (bridgeFailureRecovery && !bridgeFailureFastRetry) ||
                     nativeNotReadyRecovery ||
                     resolverUnreachableRecovery
                 if (isNativeNoProgress) {
