@@ -281,9 +281,11 @@ class TinyVpnService : VpnService() {
         val uid = applicationInfo.uid
         val rx = (TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0) - rxBase
         val tx = (TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0) - txBase
-        maybeUpdateTrafficNotification(rx, tx)
         val hev = HevSocks5Tunnel.stats()
         val bridge = MiniSlipstreamSocksBridge.stats()
+        val notificationRx = if (HevSocks5Tunnel.isRunning()) hev.rxBytes else bridge.rxBytes
+        val notificationTx = if (HevSocks5Tunnel.isRunning()) hev.txBytes else bridge.txBytes
+        maybeUpdateTrafficNotification(notificationRx, notificationTx)
         val running = SlipstreamBridge.isRunning()
         val ready = SlipstreamBridge.isReady()
         val now = System.currentTimeMillis()
@@ -842,9 +844,10 @@ class TinyVpnService : VpnService() {
             return
         }
         val now = System.currentTimeMillis()
-        val elapsedMs = (now - notificationSampleAt).takeIf { notificationSampleAt != 0L && it > 0 } ?: 1000L
-        val downRate = ((rx - notificationRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
-        val upRate = ((tx - notificationTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val firstSample = notificationSampleAt == 0L
+        val elapsedMs = (now - notificationSampleAt).takeIf { !firstSample && it > 0 } ?: 1000L
+        val downRate = if (firstSample) 0L else ((rx - notificationRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val upRate = if (firstSample) 0L else ((tx - notificationTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
         notificationRxLast = rx
         notificationTxLast = tx
         notificationSampleAt = now

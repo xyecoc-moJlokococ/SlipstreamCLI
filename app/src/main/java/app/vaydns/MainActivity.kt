@@ -84,6 +84,7 @@ class MainActivity : android.app.Activity() {
     private var diagnosticsVisible = false
     private var drawerOpen = false
     private var currentSectionTitle = "Home"
+    private var drawerEdge: View? = null
     private var drawerScrim: View? = null
     private var drawerPanel: View? = null
     private var drawerWidth = 0
@@ -284,6 +285,10 @@ class MainActivity : android.app.Activity() {
         }
         frame.addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(bottomConnectBar(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(76), Gravity.BOTTOM))
+        frame.addView(connectButtonOverlay(), FrameLayout.LayoutParams(dp(82), dp(82), Gravity.BOTTOM or Gravity.END).apply {
+            rightMargin = dp(20)
+            bottomMargin = dp(38)
+        })
         addDrawer(frame, "Home")
         root.requestFocus()
         return frame
@@ -350,6 +355,7 @@ class MainActivity : android.app.Activity() {
 
     private fun addDrawer(frame: FrameLayout, selected: String) {
         drawerOpen = false
+        val diagnosticsEnabled = ConfigStore.loadGlobalSettings(this).fileLogging
         val width = (resources.displayMetrics.widthPixels * 0.82f).toInt().coerceAtMost(dp(320))
         drawerWidth = width
         val edge = View(this).apply {
@@ -363,12 +369,9 @@ class MainActivity : android.app.Activity() {
         }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            isClickable = true
             setBackgroundColor(color(R.color.slipnet_card))
             setPadding(dp(18), dp(58), dp(18), dp(18))
-            setOnApplyWindowInsetsListener { view, insets ->
-                view.setPadding(dp(18), insets.systemWindowInsetTop + dp(18), dp(18), dp(18))
-                insets
-            }
             translationX = -width.toFloat()
             addView(TextView(this@MainActivity).apply {
                 text = "SlipstreamCLI"
@@ -377,11 +380,14 @@ class MainActivity : android.app.Activity() {
                 setTextColor(color(R.color.slipnet_text_primary))
             }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             addView(drawerItem("Home", selected == "Home") { showMainScreen() }, drawerItemParams(first = true))
-            addView(drawerItem("Diagnostics", selected == "Diagnostics") { showDiagnostics() }, drawerItemParams())
+            if (diagnosticsEnabled) {
+                addView(drawerItem("Diagnostics", selected == "Diagnostics") { showDiagnostics() }, drawerItemParams())
+            }
             addView(drawerItem("Settings", selected == "Settings") { showGlobalSettings() }, drawerItemParams())
         }
         drawerScrim = scrim
         drawerPanel = panel
+        drawerEdge = edge
         installDrawerEdgeSwipe(edge)
         installDrawerPanelDrag(panel)
         frame.addView(edge, FrameLayout.LayoutParams(dp(28), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.START))
@@ -734,6 +740,19 @@ class MainActivity : android.app.Activity() {
             }
         }
 
+    private fun compactScrollScreen(root: LinearLayout, bottomPadding: Int): ScrollView =
+        scrollScreen(root).apply {
+            setOnApplyWindowInsetsListener { _, insets ->
+                root.setPadding(
+                    dp(16),
+                    dp(6) + insets.systemWindowInsetTop,
+                    dp(16),
+                    bottomPadding + insets.systemWindowInsetBottom
+                )
+                insets
+            }
+        }
+
     private fun showMainScreen(transition: ScreenTransition = ScreenTransition.FORWARD) {
         editorVisible = false
         settingsVisible = false
@@ -745,6 +764,10 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun showDiagnostics() {
+        if (!ConfigStore.loadGlobalSettings(this).fileLogging) {
+            showMainScreen(ScreenTransition.NONE)
+            return
+        }
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = true
@@ -780,7 +803,7 @@ class MainActivity : android.app.Activity() {
                 }
             ), fieldParams())
         }, sectionParams())
-        frame.addView(scrollScreen(root), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.addView(compactScrollScreen(root, dp(24)), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addDrawer(frame, "Diagnostics")
         return frame
     }
@@ -790,10 +813,10 @@ class MainActivity : android.app.Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_bottom_bar)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setPadding(dp(16), dp(8), dp(112), dp(8))
             setOnApplyWindowInsetsListener { view, insets ->
                 val bottomInset = insets.systemWindowInsetBottom
-                view.setPadding(dp(16), dp(8), dp(16), dp(8) + bottomInset)
+                view.setPadding(dp(16), dp(8), dp(112), dp(8) + bottomInset)
                 view.layoutParams = view.layoutParams.apply {
                     height = dp(76) + bottomInset
                 }
@@ -818,16 +841,28 @@ class MainActivity : android.app.Activity() {
             }
             statusColumn.addView(bottomStatus, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             statusColumn.addView(trafficStatus, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(statusColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
 
+    private fun connectButtonOverlay(): FrameLayout =
+        FrameLayout(this).apply {
+            setOnApplyWindowInsetsListener { view, insets ->
+                (view.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
+                    params.bottomMargin = dp(38) + insets.systemWindowInsetBottom
+                    view.layoutParams = params
+                }
+                insets
+            }
             connectButton = Button(this@MainActivity).apply {
                 id = R.id.connect_button
                 val initialRunning = isTunnelRunning()
+                val initialLoading = ResolverSelector.lastProgress.active || connecting
                 text = if (initialRunning) "■" else "▶"
                 textSize = 18f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(color(R.color.slipnet_button_text_primary))
-                connectButtonColor = if (initialRunning) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
-                connectButtonRunning = initialRunning
+                connectButtonColor = if (initialRunning && !initialLoading) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
+                connectButtonRunning = initialRunning && !initialLoading
                 connectButtonBackground = connectButtonDrawable(connectButtonColor)
                 background = connectButtonBackground
                 stateListAnimator = null
@@ -844,12 +879,8 @@ class MainActivity : android.app.Activity() {
                 elevation = dp(8).toFloat()
                 translationZ = dp(8).toFloat()
             }
-            val connectFrame = FrameLayout(this@MainActivity).apply {
-                addView(connectButton, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER))
-                addView(connectProgress, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
-            }
-            addView(statusColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(connectFrame, LinearLayout.LayoutParams(dp(58), dp(58)))
+            addView(connectButton, FrameLayout.LayoutParams(dp(66), dp(66), Gravity.CENTER))
+            addView(connectProgress, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
         }
 
     private fun showGlobalSettings() {
@@ -908,7 +939,7 @@ class MainActivity : android.app.Activity() {
             addView(labeledField("SOCKS password", localSocksPassword), fieldParams())
         }, sectionParams())
         root.requestFocus()
-        frame.addView(scrollScreen(root), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.addView(compactScrollScreen(root, dp(24)), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addDrawer(frame, "Settings")
         return frame
     }
@@ -970,7 +1001,7 @@ class MainActivity : android.app.Activity() {
     private fun debugLogCheckbox(): CheckBox =
         CheckBox(this).apply {
             id = R.id.file_logging_checkbox
-            text = "Write debug log"
+            text = "Enable debug mode"
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
@@ -1166,7 +1197,7 @@ class MainActivity : android.app.Activity() {
     private fun deleteProfile(profile: ConfigProfile) {
         ConfigStore.deleteProfile(this, profile.id)
         toast("profile deleted")
-        showMainScreen()
+        showMainScreen(ScreenTransition.NONE)
     }
 
     private fun saveProfileFromEditor(profile: ConfigProfile?) {
@@ -1178,7 +1209,7 @@ class MainActivity : android.app.Activity() {
             ConfigStore.saveProfile(this, profile.copy(name = profileName.text.toString(), config = config))
             toast("profile saved")
         }
-        showMainScreen()
+        showMainScreen(ScreenTransition.BACK)
     }
 
     private fun installGlobalSettingsAutoSave() {
@@ -1199,7 +1230,10 @@ class MainActivity : android.app.Activity() {
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
         }
-        fileLogging.setOnCheckedChangeListener { _, _ -> persistGlobalSettingsFromEditor() }
+        fileLogging.setOnCheckedChangeListener { _, _ ->
+            persistGlobalSettingsFromEditor()
+            refreshDrawerForDebugMode()
+        }
         trafficNotification.setOnCheckedChangeListener { _, _ -> persistGlobalSettingsFromEditor() }
         localSocksAuth.setOnCheckedChangeListener { _, _ ->
             updateLocalSocksAuthUi()
@@ -1226,6 +1260,23 @@ class MainActivity : android.app.Activity() {
         ConfigStore.saveGlobalSettings(this, settings)
         configureNativeLogging()
         activeConfig = ConfigStore.effectiveConfig(this)
+    }
+
+    private fun refreshDrawerForDebugMode() {
+        if (diagnosticsVisible && !fileLogging.isChecked) {
+            showMainScreen(ScreenTransition.BACK)
+            return
+        }
+        val content = findViewById<ViewGroup>(android.R.id.content)
+        val root = if (content.childCount > 0) content.getChildAt(content.childCount - 1) else null
+        val frame = root as? FrameLayout ?: return
+        drawerEdge?.let { frame.removeView(it) }
+        drawerScrim?.let { frame.removeView(it) }
+        drawerPanel?.let { frame.removeView(it) }
+        drawerEdge = null
+        drawerScrim = null
+        drawerPanel = null
+        addDrawer(frame, currentSectionTitle)
     }
 
     private fun readConfig(): Config {
@@ -1399,10 +1450,12 @@ class MainActivity : android.app.Activity() {
         val uid = applicationInfo.uid
         val rawRx = TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0
         val rawTx = TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0
-        var rx = rawRx - rxBase
-        var tx = rawTx - txBase
         val hev = HevSocks5Tunnel.stats()
         val bridge = MiniSlipstreamSocksBridge.stats()
+        val displayRx = if (HevSocks5Tunnel.isRunning()) hev.rxBytes else bridge.rxBytes
+        val displayTx = if (HevSocks5Tunnel.isRunning()) hev.txBytes else bridge.txBytes
+        var rx = rawRx - rxBase
+        var tx = rawTx - txBase
         val running = isTunnelRunning()
         if (running) connecting = false
         val resolverProgress = ResolverSelector.lastProgress
@@ -1424,8 +1477,8 @@ class MainActivity : android.app.Activity() {
             running || stopping -> "■"
             else -> "▶"
         }
-        updateConnectButtonColor(running)
-        updateBottomStatus(running, resolverProgress, rx, tx)
+        updateConnectButtonColor(running && !loading)
+        updateBottomStatus(running, resolverProgress, if (idle) 0 else displayRx, if (idle) 0 else displayTx)
         if (::status.isInitialized) {
             status.text = buildString {
                 appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
@@ -1481,9 +1534,10 @@ class MainActivity : android.app.Activity() {
     private fun updateBottomStatus(running: Boolean, progress: ResolverSelector.Progress, rx: Long, tx: Long) {
         if (!::bottomStatus.isInitialized || !::trafficStatus.isInitialized) return
         val now = System.currentTimeMillis()
-        val elapsedMs = (now - rateSampleAt).takeIf { rateSampleAt != 0L && it > 0 } ?: 1000L
-        val downRate = ((rx - rateRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
-        val upRate = ((tx - rateTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val firstSample = rateSampleAt == 0L
+        val elapsedMs = (now - rateSampleAt).takeIf { !firstSample && it > 0 } ?: 1000L
+        val downRate = if (firstSample) 0L else ((rx - rateRxLast).coerceAtLeast(0) * 1000L) / elapsedMs
+        val upRate = if (firstSample) 0L else ((tx - rateTxLast).coerceAtLeast(0) * 1000L) / elapsedMs
         rateRxLast = rx
         rateTxLast = tx
         rateSampleAt = now
@@ -1491,9 +1545,12 @@ class MainActivity : android.app.Activity() {
         bottomStatus.text = when {
             stopping -> "Disconnecting"
             progress.active -> {
-                val total = progress.total.takeIf { it > 0 } ?: progress.speedTotal
-                val tested = if (progress.phase == "speed") progress.speedTested else progress.tested
-                if (total > 0) "DNS probing $tested/$total" else "DNS probing"
+                if (progress.phase == "speed") {
+                    val total = progress.speedTotal.takeIf { it > 0 } ?: progress.total
+                    if (total > 0) "Speed probing ${progress.speedTested}/$total" else "Speed probing"
+                } else {
+                    if (progress.total > 0) "DNS probing ${progress.tested}/${progress.total}" else "DNS probing"
+                }
             }
             connecting -> "Connecting"
             running -> "Connected"
