@@ -158,16 +158,18 @@ object SlipstreamBridge {
         domain: String,
         resolver: ResolverListConfig,
         listenPort: Int,
-        qnameMtu: Int = 0
+        qnameMtu: Int = 0,
+        resolverTransport: String = "udp"
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libslipstream is not loaded"))
         val hosts = resolver.hosts.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         require(hosts.isNotEmpty()) { "resolver is empty" }
+        val transport = resolverTransport.lowercase().takeIf { it == "udp" || it == "tcp" } ?: "udp"
         val pathMode = if (resolver.authoritative) "authoritative" else "recursive"
         AppLog.i(
             TAG,
             "probe start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
-                "mode=$pathMode transport=tcp cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
+                "mode=$pathMode transport=$transport cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
                 "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
@@ -185,7 +187,7 @@ object SlipstreamBridge {
             false,
             10000,
             120000,
-            "tcp",
+            transport,
             DEFAULT_PACING_GAIN_PROBE,
             DEFAULT_DNS_TCP_PACKET_LOOP_BURST,
             true,

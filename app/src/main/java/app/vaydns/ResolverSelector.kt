@@ -36,7 +36,8 @@ data class ResolverChoice(
     val testedCount: Int = hosts.size,
     val aliveCount: Int = hosts.size,
     val skippedCount: Int = 0,
-    val latencyMs: Long = -1
+    val latencyMs: Long = -1,
+    val transport: Config.ResolverTransport = Config.ResolverTransport.UDP
 )
 
 object ResolverSelector {
@@ -55,8 +56,13 @@ object ResolverSelector {
     private const val SPEED_PROBE_HOST = "speed.cloudflare.com"
     private const val SPEED_PROBE_PATH = "/__down?bytes=$SPEED_PROBE_BYTES"
     private val QNAME_MTU_PROBE_ORDER = intArrayOf(0)
+    private val TRANSPORT_PROBE_ORDER = listOf(Config.ResolverTransport.UDP, Config.ResolverTransport.TCP)
+
+    private fun parseTransport(value: String?): Config.ResolverTransport =
+        runCatching { Config.ResolverTransport.valueOf(value.orEmpty()) }.getOrDefault(Config.ResolverTransport.UDP)
 
     @Volatile var lastProgress: Progress = Progress()
+    @Volatile var lastConnectedTransport: Config.ResolverTransport? = null
     private val cancelGeneration = AtomicLong(0)
 
     data class Progress(
@@ -127,6 +133,7 @@ object ResolverSelector {
         val host: String,
         val totalMs: Long,
         val qnameMtu: Int,
+        val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
         val lastOkAt: Long
     )
 
@@ -192,7 +199,7 @@ object ResolverSelector {
             val host = config.resolverHost.trim()
             AppLog.i(TAG, "manual resolver selected host=$host:$port reason=$reason")
             lastProgress = Progress(active = false, reason = reason, phase = "done", tested = 1, total = 1, alive = 1, selected = host)
-            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1)
+            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1, transport = config.resolverTransport)
         }
 
         val probe = autoProbe(context, port, reason, generation)
@@ -282,7 +289,8 @@ object ResolverSelector {
             testedCount = candidates.size,
             aliveCount = alive.size,
             skippedCount = skipHosts.size,
-            latencyMs = speedBest?.totalMs ?: -1
+            latencyMs = speedBest?.totalMs ?: -1,
+            transport = speedBest?.transport ?: config.resolverTransport
         )
     }
 
@@ -408,6 +416,7 @@ object ResolverSelector {
                             host = host,
                             totalMs = item.optLong("totalMs", Long.MAX_VALUE),
                             qnameMtu = item.optInt("qnameMtu", 0),
+                            transport = parseTransport(item.optString("transport")),
                             lastOkAt = item.optLong("lastOkAt", updatedAt)
                         )
                     )
@@ -442,6 +451,7 @@ object ResolverSelector {
                     .put("host", result.host)
                     .put("totalMs", result.totalMs)
                     .put("qnameMtu", result.qnameMtu)
+                    .put("transport", result.transport.name)
                     .put("lastOkAt", now)
             )
         }
@@ -455,8 +465,65 @@ object ResolverSelector {
             .apply()
         AppLog.i(
             TAG,
-            "resolver cache saved network=${profile.label} hosts=${ok.joinToString { "${it.host}:${it.totalMs}ms" }}"
+            "resolver cache saved network=${profile.label} hosts=${ok.joinToString { "${it.host}:${it.totalMs}ms:${it.transport.name.lowercase()}" }}"
         )
+    }
+
+    fun rememberTransport(context: Context, config: Config, host: String, transport: Config.ResolverTransport) {
+        if (config.resolverMode != Config.ResolverMode.AUTO) return
+        val cleanHost = host.trim()
+        if (cleanHost.isBlank()) return
+        val profile = currentNetworkProfile(context, config)
+        val prefs = context.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(profile.key, null)
+        val existing = runCatching {
+            val json = JSONObject(raw ?: "{}")
+            val hosts = json.optJSONArray("resolvers") ?: JSONArray()
+            buildList {
+                for (i in 0 until hosts.length()) {
+                    val item = hosts.optJSONObject(i) ?: continue
+                    val h = item.optString("host").trim()
+                    if (h.isBlank()) continue
+                    add(
+                        CachedResolver(
+                            host = h,
+                            totalMs = item.optLong("totalMs", Long.MAX_VALUE),
+                            qnameMtu = item.optInt("qnameMtu", 0),
+                            transport = parseTransport(item.optString("transport")),
+                            lastOkAt = item.optLong("lastOkAt", 0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+        val now = System.currentTimeMillis()
+        val prior = existing.firstOrNull { it.host == cleanHost }
+        val updatedEntry = CachedResolver(
+            host = cleanHost,
+            totalMs = prior?.totalMs ?: Long.MAX_VALUE,
+            qnameMtu = prior?.qnameMtu ?: 0,
+            transport = transport,
+            lastOkAt = now
+        )
+        val merged = (existing.filterNot { it.host == cleanHost } + updatedEntry).sortedBy { it.totalMs }
+        val arr = JSONArray()
+        merged.forEach { r ->
+            arr.put(
+                JSONObject()
+                    .put("host", r.host)
+                    .put("totalMs", r.totalMs)
+                    .put("qnameMtu", r.qnameMtu)
+                    .put("transport", r.transport.name)
+                    .put("lastOkAt", r.lastOkAt)
+            )
+        }
+        val json = JSONObject()
+            .put("updatedAt", now)
+            .put("network", profile.label)
+            .put("whitelistEnabled", profile.whitelistEnabled)
+            .put("resolvers", arr)
+        prefs.edit().putString(profile.key, json.toString()).apply()
+        AppLog.i(TAG, "resolver transport remembered host=$cleanHost transport=${transport.name.lowercase()} network=${profile.label}")
     }
 
     fun chooseFast(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
@@ -467,7 +534,7 @@ object ResolverSelector {
             val host = config.resolverHost.trim()
             AppLog.i(TAG, "manual resolver selected host=$host:$port reason=$reason")
             lastProgress = Progress(active = false, reason = reason, phase = "done", tested = 1, total = 1, alive = 1, selected = host)
-            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1)
+            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1, transport = config.resolverTransport)
         }
         val cached = loadResolverCache(context, config)
         if (cached != null) {
@@ -502,7 +569,8 @@ object ResolverSelector {
                     testedCount = cachedHosts.size,
                     aliveCount = aliveCached.size,
                     skippedCount = skipHosts.size,
-                    latencyMs = cachedResolver?.totalMs ?: -1
+                    latencyMs = cachedResolver?.totalMs ?: -1,
+                    transport = cachedResolver?.transport ?: Config.ResolverTransport.UDP
                 )
             }
             AppLog.w(
@@ -544,7 +612,8 @@ object ResolverSelector {
             qnameMtu = 0,
             testedCount = probe.candidates.size,
             aliveCount = probe.alive.size,
-            skippedCount = skipHosts.size
+            skippedCount = skipHosts.size,
+            transport = Config.ResolverTransport.UDP
         )
     }
 
@@ -582,7 +651,8 @@ object ResolverSelector {
                     testedCount = cached.resolvers.size,
                     aliveCount = cached.resolvers.size,
                     skippedCount = skipHosts.size,
-                    latencyMs = bestCached.totalMs
+                    latencyMs = bestCached.totalMs,
+                    transport = bestCached.transport
                 )
             }
             val cachedCandidates = cached.resolvers.map { it.host }
@@ -631,7 +701,8 @@ object ResolverSelector {
                         testedCount = cachedCandidates.size,
                         aliveCount = cachedCandidates.size,
                         skippedCount = skipHosts.size,
-                        latencyMs = best.totalMs
+                        latencyMs = best.totalMs,
+                        transport = best.transport
                     )
                 }
                 AppLog.w(TAG, "resolver cache speed validation failed reason=$reason network=${cached.profile.label}; falling back to full probe")
@@ -683,7 +754,8 @@ object ResolverSelector {
             testedCount = probe.candidates.size,
             aliveCount = probe.alive.size,
             skippedCount = skipHosts.size,
-            latencyMs = best.totalMs
+            latencyMs = best.totalMs,
+            transport = best.transport
         )
     }
 
@@ -777,6 +849,7 @@ object ResolverSelector {
         val totalMs: Long = Long.MAX_VALUE,
         val bytes: Long = 0,
         val qnameMtu: Int = 0,
+        val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
         val error: String = ""
     )
 
@@ -923,55 +996,64 @@ object ResolverSelector {
         checkNotCancelled(generation)
         val primaryHost = resolverHosts.firstOrNull().orEmpty()
         var lastError = ""
-        for (qnameMtu in qnameMtuOrder) {
-            val slipstreamPort = findFreeLocalPort()
-            val startAt = System.nanoTime()
-            try {
-                checkNotCancelled(generation)
-                AppLog.i(TAG, "speed probe try resolvers=${resolverHosts.joinToString()} qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}")
-                SlipstreamBridge.startProbeClient(
-                    domain,
-                    ResolverListConfig(resolverHosts, resolverPort, true),
-                    slipstreamPort,
-                    qnameMtu
-                ).getOrThrow()
-                waitProbeReady(slipstreamPort, generation)
-                val readyMs = elapsedMs(startAt)
-                val metrics = runCatching {
-                    downloadProbe(
-                        slipstreamPort,
-                        startAt,
-                        username?.takeIf { it.isNotBlank() },
-                        password?.takeIf { it.isNotBlank() },
-                        generation
-                    )
-                }
-                metrics.onFailure {
-                    AppLog.w(
+        for (transport in TRANSPORT_PROBE_ORDER) {
+            for (qnameMtu in qnameMtuOrder) {
+                val slipstreamPort = findFreeLocalPort()
+                val startAt = System.nanoTime()
+                try {
+                    checkNotCancelled(generation)
+                    AppLog.i(
                         TAG,
-                        "speed probe data path failed after ready; rejecting resolver " +
-                            "qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"} error=${it.message ?: it::class.java.simpleName}"
+                        "speed probe try resolvers=${resolverHosts.joinToString()} " +
+                            "transport=${transport.name.lowercase()} qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
                     )
+                    SlipstreamBridge.startProbeClient(
+                        domain,
+                        ResolverListConfig(resolverHosts, resolverPort, true),
+                        slipstreamPort,
+                        qnameMtu,
+                        transport.name.lowercase()
+                    ).getOrThrow()
+                    waitProbeReady(slipstreamPort, generation)
+                    val readyMs = elapsedMs(startAt)
+                    val metrics = runCatching {
+                        downloadProbe(
+                            slipstreamPort,
+                            startAt,
+                            username?.takeIf { it.isNotBlank() },
+                            password?.takeIf { it.isNotBlank() },
+                            generation
+                        )
+                    }
+                    metrics.onFailure {
+                        AppLog.w(
+                            TAG,
+                            "speed probe data path failed after ready; rejecting resolver " +
+                                "transport=${transport.name.lowercase()} qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"} " +
+                                "error=${it.message ?: it::class.java.simpleName}"
+                        )
+                    }
+                    val value = metrics.getOrThrow()
+                    return SpeedProbeResult(
+                        host = primaryHost,
+                        hosts = resolverHosts,
+                        ok = true,
+                        lookupMs = readyMs,
+                        connectMs = value.connectMs,
+                        tlsMs = value.tlsMs,
+                        startMs = value.startMs,
+                        totalMs = value.totalMs,
+                        bytes = value.bytes,
+                        qnameMtu = qnameMtu,
+                        transport = transport,
+                        error = ""
+                    )
+                } catch (e: Throwable) {
+                    lastError = "transport=${transport.name.lowercase()} qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"} ${e.message ?: e::class.java.simpleName}"
+                    AppLog.w(TAG, "speed probe try failed resolvers=${resolverHosts.joinToString()} $lastError")
+                } finally {
+                    runCatching { SlipstreamBridge.stopProbeClient(slipstreamPort) }
                 }
-                val value = metrics.getOrThrow()
-                return SpeedProbeResult(
-                    host = primaryHost,
-                    hosts = resolverHosts,
-                    ok = true,
-                    lookupMs = readyMs,
-                    connectMs = value.connectMs,
-                    tlsMs = value.tlsMs,
-                    startMs = value.startMs,
-                    totalMs = value.totalMs,
-                    bytes = value.bytes,
-                    qnameMtu = qnameMtu,
-                    error = ""
-                )
-            } catch (e: Throwable) {
-                lastError = "qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"} ${e.message ?: e::class.java.simpleName}"
-                AppLog.w(TAG, "speed probe try failed resolvers=${resolverHosts.joinToString()} $lastError")
-            } finally {
-                runCatching { SlipstreamBridge.stopProbeClient(slipstreamPort) }
             }
         }
         return SpeedProbeResult(host = primaryHost, hosts = resolverHosts, ok = false, error = lastError)

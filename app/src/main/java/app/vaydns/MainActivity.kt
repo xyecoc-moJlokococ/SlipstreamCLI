@@ -59,6 +59,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var resolverPort: EditText
     private lateinit var resolverMode: Spinner
     private lateinit var resolverTransport: Spinner
+    private lateinit var resolverTransportContainer: View
     private lateinit var resolverPathMode: Spinner
     private lateinit var useLocalDns: Button
     private lateinit var listenPort: EditText
@@ -878,9 +879,10 @@ class MainActivity : android.app.Activity() {
             addView(labeledField("DNS mode", resolverMode), fieldParams())
             resolverHostContainer = labeledField("Resolver host", resolverRow)
             addView(resolverHostContainer, fieldParams())
+            resolverTransportContainer = labeledField("Transport", resolverTransport)
             addView(row(
                 labeledField("Resolver port", resolverPort),
-                labeledField("Transport", resolverTransport)
+                resolverTransportContainer
             ), fieldParams())
             addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
             addView(labeledField("Auth mode", auth), fieldParams())
@@ -1620,8 +1622,9 @@ class MainActivity : android.app.Activity() {
                     ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(c)),
                     slipstreamPort,
                     choice.qnameMtu,
-                    c.resolverTransport.name.lowercase()
+                    choice.transport.name.lowercase()
                 ).getOrThrow()
+                ResolverSelector.lastConnectedTransport = choice.transport
                 MiniSlipstreamSocksBridge.start(
                     listenHost = "127.0.0.1",
                     listenPort = bridgePort,
@@ -1678,6 +1681,7 @@ class MainActivity : android.app.Activity() {
         connecting = false
         connectStartedAt = 0L
         ResolverSelector.cancelActiveProbes("disconnect")
+        ResolverSelector.lastConnectedTransport = null
         connectButton.isEnabled = false
         proxyStarted = false
         AppLog.i(TAG, "disconnect requested")
@@ -1750,7 +1754,7 @@ class MainActivity : android.app.Activity() {
         if (::status.isInitialized) {
             status.text = buildString {
                 appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
-                appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=${config.resolverPathMode.name.lowercase()} cc=authoritative-fast")
+                appendLine("transport=${(ResolverSelector.lastConnectedTransport ?: config.resolverTransport).name.lowercase()} resolver=${config.resolverPathMode.name.lowercase()} cc=authoritative-fast")
                 appendLine("upstream=qname")
                 if (config.resolverMode == Config.ResolverMode.AUTO) {
                     appendLine("resolver mode=auto")
@@ -1844,11 +1848,12 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun updateResolverUi() {
-        if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized) return
+        if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized || !::resolverTransportContainer.isInitialized) return
         val manual = resolverMode.selectedItemPosition == 0
         resolverHost.isEnabled = manual
         resolverHostContainer.visibility = if (manual) View.VISIBLE else View.GONE
         useLocalDns.visibility = if (manual) View.VISIBLE else View.GONE
+        resolverTransportContainer.visibility = if (manual) View.VISIBLE else View.GONE
     }
 
     private fun updateLocalSocksAuthUi() {
