@@ -13,6 +13,7 @@
     <item name="use_local_dns_button" type="id" />
     <item name="resolver_port_field" type="id" />
     <item name="resolver_transport_spinner" type="id" />
+    <item name="resolver_path_mode_spinner" type="id" />
     <item name="listen_port_field" type="id" />
     <item name="mode_spinner" type="id" />
     <item name="auth_spinner" type="id" />

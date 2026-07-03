@@ -13,6 +13,7 @@ data class Config(
     val resolverPort: Int,
     val resolverMode: ResolverMode,
     val resolverTransport: ResolverTransport,
+    val resolverPathMode: ResolverPathMode,
     val listenPort: Int,
     val mode: Mode,
     val authMode: AuthMode,
@@ -23,6 +24,7 @@ data class Config(
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
+    enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
 }
 
 data class ConfigProfile(
@@ -67,6 +69,10 @@ object ConfigStore {
             resolverTransport = enumValue(
                 p.getString("resolverTransport", Config.ResolverTransport.TCP.name),
                 Config.ResolverTransport.TCP
+            ),
+            resolverPathMode = enumValue(
+                p.getString("resolverPathMode", Config.ResolverPathMode.AUTHORITATIVE.name),
+                Config.ResolverPathMode.AUTHORITATIVE
             ),
             listenPort = global.listenPort,
             mode = global.mode,
@@ -271,6 +277,7 @@ object ConfigStore {
             .putInt("resolverPort", config.resolverPort)
             .putString("resolverMode", config.resolverMode.name)
             .putString("resolverTransport", config.resolverTransport.name)
+            .putString("resolverPathMode", config.resolverPathMode.name)
             .putInt("listenPort", config.listenPort)
             .putString("mode", config.mode.name)
             .putString("authMode", config.authMode.name)
@@ -308,6 +315,7 @@ object ConfigStore {
             .put("resolverPort", config.resolverPort)
             .put("resolverMode", config.resolverMode.name)
             .put("resolverTransport", config.resolverTransport.name)
+            .put("resolverPathMode", config.resolverPathMode.name)
             .put("listenPort", config.listenPort)
             .put("mode", config.mode.name)
             .put("authMode", config.authMode.name)
@@ -321,6 +329,7 @@ object ConfigStore {
             resolverPort = json.optInt("resolverPort", 53),
             resolverMode = enumValue(json.optString("resolverMode"), Config.ResolverMode.MANUAL),
             resolverTransport = enumValue(json.optString("resolverTransport"), Config.ResolverTransport.TCP),
+            resolverPathMode = enumValue(json.optString("resolverPathMode"), Config.ResolverPathMode.AUTHORITATIVE),
             listenPort = json.optInt("listenPort", 1080),
             mode = enumValue(json.optString("mode"), Config.Mode.PROXY),
             authMode = enumValue(json.optString("authMode"), Config.AuthMode.NO_AUTH),
@@ -381,6 +390,11 @@ private object SlipstreamLinkParser {
             "tcp" -> Config.ResolverTransport.TCP
             else -> base.resolverTransport
         }
+        val pathMode = when (first(params, "resolverpathmode", "pathmode", "authoritative")?.lowercase()) {
+            "recursive", "resolver", "false", "off", "0" -> Config.ResolverPathMode.RECURSIVE
+            "authoritative", "auth", "true", "on", "1" -> Config.ResolverPathMode.AUTHORITATIVE
+            else -> base.resolverPathMode
+        }
         val authMode = if (first(params, "username", "user").orEmpty().isNotBlank() || first(params, "password", "pass").orEmpty().isNotBlank()) {
             Config.AuthMode.LOGIN_PASSWORD
         } else {
@@ -392,6 +406,7 @@ private object SlipstreamLinkParser {
             resolverPort = first(params, "resolverport", "dnsport", "port")?.toIntOrNull() ?: base.resolverPort,
             resolverMode = resolverMode,
             resolverTransport = transport,
+            resolverPathMode = pathMode,
             authMode = authMode,
             username = first(params, "username", "user") ?: base.username,
             password = first(params, "password", "pass") ?: base.password

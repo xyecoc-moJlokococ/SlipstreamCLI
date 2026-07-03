@@ -59,6 +59,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var resolverPort: EditText
     private lateinit var resolverMode: Spinner
     private lateinit var resolverTransport: Spinner
+    private lateinit var resolverPathMode: Spinner
     private lateinit var useLocalDns: Button
     private lateinit var listenPort: EditText
     private lateinit var username: EditText
@@ -109,6 +110,7 @@ class MainActivity : android.app.Activity() {
     private var rateTxLast = 0L
     private var rateSampleAt = 0L
     private var lastLogAt = 0L
+    private var connectStartedAt = 0L
     private var pendingStartVpn = false
     private var startupPermissionFlowActive = false
     private var notificationRequestShown = false
@@ -863,6 +865,7 @@ class MainActivity : android.app.Activity() {
             })
         }
         resolverTransport = spinner(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
+        resolverPathMode = spinner(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
         auth = spinner(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
         password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
@@ -879,6 +882,7 @@ class MainActivity : android.app.Activity() {
                 labeledField("Resolver port", resolverPort),
                 labeledField("Transport", resolverTransport)
             ), fieldParams())
+            addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
             addView(labeledField("Auth mode", auth), fieldParams())
             addView(labeledField("Username", username), fieldParams())
             addView(labeledField("Password", password), fieldParams())
@@ -1398,6 +1402,7 @@ class MainActivity : android.app.Activity() {
         resolverPort.setText(c.resolverPort.toString())
         resolverMode.setSelection(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
         resolverTransport.setSelection(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
+        resolverPathMode.setSelection(if (c.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE) 1 else 0)
         auth.setSelection(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
         username.setText(c.username)
         password.setText(c.password)
@@ -1533,6 +1538,11 @@ class MainActivity : android.app.Activity() {
             } else {
                 Config.ResolverTransport.UDP
             },
+            resolverPathMode = if (resolverPathMode.selectedItemPosition == 1) {
+                Config.ResolverPathMode.AUTHORITATIVE
+            } else {
+                Config.ResolverPathMode.RECURSIVE
+            },
             listenPort = global.listenPort,
             mode = global.mode,
             authMode = if (auth.selectedItemPosition == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
@@ -1574,6 +1584,7 @@ class MainActivity : android.app.Activity() {
         }
         val c = readConfig()
         connecting = true
+        connectStartedAt = System.currentTimeMillis()
         updateStatus()
         ConfigStore.save(this, c)
         if (c.mode == Config.Mode.VPN) {
@@ -1606,7 +1617,7 @@ class MainActivity : android.app.Activity() {
                 val localSocks = localSocksCredentials()
                 SlipstreamBridge.startClient(
                     c.domain,
-                    ResolverListConfig(choice.hosts, choice.port, true),
+                    ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(c)),
                     slipstreamPort,
                     choice.qnameMtu,
                     c.resolverTransport.name.lowercase()
@@ -1654,6 +1665,7 @@ class MainActivity : android.app.Activity() {
             }
         } catch (e: Throwable) {
             connecting = false
+            connectStartedAt = 0L
             AppLog.e(TAG, "failed to start vpn service", e)
             toast(e.message ?: "vpn start failed")
         }
@@ -1664,6 +1676,7 @@ class MainActivity : android.app.Activity() {
         stopping = true
         pendingStartVpn = false
         connecting = false
+        connectStartedAt = 0L
         ResolverSelector.cancelActiveProbes("disconnect")
         connectButton.isEnabled = false
         proxyStarted = false
@@ -1698,8 +1711,22 @@ class MainActivity : android.app.Activity() {
         var rx = rawRx - rxBase
         var tx = rawTx - txBase
         val running = isTunnelRunning()
-        if (running) connecting = false
         val resolverProgress = ResolverSelector.lastProgress
+        if (running) {
+            connecting = false
+            connectStartedAt = 0L
+        } else if (
+            connecting &&
+            !pendingStartVpn &&
+            !resolverProgress.active &&
+            !stopping &&
+            connectStartedAt != 0L &&
+            System.currentTimeMillis() - connectStartedAt > START_CONNECTING_GRACE_MS
+        ) {
+            AppLog.w(TAG, "clearing stale connecting state after cancelled/failed start")
+            connecting = false
+            connectStartedAt = 0L
+        }
         val idle = !running && !connecting && !resolverProgress.active && !stopping
         if (idle) {
             rxBase = rawRx
@@ -1723,7 +1750,7 @@ class MainActivity : android.app.Activity() {
         if (::status.isInitialized) {
             status.text = buildString {
                 appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
-                appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=authoritative cc=authoritative-fast")
+                appendLine("transport=${config.resolverTransport.name.lowercase()} resolver=${config.resolverPathMode.name.lowercase()} cc=authoritative-fast")
                 appendLine("upstream=qname")
                 if (config.resolverMode == Config.ResolverMode.AUTO) {
                     appendLine("resolver mode=auto")
@@ -1771,6 +1798,9 @@ class MainActivity : android.app.Activity() {
         rateTxLast = 0
         rateSampleAt = 0
     }
+
+    private fun isAuthoritativeResolverPath(config: Config): Boolean =
+        config.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE
 
     private fun updateBottomStatus(running: Boolean, progress: ResolverSelector.Progress, rx: Long, tx: Long) {
         if (!::bottomStatus.isInitialized || !::trafficStatus.isInitialized) return
@@ -2073,6 +2103,7 @@ class MainActivity : android.app.Activity() {
         private const val KEY_NOTIFICATIONS_PROMPTED = "notifications_prompted"
         private const val KEY_VPN_STARTUP_PROMPTED = "vpn_startup_prompted"
         private const val MAX_CRASH_DIALOG_CHARS = 64 * 1024
+        private const val START_CONNECTING_GRACE_MS = 2500L
         private const val CRASH_PREFS = "crash_report"
         private const val KEY_CRASH_SEEN_SIZE = "seen_size"
         private val CONNECTED_BUTTON_COLOR = android.graphics.Color.rgb(72, 132, 82)

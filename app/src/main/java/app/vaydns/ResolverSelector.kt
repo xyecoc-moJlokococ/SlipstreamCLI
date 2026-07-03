@@ -90,23 +90,6 @@ object ResolverSelector {
         if (cancelGeneration.get() != generation) error("resolver probe cancelled")
     }
 
-    private val operatorResolvers = listOf(
-        "176.59.159.161", "176.59.159.157",
-        "212.188.4.10", "195.34.32.116", "213.87.0.1", "213.87.1.1",
-        "213.87.142.95", "213.87.142.85", "213.87.142.94", "213.87.142.84",
-        "213.87.74.21", "213.87.74.5", "213.87.211.20", "213.87.210.20",
-        "10.10.22.3", "194.67.2.114", "194.67.1.154",
-        "85.249.22.248", "85.249.22.249", "85.249.22.251", "85.249.22.250",
-        "176.59.62.125", "176.59.62.126", "176.59.31.182", "176.59.31.183",
-        "176.59.223.159", "176.59.95.243", "176.59.63.148", "176.59.63.204",
-        "176.59.127.156",
-        "80.245.112.23", "195.208.4.1", "194.147.49.16",
-        "84.201.166.221", "84.201.166.139", "84.201.166.50", "84.201.166.116",
-        "83.169.217.22", "10.112.248.238", "10.112.250.2", "10.112.248.226",
-        "10.148.25.144", "10.205.171.77", "10.205.171.69",
-        "10.93.233.220", "10.93.233.252"
-    )
-
     private val unshapedResolvers = listOf(
         "185.22.235.137",
         "82.151.127.188",
@@ -709,9 +692,8 @@ object ResolverSelector {
         val defaultNetwork = defaultNetworkResolvers(context)
         val local = defaultNetwork.resolvers
         val candidates = buildList {
-            addAll(unshapedResolvers)
-            addAll(operatorResolvers)
             addAll(local)
+            addAll(unshapedResolvers)
         }.map { it.trim() }
             .filter { it.isNotBlank() }
             .filter { it !in blockedAutoResolvers }

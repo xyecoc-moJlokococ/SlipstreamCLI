@@ -33,6 +33,7 @@ class TinyVpnService : VpnService() {
     @Volatile private var recovering = false
     @Volatile private var stopping = false
     @Volatile private var starting = false
+    @Volatile private var lifecycleGeneration = 0
     @Volatile private var resolverOptimizerRunning = false
     private var rxBase = 0L
     private var txBase = 0L
@@ -91,20 +92,24 @@ class TinyVpnService : VpnService() {
             AppLog.w(TAG, "VPN start ignored starting=$starting active=$tunnelActive")
             return
         }
+        val generation = ++lifecycleGeneration
+        stopping = false
         starting = true
         if (ConfigStore.loadGlobalSettings(this).trafficNotification) {
             startForeground(1, notification("Starting", "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"))
         }
         Thread({
             try {
-                startTunnelWorker()
+                startTunnelWorker(generation)
             } finally {
-                starting = false
+                if (lifecycleGeneration == generation) {
+                    starting = false
+                }
             }
         }, "vpn-start").start()
     }
 
-    private fun startTunnelWorker() {
+    private fun startTunnelWorker(generation: Int) {
         val config = normalizeAutoConfig(ConfigStore.effectiveConfig(this))
         currentConfig = config
         tunnelActive = true
@@ -119,21 +124,23 @@ class TinyVpnService : VpnService() {
             resetTrafficBase()
             failedAutoResolvers.clear()
             val choice = ResolverSelector.chooseFast(this, config, "vpn_start")
-            if (!tunnelActive) error("VPN start cancelled")
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             currentResolver = choice
             val bridgePort = config.listenPort
             val slipstreamPort = config.listenPort + 1
             val localSocks = localSocksCredentials()
             SlipstreamBridge.startClient(
                 config.domain,
-                ResolverListConfig(choice.hosts, choice.port, true),
+                ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
                 slipstreamPort,
                 choice.qnameMtu,
                 config.resolverTransport.name.lowercase()
             ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             require(waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
                 "slipstream not ready after ${START_READY_TIMEOUT_MS}ms resolver=${choice.selectedHost}:${choice.port}"
             }
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             MiniSlipstreamSocksBridge.start(
                 listenHost = "127.0.0.1",
                 listenPort = bridgePort,
@@ -145,6 +152,7 @@ class TinyVpnService : VpnService() {
                 localUsername = localSocks.first,
                 localPassword = localSocks.second
             ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 
             val builder = Builder()
                 .setSession("Slipstream CLI")
@@ -166,11 +174,13 @@ class TinyVpnService : VpnService() {
                 username = localSocks.first,
                 password = localSocks.second
             ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             maybeUpdateTrafficNotification(0, 0, force = true)
             AppLog.i(
                 TAG,
                 "VPN connected resolver=${choice.selectedHost}:${choice.port} source=${choice.source} " +
                     "transport=${config.resolverTransport.name.lowercase()} " +
+                    "pathMode=${config.resolverPathMode.name.lowercase()} " +
                     "qnameMtu=${if (choice.qnameMtu > 0) choice.qnameMtu else "max"} " +
                     "tested=${choice.testedCount} alive=${choice.aliveCount} skipped=${choice.skippedCount}"
             )
@@ -207,8 +217,12 @@ class TinyVpnService : VpnService() {
         }
     }
 
+    private fun isAuthoritativeResolverPath(config: Config): Boolean =
+        config.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE
+
     private fun stopTunnel() {
         ResolverSelector.cancelActiveProbes("vpn_stop")
+        val generation = ++lifecycleGeneration
         if (
             !starting &&
             !tunnelActive &&
@@ -236,22 +250,28 @@ class TinyVpnService : VpnService() {
         handler.removeCallbacks(diagnostics)
         Thread({
             try {
-                runCatching { HevSocks5Tunnel.stop() }
-                    .onFailure { AppLog.w(TAG, "hev stop failed: ${it.message}") }
-                runCatching { MiniSlipstreamSocksBridge.stop() }
-                    .onFailure { AppLog.w(TAG, "bridge stop failed: ${it.message}") }
-                runCatching { tunFd?.close() }
-                    .onFailure { AppLog.w(TAG, "tun close failed: ${it.message}") }
-                tunFd = null
-                runCatching { SlipstreamBridge.stopClient() }
-                    .onFailure { AppLog.w(TAG, "native stop failed: ${it.message}") }
-                SlipstreamBridge.setVpnService(null)
-                AppLog.i(TAG, "VPN stop cleanup finished")
+                if (lifecycleGeneration == generation) {
+                    runCatching { HevSocks5Tunnel.stop() }
+                        .onFailure { AppLog.w(TAG, "hev stop failed: ${it.message}") }
+                    runCatching { MiniSlipstreamSocksBridge.stop() }
+                        .onFailure { AppLog.w(TAG, "bridge stop failed: ${it.message}") }
+                    runCatching { tunFd?.close() }
+                        .onFailure { AppLog.w(TAG, "tun close failed: ${it.message}") }
+                    tunFd = null
+                    runCatching { SlipstreamBridge.stopClient() }
+                        .onFailure { AppLog.w(TAG, "native stop failed: ${it.message}") }
+                    SlipstreamBridge.setVpnService(null)
+                    AppLog.i(TAG, "VPN stop cleanup finished")
+                } else {
+                    AppLog.i(TAG, "VPN stop cleanup skipped: newer lifecycle generation active")
+                }
             } finally {
                 handler.post {
-                    stopping = false
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    if (lifecycleGeneration == generation) {
+                        stopping = false
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             }
         }, "vpn-stop-cleanup").start()
@@ -351,6 +371,8 @@ class TinyVpnService : VpnService() {
                 "bridgeRx=${bridge.rxBytes} bridgeTx=${bridge.txBytes} " +
                 "connectOk=${bridge.connectOk} connectFail=${bridge.connectFail} dnsOk=${bridge.dnsOk} dnsFail=${bridge.dnsFail} " +
                 "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} bridgeThreads=${bridge.threads} " +
+                "transport=${currentConfig?.resolverTransport?.name?.lowercase() ?: "unknown"} " +
+                "pathMode=${currentConfig?.resolverPathMode?.name?.lowercase() ?: "unknown"} " +
                 "resolver=${currentResolver?.selectedHost ?: "none"}:${currentResolver?.port ?: 0} " +
                 "qnameMtu=${currentResolver?.qnameMtu?.takeIf { it > 0 } ?: "max"} " +
                 "dnsTested=${currentResolver?.testedCount ?: 0} dnsAlive=${currentResolver?.aliveCount ?: 0} " +
@@ -620,7 +642,7 @@ class TinyVpnService : VpnService() {
                 SlipstreamBridge.proxyOnlyMode = false
                 SlipstreamBridge.startClient(
                     config.domain,
-                    ResolverListConfig(choice.hosts, choice.port, true),
+                    ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
                     slipstreamPort,
                     choice.qnameMtu,
                     config.resolverTransport.name.lowercase()
@@ -691,7 +713,7 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.proxyOnlyMode = false
             SlipstreamBridge.startClient(
                 config.domain,
-                ResolverListConfig(choice.hosts, choice.port, true),
+                ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
                 slipstreamPort,
                 choice.qnameMtu,
                 config.resolverTransport.name.lowercase()
