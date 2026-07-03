@@ -243,20 +243,25 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeGetStats(
     jclass clazz
 ) {
     size_t tx_packets = 0, tx_bytes = 0, rx_packets = 0, rx_bytes = 0;
+    size_t quic_rejected = 0, udp_rejected = 0;
 
     if (tunnel_running) {
         hev_socks5_tunnel_stats(&tx_packets, &tx_bytes, &rx_packets, &rx_bytes);
+        quic_rejected = hev_socks5_tunnel_stats_quic_rejected();
+        udp_rejected = hev_socks5_tunnel_stats_udp_rejected();
     }
 
-    jlongArray result = (*env)->NewLongArray(env, 4);
+    jlongArray result = (*env)->NewLongArray(env, 6);
     if (result) {
-        jlong stats[4] = {
+        jlong stats[6] = {
             (jlong)tx_packets,
             (jlong)tx_bytes,
             (jlong)rx_packets,
-            (jlong)rx_bytes
+            (jlong)rx_bytes,
+            (jlong)quic_rejected,
+            (jlong)udp_rejected
         };
-        (*env)->SetLongArrayRegion(env, result, 0, 4, stats);
+        (*env)->SetLongArrayRegion(env, result, 0, 6, stats);
     }
 
     return result;

@@ -52,7 +52,9 @@ object HevSocks5Tunnel {
             txPackets = a?.getOrNull(0) ?: 0,
             txBytes = a?.getOrNull(1) ?: 0,
             rxPackets = a?.getOrNull(2) ?: 0,
-            rxBytes = a?.getOrNull(3) ?: 0
+            rxBytes = a?.getOrNull(3) ?: 0,
+            quicRejected = a?.getOrNull(4) ?: 0,
+            udpRejected = a?.getOrNull(5) ?: 0
         )
     }
 
@@ -83,7 +85,14 @@ object HevSocks5Tunnel {
         appendLine("  log-level: warn")
     }
 
-    data class TrafficStats(val txPackets: Long, val txBytes: Long, val rxPackets: Long, val rxBytes: Long)
+    data class TrafficStats(
+        val txPackets: Long,
+        val txBytes: Long,
+        val rxPackets: Long,
+        val rxBytes: Long,
+        val quicRejected: Long = 0,
+        val udpRejected: Long = 0
+    )
 
     private external fun nativeStart(config: String, tunFd: Int): Int
     private external fun nativeStop()

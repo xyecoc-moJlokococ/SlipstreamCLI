@@ -108,6 +108,26 @@ void hev_socks5_tunnel_set_reject_non_dns_udp (int enabled);
 void hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
                               size_t *rx_packets, size_t *rx_bytes);
 
+/**
+ * hev_socks5_tunnel_stats_quic_rejected:
+ *
+ * Number of UDP:443 (QUIC) packets rejected with ICMP Port Unreachable
+ * since the last hev_socks5_tunnel_fini, when reject_quic is enabled.
+ *
+ * Since: 2.6.9
+ */
+size_t hev_socks5_tunnel_stats_quic_rejected (void);
+
+/**
+ * hev_socks5_tunnel_stats_udp_rejected:
+ *
+ * Number of non-DNS UDP packets rejected with ICMP Port Unreachable
+ * since the last hev_socks5_tunnel_fini, when reject_non_dns_udp is enabled.
+ *
+ * Since: 2.6.9
+ */
+size_t hev_socks5_tunnel_stats_udp_rejected (void);
+
 #ifdef __cplusplus
 }
 #endif

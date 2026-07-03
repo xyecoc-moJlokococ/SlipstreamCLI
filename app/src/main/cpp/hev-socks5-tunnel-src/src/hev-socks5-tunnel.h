@@ -20,6 +20,8 @@ void hev_socks5_tunnel_stop (void);
 
 void hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
                               size_t *rx_packets, size_t *rx_bytes);
+size_t hev_socks5_tunnel_stats_quic_rejected (void);
+size_t hev_socks5_tunnel_stats_udp_rejected (void);
 
 void hev_socks5_tunnel_set_reject_quic (int enabled);
 void hev_socks5_tunnel_set_reject_non_dns_udp (int enabled);

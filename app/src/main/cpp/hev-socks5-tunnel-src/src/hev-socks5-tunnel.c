@@ -51,6 +51,8 @@ static size_t stat_tx_packets;
 static size_t stat_rx_packets;
 static size_t stat_tx_bytes;
 static size_t stat_rx_bytes;
+static size_t stat_quic_rejected;
+static size_t stat_udp_rejected;
 
 static struct netif netif;
 static struct tcp_pcb *tcp;
@@ -439,9 +441,15 @@ lwip_io_task_entry (void *data)
             uint16_t dst_port = 0;
             iphdr_len = parse_udp_packet ((const uint8_t *)buf->payload,
                                            buf->len, &dst_port);
-            if (iphdr_len &&
-                ((reject_non_dns_udp && dst_port != 53) ||
-                 (reject_quic && dst_port == 443))) {
+            if (iphdr_len && reject_quic && dst_port == 443) {
+                stat_quic_rejected++;
+                send_icmp_port_unreachable ((const uint8_t *)buf->payload,
+                                             buf->len, iphdr_len);
+                pbuf_free (buf);
+                continue;
+            }
+            if (iphdr_len && reject_non_dns_udp && dst_port != 53) {
+                stat_udp_rejected++;
                 send_icmp_port_unreachable ((const uint8_t *)buf->payload,
                                              buf->len, iphdr_len);
                 pbuf_free (buf);
@@ -801,6 +809,8 @@ hev_socks5_tunnel_fini (void)
     stat_rx_packets = 0;
     stat_tx_bytes = 0;
     stat_rx_bytes = 0;
+    stat_quic_rejected = 0;
+    stat_udp_rejected = 0;
     reject_quic = 1;
     reject_non_dns_udp = 0;
 }
@@ -875,4 +885,16 @@ hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
 
     if (rx_bytes)
         *rx_bytes = stat_rx_bytes;
+}
+
+size_t
+hev_socks5_tunnel_stats_quic_rejected (void)
+{
+    return stat_quic_rejected;
+}
+
+size_t
+hev_socks5_tunnel_stats_udp_rejected (void)
+{
+    return stat_udp_rejected;
 }
