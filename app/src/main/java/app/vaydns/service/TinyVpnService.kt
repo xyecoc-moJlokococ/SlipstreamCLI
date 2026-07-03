@@ -119,6 +119,7 @@ class TinyVpnService : VpnService() {
             resetTrafficBase()
             failedAutoResolvers.clear()
             val choice = ResolverSelector.chooseFast(this, config, "vpn_start")
+            if (!tunnelActive) error("VPN start cancelled")
             currentResolver = choice
             val bridgePort = config.listenPort
             val slipstreamPort = config.listenPort + 1
@@ -207,7 +208,9 @@ class TinyVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        ResolverSelector.cancelActiveProbes("vpn_stop")
         if (
+            !starting &&
             !tunnelActive &&
             tunFd == null &&
             !HevSocks5Tunnel.isRunning() &&
@@ -222,6 +225,7 @@ class TinyVpnService : VpnService() {
             return
         }
         stopping = true
+        starting = false
         AppLog.i(TAG, "VPN stop")
         tunnelActive = false
         currentConfig = null

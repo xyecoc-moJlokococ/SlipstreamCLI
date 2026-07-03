@@ -21,6 +21,7 @@ import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import org.json.JSONArray
@@ -56,6 +57,7 @@ object ResolverSelector {
     private val QNAME_MTU_PROBE_ORDER = intArrayOf(0)
 
     @Volatile var lastProgress: Progress = Progress()
+    private val cancelGeneration = AtomicLong(0)
 
     data class Progress(
         val active: Boolean = false,
@@ -70,6 +72,23 @@ object ResolverSelector {
         val speedOk: Int = 0,
         val selected: String = ""
     )
+
+    fun cancelActiveProbes(reason: String = "cancelled") {
+        val generation = cancelGeneration.incrementAndGet()
+        lastProgress = Progress(active = false, reason = reason, phase = "cancelled")
+        AppLog.w(TAG, "resolver probes cancelled generation=$generation reason=$reason")
+        runCatching { SlipstreamBridge.stopProbeClient() }
+    }
+
+    private fun beginProbe(reason: String): Long {
+        val generation = cancelGeneration.get()
+        lastProgress = Progress(active = true, reason = reason, phase = "start")
+        return generation
+    }
+
+    private fun checkNotCancelled(generation: Long) {
+        if (cancelGeneration.get() != generation) error("resolver probe cancelled")
+    }
 
     private val operatorResolvers = listOf(
         "176.59.159.161", "176.59.159.157",
@@ -183,6 +202,8 @@ object ResolverSelector {
     }
 
     fun choose(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
+        val generation = beginProbe(reason)
+        checkNotCancelled(generation)
         val port = config.resolverPort
         if (config.resolverMode == Config.ResolverMode.MANUAL) {
             val host = config.resolverHost.trim()
@@ -191,7 +212,8 @@ object ResolverSelector {
             return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1)
         }
 
-        val probe = autoProbe(context, port, reason)
+        val probe = autoProbe(context, port, reason, generation)
+        checkNotCancelled(generation)
         val candidates = probe.candidates
         val alive = probe.alive
 
@@ -208,11 +230,13 @@ object ResolverSelector {
                 reason = reason,
                 preferred = emptyList(),
                 username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
-                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
+                generation = generation
             )
         } else {
             emptyList()
         }
+        checkNotCancelled(generation)
         val speedOk = speedResults.filter { it.ok }
         val speedEligible = speedOk.filter { it.host !in skipHosts }
         val speedBest = speedEligible.minByOrNull { it.totalMs }
@@ -453,6 +477,8 @@ object ResolverSelector {
     }
 
     fun chooseFast(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
+        val generation = beginProbe(reason)
+        checkNotCancelled(generation)
         val port = config.resolverPort
         if (config.resolverMode == Config.ResolverMode.MANUAL) {
             val host = config.resolverHost.trim()
@@ -465,7 +491,8 @@ object ResolverSelector {
             val cachedHosts = cached.resolvers.map { it.host }
                 .filter { it !in skipHosts }
                 .distinct()
-            val aliveCached = probeParallel(cachedHosts, port, "$reason:cache")
+            val aliveCached = probeParallel(cachedHosts, port, "$reason:cache", generation)
+            checkNotCancelled(generation)
             val selected = aliveCached.firstOrNull()
             if (selected != null) {
                 val cachedResolver = cached.resolvers.firstOrNull { it.host == selected }
@@ -501,7 +528,8 @@ object ResolverSelector {
                     "cached=${cachedHosts.joinToString()} skipped=${skipHosts.joinToString()}"
             )
         }
-        val probe = autoProbe(context, port, reason)
+        val probe = autoProbe(context, port, reason, generation)
+        checkNotCancelled(generation)
         val selected = probe.alive.firstOrNull { it !in skipHosts }
             ?: probe.alive.firstOrNull()
             ?: probe.candidates.firstOrNull { it !in skipHosts }
@@ -538,6 +566,8 @@ object ResolverSelector {
     }
 
     fun chooseFastestByDownload(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice? {
+        val generation = beginProbe(reason)
+        checkNotCancelled(generation)
         if (config.resolverMode != Config.ResolverMode.AUTO) return null
         val port = config.resolverPort
         val cached = loadResolverCache(context, config)
@@ -585,8 +615,10 @@ object ResolverSelector {
                     username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
                     password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
                     batchSize = SPEED_PROBE_BATCH_SIZE,
-                    stopAfterFirstOk = false
+                    stopAfterFirstOk = false,
+                    generation = generation
                 )
+                checkNotCancelled(generation)
                 val best = speed.filter { it.ok }.minByOrNull { it.totalMs }
                 if (best != null) {
                     saveResolverCache(context, config, speed)
@@ -622,7 +654,8 @@ object ResolverSelector {
                 AppLog.w(TAG, "resolver cache speed validation failed reason=$reason network=${cached.profile.label}; falling back to full probe")
             }
         }
-        val probe = autoProbe(context, port, reason)
+        val probe = autoProbe(context, port, reason, generation)
+        checkNotCancelled(generation)
         val speedCandidates = (if (probe.alive.isNotEmpty()) probe.alive else probe.candidates)
             .filter { it !in skipHosts }
         if (speedCandidates.isEmpty()) return null
@@ -635,8 +668,10 @@ object ResolverSelector {
             username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
             password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
             batchSize = SPEED_PROBE_BATCH_SIZE,
-            stopAfterFirstOk = false
+            stopAfterFirstOk = false,
+            generation = generation
         )
+        checkNotCancelled(generation)
         saveResolverCache(context, config, speed)
         val best = speed.filter { it.ok }.minByOrNull { it.totalMs } ?: return null
         AppLog.i(
@@ -669,7 +704,8 @@ object ResolverSelector {
         )
     }
 
-    private fun autoProbe(context: Context, port: Int, reason: String): AutoProbe {
+    private fun autoProbe(context: Context, port: Int, reason: String, generation: Long): AutoProbe {
+        checkNotCancelled(generation)
         val defaultNetwork = defaultNetworkResolvers(context)
         val local = defaultNetwork.resolvers
         val candidates = buildList {
@@ -690,7 +726,7 @@ object ResolverSelector {
 
         return AutoProbe(
             candidates = candidates,
-            alive = probeParallel(candidates, port, reason),
+            alive = probeParallel(candidates, port, reason, generation),
             local = local,
             defaultNetwork = defaultNetwork
         )
@@ -708,7 +744,8 @@ object ResolverSelector {
             true
         }.getOrDefault(false)
 
-    private fun probeParallel(candidates: List<String>, port: Int, reason: String): List<String> {
+    private fun probeParallel(candidates: List<String>, port: Int, reason: String, generation: Long): List<String> {
+        checkNotCancelled(generation)
         if (candidates.isEmpty()) return emptyList()
         val executor = Executors.newFixedThreadPool(PROBE_THREADS.coerceAtMost(candidates.size))
         val completion = ExecutorCompletionService<Pair<String, Boolean>>(executor)
@@ -717,12 +754,14 @@ object ResolverSelector {
         return try {
             candidates.forEach { host ->
                 completion.submit(Callable {
+                    checkNotCancelled(generation)
                     lastProgress = lastProgress.copy(active = true, phase = "tcp", currentHost = host)
                     host to tcpConnect(host, port)
                 })
             }
             val results = HashMap<String, Boolean>(candidates.size)
             repeat(candidates.size) {
+                checkNotCancelled(generation)
                 val pair = completion.poll((CONNECT_TIMEOUT_MS + 800L), TimeUnit.MILLISECONDS)?.get()
                     ?: return@repeat
                 results[pair.first] = pair.second
@@ -769,8 +808,10 @@ object ResolverSelector {
         password: String?,
         qnameMtuOrder: IntArray = QNAME_MTU_PROBE_ORDER,
         batchSize: Int = SPEED_PROBE_BATCH_SIZE,
-        stopAfterFirstOk: Boolean = true
+        stopAfterFirstOk: Boolean = true,
+        generation: Long
     ): List<SpeedProbeResult> {
+        checkNotCancelled(generation)
         val allOrdered = buildList {
             preferred.forEach { if (it in alive && it !in this) add(it) }
             alive.forEach { if (it !in this) add(it) }
@@ -792,6 +833,7 @@ object ResolverSelector {
         val results = ArrayList<SpeedProbeResult>(allOrdered.size)
         val effectiveBatchSize = batchSize.coerceAtLeast(1)
         for ((batchIndex, batch) in allOrdered.chunked(effectiveBatchSize).withIndex()) {
+            checkNotCancelled(generation)
             val batchStart = batchIndex * effectiveBatchSize + 1
             val batchEnd = batchStart + batch.size - 1
             AppLog.i(
@@ -800,7 +842,8 @@ object ResolverSelector {
                     "candidates=${batch.joinToString()} reason=$reason"
             )
             lastProgress = lastProgress.copy(active = true, phase = "speed", currentHost = batch.joinToString(","))
-            val batchResults = speedProbeBatchParallel(domain, batch, port, username, password, qnameMtuOrder)
+            val batchResults = speedProbeBatchParallel(domain, batch, port, username, password, qnameMtuOrder, generation)
+            checkNotCancelled(generation)
             results += batchResults
             val ok = batchResults.filter { it.ok }
             val failed = batchResults.filter { !it.ok }
@@ -851,19 +894,23 @@ object ResolverSelector {
         resolverPort: Int,
         username: String?,
         password: String?,
-        qnameMtuOrder: IntArray
+        qnameMtuOrder: IntArray,
+        generation: Long
     ): List<SpeedProbeResult> {
+        checkNotCancelled(generation)
         if (resolverHosts.isEmpty()) return emptyList()
         val executor = Executors.newFixedThreadPool(resolverHosts.size)
         val completion = ExecutorCompletionService<SpeedProbeResult>(executor)
         return try {
             resolverHosts.forEach { host ->
                 completion.submit(Callable {
-                    speedProbeBatch(domain, listOf(host), resolverPort, username, password, qnameMtuOrder)
+                    checkNotCancelled(generation)
+                    speedProbeBatch(domain, listOf(host), resolverPort, username, password, qnameMtuOrder, generation)
                 })
             }
             val results = ArrayList<SpeedProbeResult>(resolverHosts.size)
             repeat(resolverHosts.size) {
+                checkNotCancelled(generation)
                 val result = completion.poll(
                     (SPEED_PROBE_READY_TIMEOUT_MS + SPEED_PROBE_SOCKET_TIMEOUT_MS + 1500L),
                     TimeUnit.MILLISECONDS
@@ -888,14 +935,17 @@ object ResolverSelector {
         resolverPort: Int,
         username: String?,
         password: String?,
-        qnameMtuOrder: IntArray
+        qnameMtuOrder: IntArray,
+        generation: Long
     ): SpeedProbeResult {
+        checkNotCancelled(generation)
         val primaryHost = resolverHosts.firstOrNull().orEmpty()
         var lastError = ""
         for (qnameMtu in qnameMtuOrder) {
             val slipstreamPort = findFreeLocalPort()
             val startAt = System.nanoTime()
             try {
+                checkNotCancelled(generation)
                 AppLog.i(TAG, "speed probe try resolvers=${resolverHosts.joinToString()} qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}")
                 SlipstreamBridge.startProbeClient(
                     domain,
@@ -903,14 +953,15 @@ object ResolverSelector {
                     slipstreamPort,
                     qnameMtu
                 ).getOrThrow()
-                waitProbeReady(slipstreamPort)
+                waitProbeReady(slipstreamPort, generation)
                 val readyMs = elapsedMs(startAt)
                 val metrics = runCatching {
                     downloadProbe(
                         slipstreamPort,
                         startAt,
                         username?.takeIf { it.isNotBlank() },
-                        password?.takeIf { it.isNotBlank() }
+                        password?.takeIf { it.isNotBlank() },
+                        generation
                     )
                 }
                 metrics.onFailure {
@@ -952,15 +1003,18 @@ object ResolverSelector {
         val bytes: Long
     )
 
-    private fun downloadProbe(socksPort: Int, startAt: Long, username: String?, password: String?): DownloadMetrics {
+    private fun downloadProbe(socksPort: Int, startAt: Long, username: String?, password: String?, generation: Long): DownloadMetrics {
+        checkNotCancelled(generation)
         val socket = socksConnect(socksPort, SPEED_PROBE_HOST, 443, username, password)
         socket.use { raw ->
+            checkNotCancelled(generation)
             val connectedMs = elapsedMs(startAt)
             val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
             val ssl = sslFactory
                 .createSocket(raw, SPEED_PROBE_HOST, 443, true) as SSLSocket
             ssl.use { tls ->
                 tls.soTimeout = SPEED_PROBE_SOCKET_TIMEOUT_MS
+                checkNotCancelled(generation)
                 tls.startHandshake()
                 val tlsMs = elapsedMs(startAt)
                 val out = tls.getOutputStream()
@@ -974,11 +1028,13 @@ object ResolverSelector {
                     ).toByteArray(Charsets.US_ASCII)
                 )
                 out.flush()
+                checkNotCancelled(generation)
                 val header = readHttpHeader(input)
                 val startMs = elapsedMs(startAt)
                 if (!header.startsWith("HTTP/1.1 200") && !header.startsWith("HTTP/2 200")) {
                     error("speed http rejected: ${header.lineSequence().firstOrNull().orEmpty()}")
                 }
+                checkNotCancelled(generation)
                 val bytes = drainBytes(input, SPEED_PROBE_BYTES)
                 if (bytes < SPEED_PROBE_MIN_BYTES) {
                     error("speed probe too few bytes: $bytes")
@@ -1003,9 +1059,10 @@ object ResolverSelector {
         error("slipstream speed probe not ready")
     }
 
-    private fun waitProbeReady(listenPort: Int) {
+    private fun waitProbeReady(listenPort: Int, generation: Long) {
         val deadline = System.currentTimeMillis() + SPEED_PROBE_READY_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
+            checkNotCancelled(generation)
             if (SlipstreamBridge.isProbeReady(listenPort)) return
             Thread.sleep(50)
         }

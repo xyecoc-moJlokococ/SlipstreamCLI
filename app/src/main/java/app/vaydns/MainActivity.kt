@@ -89,8 +89,11 @@ class MainActivity : android.app.Activity() {
     private var drawerPanel: View? = null
     private var drawerWidth = 0
     private var drawerTouchStartX = 0f
+    private var drawerTouchStartY = 0f
     private var drawerTouchStartTranslation = 0f
     private var drawerDragging = false
+    private var drawerGlobalSwipeCandidate = false
+    private var drawerGlobalSwipeActive = false
     private var closeDrawerAfterBuild = false
     private var suppressGlobalSettingsSave = false
     private var screenAnimating = false
@@ -141,6 +144,11 @@ class MainActivity : android.app.Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleImportIntent(intent)
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (handleGlobalDrawerSwipe(event)) return true
+        return super.dispatchTouchEvent(event)
     }
 
     @Deprecated("Deprecated in Java")
@@ -270,7 +278,7 @@ class MainActivity : android.app.Activity() {
         val root = screenRoot().apply {
             setPadding(dp(16), 0, dp(16), dp(82))
         }
-        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
         root.addView(profileList(), compactSectionParams())
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
@@ -301,7 +309,7 @@ class MainActivity : android.app.Activity() {
             addView(iconButton(R.drawable.ic_menu, "Menu").apply {
                 id = R.id.global_settings_button
                 setOnClickListener { openDrawer() }
-            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            }, LinearLayout.LayoutParams(dp(52), dp(52)))
             addView(TextView(this@MainActivity).apply {
                 text = title
                 textSize = 22f
@@ -316,7 +324,7 @@ class MainActivity : android.app.Activity() {
                 addView(iconButton(R.drawable.ic_add, "New profile").apply {
                     id = R.id.add_profile_button
                     setOnClickListener { showProfileEditor(null) }
-                }, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                }, LinearLayout.LayoutParams(dp(52), dp(52)).apply {
                     leftMargin = dp(8)
                 })
             }
@@ -331,7 +339,7 @@ class MainActivity : android.app.Activity() {
                 stateListAnimator = null
                 isHapticFeedbackEnabled = false
                 setOnClickListener { showMainScreen(ScreenTransition.BACK) }
-            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            }, LinearLayout.LayoutParams(dp(52), dp(52)))
             addView(TextView(this@MainActivity).apply {
                 text = title
                 textSize = 22f
@@ -395,11 +403,6 @@ class MainActivity : android.app.Activity() {
         frame.addView(panel, FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.START))
         if (closeDrawerAfterBuild) {
             closeDrawerAfterBuild = false
-            drawerOpen = true
-            scrim.visibility = View.VISIBLE
-            scrim.alpha = 1f
-            panel.translationX = 0f
-            panel.post { closeDrawer() }
         }
     }
 
@@ -414,19 +417,141 @@ class MainActivity : android.app.Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(18), 0, dp(18), 0)
             background = drawerItemBackground(selected)
-            setOnClickListener {
-                persistGlobalSettingsIfVisible()
-                closeDrawerAfterBuild = true
-                action()
-            }
+            installDrawerItemTouch(this, selected, action)
             addView(TextView(this@MainActivity).apply {
                 this.text = text
-                textSize = 20f
+                textSize = 18f
                 typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                 setTextColor(color(R.color.slipnet_text_primary))
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
         }
+
+    private fun installDrawerItemTouch(item: View, selected: Boolean, action: () -> Unit) {
+        var itemDragging = false
+        var downY = 0f
+        item.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (!drawerOpen) return@setOnTouchListener false
+                    drawerDragging = false
+                    itemDragging = false
+                    drawerTouchStartX = event.rawX
+                    downY = event.rawY
+                    drawerTouchStartTranslation = drawerPanel?.translationX ?: 0f
+                    drawerPanel?.animate()?.cancel()
+                    drawerScrim?.animate()?.cancel()
+                    view.isPressed = true
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - drawerTouchStartX
+                    val dy = kotlin.math.abs(event.rawY - downY)
+                    if (!itemDragging && kotlin.math.abs(dx) > dp(8) && kotlin.math.abs(dx) > dy) {
+                        itemDragging = true
+                        drawerDragging = true
+                        view.isPressed = false
+                    }
+                    if (!itemDragging) return@setOnTouchListener true
+                    val panel = drawerPanel ?: return@setOnTouchListener true
+                    val width = drawerWidth.takeIf { it > 0 } ?: panel.width
+                    val tx = (drawerTouchStartTranslation + dx).coerceIn(-width.toFloat(), 0f)
+                    panel.translationX = tx
+                    val progress = 1f - (-tx / width.toFloat())
+                    drawerScrim?.alpha = progress
+                    setDrawerContentShift(drawerContentShift() * progress)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    view.isPressed = false
+                    if (itemDragging || drawerDragging) {
+                        itemDragging = false
+                        drawerDragging = false
+                        val panel = drawerPanel ?: return@setOnTouchListener true
+                        val width = drawerWidth.takeIf { it > 0 } ?: panel.width
+                        if (shouldOpenDrawer(panel.translationX, width)) openDrawer() else closeDrawer()
+                    } else {
+                        persistGlobalSettingsIfVisible()
+                        if (selected) {
+                            closeDrawer()
+                        } else {
+                            markDrawerItemSelected(view)
+                            val overlay = promoteDrawerToOverlay()
+                            closeDrawerAfterBuild = true
+                            action()
+                            animateCurrentScreenBackFromDrawer()
+                            overlay?.close()
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    view.isPressed = false
+                    if (itemDragging || drawerDragging) {
+                        itemDragging = false
+                        drawerDragging = false
+                        openDrawer()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun markDrawerItemSelected(item: View) {
+        val parent = item.parent as? ViewGroup
+        if (parent != null) {
+            for (i in 0 until parent.childCount) {
+                val child = parent.getChildAt(i)
+                if (child is LinearLayout && child !== item) {
+                    child.background = drawerItemBackground(false)
+                    (child.getChildAt(0) as? TextView)?.typeface = Typeface.DEFAULT
+                }
+            }
+        }
+        item.background = drawerItemBackground(true)
+        ((item as? ViewGroup)?.getChildAt(0) as? TextView)?.typeface = Typeface.DEFAULT_BOLD
+    }
+
+    private data class DrawerOverlay(
+        val parent: ViewGroup,
+        val scrim: View,
+        val panel: View,
+        val width: Int
+    ) {
+        fun close() {
+            parent.addView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            parent.addView(panel, FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.START))
+            scrim.animate().cancel()
+            panel.animate().cancel()
+            scrim.animate().alpha(0f).setDuration(110L).withEndAction {
+                parent.removeView(scrim)
+            }.start()
+            panel.animate().translationX(-panel.width.toFloat()).setDuration(130L).withEndAction {
+                parent.removeView(panel)
+            }.start()
+        }
+    }
+
+    private fun promoteDrawerToOverlay(): DrawerOverlay? {
+        val content = findViewById<ViewGroup>(android.R.id.content) ?: return null
+        val scrim = drawerScrim ?: return null
+        val panel = drawerPanel ?: return null
+        drawerEdge?.let { edge ->
+            (edge.parent as? ViewGroup)?.removeView(edge)
+        }
+        (scrim.parent as? ViewGroup)?.removeView(scrim)
+        (panel.parent as? ViewGroup)?.removeView(panel)
+        scrim.visibility = View.VISIBLE
+        scrim.alpha = 1f
+        panel.translationX = 0f
+        drawerOpen = false
+        drawerEdge = null
+        drawerScrim = null
+        drawerPanel = null
+        return DrawerOverlay(content, scrim, panel, drawerWidth.takeIf { it > 0 } ?: panel.width)
+    }
 
     private fun drawerItemBackground(selected: Boolean): GradientDrawable =
         GradientDrawable().apply {
@@ -435,8 +560,8 @@ class MainActivity : android.app.Activity() {
         }
 
     private fun drawerItemParams(first: Boolean = false): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
-            topMargin = dp(if (first) 34 else 10)
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+            topMargin = dp(if (first) 24 else 6)
         }
 
     private fun openDrawer() {
@@ -444,19 +569,120 @@ class MainActivity : android.app.Activity() {
         val panel = drawerPanel ?: return
         drawerOpen = true
         scrim.visibility = View.VISIBLE
-        scrim.animate().alpha(1f).setDuration(160L).start()
-        panel.animate().translationX(0f).setDuration(180L).start()
+        scrim.animate().alpha(1f).setDuration(130L).start()
+        panel.animate().translationX(0f).setDuration(150L).start()
+        animateDrawerContentShift(drawerContentShift(), 150L)
     }
 
     private fun closeDrawer() {
         val scrim = drawerScrim ?: return
         val panel = drawerPanel ?: return
         drawerOpen = false
-        scrim.animate().alpha(0f).setDuration(140L).withEndAction {
+        scrim.animate().alpha(0f).setDuration(110L).withEndAction {
             scrim.visibility = View.GONE
         }.start()
-        panel.animate().translationX(-panel.width.toFloat()).setDuration(160L).start()
+        panel.animate().translationX(-panel.width.toFloat()).setDuration(130L).start()
+        animateDrawerContentShift(0f, 130L)
     }
+
+    private fun drawerContentShift(): Float = dp(34).toFloat()
+
+    private fun shouldOpenDrawer(translationX: Float, width: Int): Boolean =
+        translationX > -width * 0.8f
+
+    private fun setDrawerContentShift(value: Float) {
+        val frame = (drawerPanel?.parent as? ViewGroup) ?: return
+        for (i in 0 until frame.childCount) {
+            val child = frame.getChildAt(i)
+            if (child !== drawerEdge && child !== drawerScrim && child !== drawerPanel) {
+                child.animate().cancel()
+                child.translationX = value
+            }
+        }
+    }
+
+    private fun animateDrawerContentShift(value: Float, duration: Long) {
+        val frame = (drawerPanel?.parent as? ViewGroup) ?: return
+        for (i in 0 until frame.childCount) {
+            val child = frame.getChildAt(i)
+            if (child !== drawerEdge && child !== drawerScrim && child !== drawerPanel) {
+                child.animate().translationX(value).setDuration(duration).start()
+            }
+        }
+    }
+
+    private fun animateCurrentScreenBackFromDrawer() {
+        val frame = drawerPanel?.parent as? ViewGroup ?: return
+        for (i in 0 until frame.childCount) {
+            val child = frame.getChildAt(i)
+            if (child !== drawerEdge && child !== drawerScrim && child !== drawerPanel) {
+                child.animate().cancel()
+                child.translationX = drawerContentShift()
+                child.animate().translationX(0f).setDuration(130L).start()
+            }
+        }
+    }
+
+    private fun handleGlobalDrawerSwipe(event: MotionEvent): Boolean {
+        if (!isDrawerAllowedOnCurrentScreen() || drawerOpen || drawerPanel == null || drawerScrim == null || screenAnimating) {
+            drawerGlobalSwipeCandidate = false
+            drawerGlobalSwipeActive = false
+            return false
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                drawerGlobalSwipeCandidate = true
+                drawerGlobalSwipeActive = false
+                drawerTouchStartX = event.rawX
+                drawerTouchStartY = event.rawY
+                drawerTouchStartTranslation = -(drawerWidth.takeIf { it > 0 } ?: dp(320)).toFloat()
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!drawerGlobalSwipeCandidate) return false
+                val dx = event.rawX - drawerTouchStartX
+                val dy = kotlin.math.abs(event.rawY - drawerTouchStartY)
+                if (!drawerGlobalSwipeActive) {
+                    if (dx <= dp(14) || kotlin.math.abs(dx) <= dy * 1.2f) return false
+                    drawerGlobalSwipeActive = true
+                    drawerDragging = true
+                    drawerScrim?.visibility = View.VISIBLE
+                    drawerPanel?.animate()?.cancel()
+                    drawerScrim?.animate()?.cancel()
+                    drawerPanel?.translationX = drawerTouchStartTranslation
+                    drawerScrim?.alpha = 0f
+                    setDrawerContentShift(0f)
+                }
+                val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
+                val tx = (drawerTouchStartTranslation + dx).coerceIn(-width.toFloat(), 0f)
+                drawerPanel?.translationX = tx
+                val progress = 1f - (-tx / width.toFloat())
+                drawerScrim?.alpha = progress
+                setDrawerContentShift(drawerContentShift() * progress)
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!drawerGlobalSwipeActive) {
+                    drawerGlobalSwipeCandidate = false
+                    return false
+                }
+                drawerGlobalSwipeCandidate = false
+                drawerGlobalSwipeActive = false
+                drawerDragging = false
+                val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
+                if (shouldOpenDrawer(drawerPanel?.translationX ?: -width.toFloat(), width)) {
+                    openDrawer()
+                } else {
+                    closeDrawer()
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun isDrawerAllowedOnCurrentScreen(): Boolean =
+        !editorVisible && (currentSectionTitle == "Home" || currentSectionTitle == "Diagnostics" || currentSectionTitle == "Settings")
 
     private fun installDrawerEdgeSwipe(edge: View) {
         edge.setOnTouchListener { _, event ->
@@ -471,6 +697,7 @@ class MainActivity : android.app.Activity() {
                     drawerScrim?.animate()?.cancel()
                     drawerPanel?.translationX = drawerTouchStartTranslation
                     drawerScrim?.alpha = 0f
+                    setDrawerContentShift(0f)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -478,14 +705,16 @@ class MainActivity : android.app.Activity() {
                     val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
                     val tx = (drawerTouchStartTranslation + event.rawX - drawerTouchStartX).coerceIn(-width.toFloat(), 0f)
                     drawerPanel?.translationX = tx
-                    drawerScrim?.alpha = 1f - (-tx / width.toFloat())
+                    val progress = 1f - (-tx / width.toFloat())
+                    drawerScrim?.alpha = progress
+                    setDrawerContentShift(drawerContentShift() * progress)
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (!drawerDragging) return@setOnTouchListener false
                     drawerDragging = false
                     val width = drawerWidth.takeIf { it > 0 } ?: (drawerPanel?.width ?: dp(320))
-                    if ((drawerPanel?.translationX ?: -width.toFloat()) > -width * 0.55f) {
+                    if (shouldOpenDrawer(drawerPanel?.translationX ?: -width.toFloat(), width)) {
                         openDrawer()
                     } else {
                         closeDrawer()
@@ -514,14 +743,16 @@ class MainActivity : android.app.Activity() {
                     val width = drawerWidth.takeIf { it > 0 } ?: panel.width
                     val tx = (drawerTouchStartTranslation + event.rawX - drawerTouchStartX).coerceIn(-width.toFloat(), 0f)
                     panel.translationX = tx
-                    drawerScrim?.alpha = 1f - (-tx / width.toFloat())
+                    val progress = 1f - (-tx / width.toFloat())
+                    drawerScrim?.alpha = progress
+                    setDrawerContentShift(drawerContentShift() * progress)
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (!drawerDragging || !drawerOpen) return@setOnTouchListener false
                     drawerDragging = false
                     val width = drawerWidth.takeIf { it > 0 } ?: panel.width
-                    if (panel.translationX < -width * 0.35f) closeDrawer() else openDrawer()
+                    if (shouldOpenDrawer(panel.translationX, width)) openDrawer() else closeDrawer()
                     true
                 }
                 else -> false
@@ -599,7 +830,7 @@ class MainActivity : android.app.Activity() {
         root.setPadding(dp(16), 0, dp(16), dp(82))
         root.addView(
             topBarBack(if (profile == null) "New Profile" else "Edit Profile"),
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
         )
 
         profileName = edit("profile name").apply {
@@ -763,7 +994,7 @@ class MainActivity : android.app.Activity() {
         updateStatus()
     }
 
-    private fun showDiagnostics() {
+    private fun showDiagnostics(transition: ScreenTransition = ScreenTransition.FORWARD) {
         if (!ConfigStore.loadGlobalSettings(this).fileLogging) {
             showMainScreen(ScreenTransition.NONE)
             return
@@ -772,8 +1003,8 @@ class MainActivity : android.app.Activity() {
         settingsVisible = false
         diagnosticsVisible = true
         currentSectionTitle = "Diagnostics"
-        val transition = if (closeDrawerAfterBuild) ScreenTransition.NONE else ScreenTransition.FORWARD
-        navigateTo(buildDiagnosticsUi(), transition)
+        val actualTransition = if (closeDrawerAfterBuild) ScreenTransition.NONE else transition
+        navigateTo(buildDiagnosticsUi(), actualTransition)
         updateStatus()
     }
 
@@ -782,7 +1013,7 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot()
-        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
         status = TextView(this).apply {
             id = R.id.status_text
             textSize = 12f
@@ -883,14 +1114,14 @@ class MainActivity : android.app.Activity() {
             addView(connectProgress, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
         }
 
-    private fun showGlobalSettings() {
+    private fun showGlobalSettings(transition: ScreenTransition = ScreenTransition.FORWARD) {
         editorVisible = false
         settingsVisible = true
         diagnosticsVisible = false
         currentSectionTitle = "Settings"
         suppressGlobalSettingsSave = true
-        val transition = if (closeDrawerAfterBuild) ScreenTransition.NONE else ScreenTransition.FORWARD
-        navigateTo(buildGlobalSettingsUi(), transition)
+        val actualTransition = if (closeDrawerAfterBuild) ScreenTransition.NONE else transition
+        navigateTo(buildGlobalSettingsUi(), actualTransition)
         val global = ConfigStore.loadGlobalSettings(this)
         listenPort.setText(global.listenPort.toString())
         mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
@@ -909,7 +1140,7 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot()
-        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
         mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         fileLogging = debugLogCheckbox()
@@ -1086,7 +1317,7 @@ class MainActivity : android.app.Activity() {
             imageTintList = ColorStateList.valueOf(color(R.color.slipnet_text_secondary))
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button)
             scaleType = ImageView.ScaleType.CENTER
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setPadding(dp(11), dp(11), dp(11), dp(11))
         }
 
     private fun connectButtonDrawable(fillColor: Int): GradientDrawable =
@@ -1330,7 +1561,14 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun toggle() {
-        if (proxyStarted || SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning()) {
+        if (
+            proxyStarted ||
+            connecting ||
+            pendingStartVpn ||
+            ResolverSelector.lastProgress.active ||
+            SlipstreamBridge.isRunning() ||
+            HevSocks5Tunnel.isRunning()
+        ) {
             stopAll()
             return
         }
@@ -1424,6 +1662,9 @@ class MainActivity : android.app.Activity() {
     private fun stopAll() {
         if (stopping) return
         stopping = true
+        pendingStartVpn = false
+        connecting = false
+        ResolverSelector.cancelActiveProbes("disconnect")
         connectButton.isEnabled = false
         proxyStarted = false
         AppLog.i(TAG, "disconnect requested")
