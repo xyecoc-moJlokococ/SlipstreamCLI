@@ -632,6 +632,18 @@ class TinyVpnService : VpnService() {
                     resolverUnreachableRecovery
                 val bridgeFailureRecovery = reason.startsWith("bridge_failures")
                     || failureStormRecovery
+                // "accumulated" fires from a rolling failure count, which a heavy burst can trip
+                // even when the resolver itself is fine (it's just momentarily overwhelmed by a
+                // wave of parallel SOCKS CONNECTs during an upload). Give it one quick same-resolver
+                // retry before condemning the resolver and paying for a full multi-candidate rescan
+                // (~20s of total tunnel downtime). The "..._no_response" bridge-failure variant
+                // (sustained silence) still rotates immediately -- that's a real dead-resolver signal.
+                val bridgeAccumulatedRecovery = reason.startsWith("bridge_failures_accumulated")
+                // A storm (>=12 new bridge failures within one 5s diag tick) can likewise just be
+                // many parallel CONNECTs timing out together during a legitimate large upload, not a
+                // bad resolver. Give it the same quick same-resolver retry as "accumulated"; if the
+                // quick retry also fails, the resolver still gets marked bad on the next tick.
+                val bridgeFailureFastRetry = bridgeAccumulatedRecovery || failureStormRecovery
                 val nativeNotReadyRecovery = reason.startsWith("native_not_ready")
                 val nativeDownFastRecovery = reason == "native_not_running" &&
                     config.resolverMode == Config.ResolverMode.AUTO &&
@@ -641,10 +653,11 @@ class TinyVpnService : VpnService() {
                     !failureStormRecovery &&
                     (nativeDownFastRecovery || nativeNotReadyRecovery)
                 val reuseCurrentResolver = isNativeNoProgress ||
+                    bridgeFailureFastRetry ||
                     (fastPathRecovery && !trafficRecovery && !bridgeFailureRecovery)
                 val rotateResolver = (reason == "native_not_running" && !isNativeNoProgress) ||
                     trafficRecovery ||
-                    bridgeFailureRecovery ||
+                    (bridgeFailureRecovery && !bridgeFailureFastRetry) ||
                     nativeNotReadyRecovery ||
                     resolverUnreachableRecovery
                 if (isNativeNoProgress) {
