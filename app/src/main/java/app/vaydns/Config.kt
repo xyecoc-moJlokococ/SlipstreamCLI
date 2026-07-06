@@ -81,7 +81,8 @@ object ConfigStore {
             mode = global.mode,
             authMode = Config.AuthMode.valueOf(p.getString("authMode", Config.AuthMode.NO_AUTH.name) ?: Config.AuthMode.NO_AUTH.name),
             username = p.getString("username", "") ?: "",
-            password = p.getString("password", "") ?: ""
+            password = p.getString("password", "") ?: "",
+            dnsQueryType = p.getInt("dnsQueryType", 16)
         )
     }
 
@@ -286,6 +287,7 @@ object ConfigStore {
             .putString("authMode", config.authMode.name)
             .putString("username", config.username)
             .putString("password", config.password)
+            .putInt("dnsQueryType", config.dnsQueryType)
             .apply()
     }
 

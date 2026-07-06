@@ -5,6 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
@@ -55,6 +59,9 @@ class TinyVpnService : VpnService() {
     private var lowBandwidthSince = 0L
     private var lastTransportSwitchAt = 0L
     private var transportSwitchesThisEpisode = 0
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastNetworkSignature = ""
+    private var pendingNetworkRecheck: Runnable? = null
     private var readyFalseSince = 0L
     private var lastRecoveryAt = 0L
     private var recoveryCount = 0
@@ -188,6 +195,7 @@ class TinyVpnService : VpnService() {
             handler.removeCallbacks(diagnostics)
             handler.post(diagnostics)
             startBackgroundResolverOptimization(config, choice)
+            registerNetworkChangeWatch()
         } catch (e: Throwable) {
             AppLog.e(TAG, "VPN start failed", e)
             runCatching { HevSocks5Tunnel.stop() }
@@ -275,6 +283,7 @@ class TinyVpnService : VpnService() {
 
     private fun stopTunnel() {
         ResolverSelector.cancelActiveProbes("vpn_stop")
+        unregisterNetworkChangeWatch()
         val generation = ++lifecycleGeneration
         if (
             !starting &&
@@ -433,6 +442,7 @@ class TinyVpnService : VpnService() {
                 "connectOk=${bridge.connectOk} connectFail=${bridge.connectFail} dnsOk=${bridge.dnsOk} dnsFail=${bridge.dnsFail} " +
                 "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} bridgeThreads=${bridge.threads} " +
                 "transport=${currentResolver?.transport?.name?.lowercase() ?: currentConfig?.resolverTransport?.name?.lowercase() ?: "unknown"} " +
+                "qtype=${SlipstreamBridge.dnsQueryType} " +
                 "pathMode=${currentConfig?.resolverPathMode?.name?.lowercase() ?: "unknown"} " +
                 "resolver=${currentResolver?.selectedHost ?: "none"}:${currentResolver?.port ?: 0} " +
                 "qnameMtu=${currentResolver?.qnameMtu?.takeIf { it > 0 } ?: "max"} " +
@@ -646,6 +656,54 @@ class TinyVpnService : VpnService() {
         HevSocks5Tunnel.setCrashLogPath(AppLog.crashFile(this).absolutePath)
     }
 
+    private fun registerNetworkChangeWatch() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        lastNetworkSignature = ResolverSelector.networkSignature(this)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = scheduleNetworkRecheck()
+            override fun onLost(network: Network) = scheduleNetworkRecheck()
+            override fun onLinkPropertiesChanged(network: Network, lp: android.net.LinkProperties) =
+                scheduleNetworkRecheck()
+        }
+        runCatching { cm.registerNetworkCallback(request, cb) }
+            .onSuccess { networkCallback = cb; AppLog.i(TAG, "network-change watch registered sig='$lastNetworkSignature'") }
+            .onFailure { AppLog.w(TAG, "network-change watch register failed: ${it.message}") }
+    }
+
+    private fun unregisterNetworkChangeWatch() {
+        networkCallback?.let { cb ->
+            runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
+        pendingNetworkRecheck?.let { handler.removeCallbacks(it) }
+        pendingNetworkRecheck = null
+    }
+
+    private fun scheduleNetworkRecheck() {
+        // Network callbacks fire in bursts during a switch; debounce and act once it settles.
+        pendingNetworkRecheck?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            pendingNetworkRecheck = null
+            if (!tunnelActive || recovering) return@Runnable
+            val config = currentConfig ?: return@Runnable
+            if (config.resolverMode != Config.ResolverMode.AUTO) return@Runnable
+            val sig = ResolverSelector.networkSignature(this)
+            if (sig.isBlank() || sig == lastNetworkSignature) return@Runnable
+            AppLog.w(TAG, "underlying network changed '$lastNetworkSignature' -> '$sig'; re-selecting resolver+transport")
+            lastNetworkSignature = sig
+            if (System.currentTimeMillis() - lastRecoveryAt > RECOVERY_COOLDOWN_MS) {
+                restartSlipstreamPath("network_changed")
+            }
+        }
+        pendingNetworkRecheck = r
+        handler.postDelayed(r, NETWORK_CHANGE_DEBOUNCE_MS)
+    }
+
     private fun restartSlipstreamPath(reason: String, forcedChoice: ResolverChoice?) {
         val config = currentConfig ?: run {
             AppLog.e(TAG, "recovery skipped: config is missing reason=$reason")
@@ -682,6 +740,10 @@ class TinyVpnService : VpnService() {
                 // Reconnect the current resolver with the opposite DNS carrier transport (udp<->tcp).
                 // The resolver itself is fine, so it must not be rotated or marked bad here.
                 val transportSwitchRecovery = reason.startsWith("transport_switch")
+                // Network/SIM change: the old resolver belongs to the previous network and may be
+                // unreachable or slow now. Re-select a resolver for the CURRENT network from scratch and
+                // re-validate transport + qtype (both can differ per operator).
+                val networkChangedRecovery = reason.startsWith("network_changed")
                 val trafficRecovery = reason.startsWith("traffic_no_response") ||
                     resolverUnreachableRecovery
                 val bridgeFailureRecovery = reason.startsWith("bridge_failures")
@@ -761,6 +823,14 @@ class TinyVpnService : VpnService() {
                             "${flipped.name.lowercase()} resolver=${cur.selectedHost}:${cur.port}"
                     )
                     cur.copy(transport = flipped)
+                } else if (networkChangedRecovery) {
+                    // Fresh network: forget the previous network's failed resolvers, pick a resolver for
+                    // the current network, and re-run transport/qtype validation for it.
+                    failedAutoResolvers.clear()
+                    val fresh = ResolverSelector.chooseFast(this, config, "recovery#$recoveryId:$reason", failedAutoResolvers)
+                    AppLog.w(TAG, "recovery#$recoveryId network changed; fresh resolver ${fresh.selectedHost}:${fresh.port}; re-validating transport/qtype")
+                    SlipstreamBridge.dnsQueryType = config.dnsQueryType
+                    ResolverSelector.validateTransport(this, config, fresh, "recovery#$recoveryId:$reason")
                 } else if (reuseCurrentResolver && currentResolver != null) {
                     AppLog.w(TAG, "recovery#$recoveryId reusing resolver ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
                     currentResolver!!
@@ -816,7 +886,9 @@ class TinyVpnService : VpnService() {
                 }
                 SlipstreamBridge.setVpnService(this)
                 SlipstreamBridge.proxyOnlyMode = false
-                SlipstreamBridge.dnsQueryType = config.dnsQueryType
+                // Do NOT reset dnsQueryType here: keep the qtype that transport/qtype validation locked
+                // in at connect (e.g. a TXT fallback on a resolver that can't forward SVCB). A network
+                // change re-runs validation via startTunnelWorker, which re-picks the qtype.
                 SlipstreamBridge.startClient(
                     config.domain,
                     ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
@@ -1158,6 +1230,8 @@ class TinyVpnService : VpnService() {
         private const val TRANSPORT_SWITCH_LOW_BW_MS = 15_000L
         private const val TRANSPORT_SWITCH_COOLDOWN_MS = 18_000L
         private const val MAX_TRANSPORT_SWITCHES_PER_EPISODE = 2
+        // Debounce for underlying-network (SIM/Wi-Fi) change before re-selecting the resolver.
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 2500L
         private const val RECOVERY_COOLDOWN_MS = 5_000L
         private const val FAILURE_RECOVERY_DELTA = 8L
         private const val FAILURE_STORM_RECOVERY_DELTA = 12L

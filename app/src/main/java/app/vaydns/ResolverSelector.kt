@@ -56,6 +56,7 @@ object ResolverSelector {
     // Transport auto-validation: UDP probe totalMs at/under this is "clearly healthy" -> keep UDP
     // without also probing TCP (fast path for good networks like Beeline). Above it, UDP is either
     // dead or throttled (e.g. Tele2 delivered 5 KB in ~5.4 s), so we probe TCP too and pick the better.
+    private const val TXT_QUERY_TYPE = 16
     private const val TRANSPORT_VALIDATE_UDP_FAST_MS = 3000L
     // When both transports pass, keep UDP (lower latency when healthy) unless TCP is faster than UDP
     // by more than this margin -- avoids flipping to TCP over probe noise, but switches on a real gap.
@@ -313,6 +314,27 @@ object ResolverSelector {
             caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true
         }
+    }
+
+    /// A stable signature of the current UNDERLYING (non-VPN) network: transport kind + its DNS
+    /// servers. Changes when the SIM/operator or Wi-Fi network changes, which is the trigger for
+    /// re-selecting the resolver + transport. Empty string when no underlying network is available.
+    fun networkSignature(context: Context): String {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return ""
+        val network = activeNonVpnNetwork(context) ?: return ""
+        val caps = cm.getNetworkCapabilities(network)
+        val dns = cm.getLinkProperties(network)?.dnsServers.orEmpty()
+            .mapNotNull { it.hostAddress }
+            .mapNotNull { normalizeDnsHost(it) }
+            .distinct()
+            .sorted()
+        val transport = when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cell"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "eth"
+            else -> "other"
+        }
+        return "$transport|${dns.joinToString(",")}"
     }
 
     private fun currentNetworkProfile(context: Context, config: Config): NetworkProfile {
@@ -639,48 +661,59 @@ object ResolverSelector {
         val generation = beginProbe("$reason:transport")
         val user = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null
         val pass = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
-        fun probe(transport: Config.ResolverTransport): SpeedProbeResult =
-            speedProbeBatch(config.domain, hosts, choice.port, user, pass, QNAME_MTU_PROBE_ORDER, generation, listOf(transport))
-        fun apply(result: SpeedProbeResult): ResolverChoice {
-            rememberTransport(context, config, host, result.transport)
-            return choice.copy(transport = result.transport, qnameMtu = result.qnameMtu, latencyMs = result.totalMs)
+        // qtype candidates: the profile's preferred DNS query type first, then TXT (16) as a fallback.
+        // Many recursive resolvers do not forward SVCB/HTTPS records (type 65, the low-fingerprint
+        // carrier) with the ech SvcParam intact, so the masking must degrade to plain TXT rather than
+        // break the tunnel. When the profile already asks for TXT there is nothing to fall back to.
+        val qtypeCandidates = if (config.dnsQueryType != TXT_QUERY_TYPE) {
+            listOf(config.dnsQueryType, TXT_QUERY_TYPE)
+        } else {
+            listOf(TXT_QUERY_TYPE)
         }
-        return try {
-            checkNotCancelled(generation)
-            AppLog.i(TAG, "transport validation start host=$host guess=${choice.transport.name.lowercase()} reason=$reason")
-            // Probe UDP first. Note: passing the ≥512-byte download alone is NOT enough -- Tele2's UDP
-            // delivers the 5 KB but crawls (~5.4 s), so we require UDP to also be FAST to keep it as-is.
-            val udp = probe(Config.ResolverTransport.UDP)
-            if (udp.ok && udp.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) {
-                AppLog.i(TAG, "transport auto: udp healthy (totalMs=${udp.totalMs}<=${TRANSPORT_VALIDATE_UDP_FAST_MS}) host=$host -> keep udp reason=$reason")
-                return apply(udp)
-            }
-            // UDP dead or throttled -> probe TCP and pick the transport that actually performs.
-            val tcp = probe(Config.ResolverTransport.TCP)
-            val chosen = when {
+        // Probe one (transport, qtype) with a genuine 5 KB download. The probe client picks up the
+        // qtype via SlipstreamBridge.dnsQueryType (applied by startProbeClient).
+        fun probe(transport: Config.ResolverTransport, qtype: Int): SpeedProbeResult {
+            SlipstreamBridge.dnsQueryType = qtype
+            return speedProbeBatch(config.domain, hosts, choice.port, user, pass, QNAME_MTU_PROBE_ORDER, generation, listOf(transport))
+        }
+        // Best transport for one qtype: UDP-first (kept only if genuinely fast), else compare TCP.
+        fun probeBestTransport(qtype: Int): SpeedProbeResult? {
+            val udp = probe(Config.ResolverTransport.UDP, qtype)
+            if (udp.ok && udp.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) return udp
+            val tcp = probe(Config.ResolverTransport.TCP, qtype)
+            return when {
                 udp.ok && tcp.ok ->
                     if (udp.totalMs <= tcp.totalMs + TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS) udp else tcp
                 tcp.ok -> tcp
                 udp.ok -> udp
                 else -> null
             }
-            if (chosen != null) {
-                AppLog.i(
-                    TAG,
-                    "transport auto: validated host=$host transport=${chosen.transport.name.lowercase()} " +
-                        "(udp ok=${udp.ok} totalMs=${udp.totalMs}; tcp ok=${tcp.ok} totalMs=${tcp.totalMs}) " +
-                        "qnameMtu=${if (chosen.qnameMtu > 0) chosen.qnameMtu else "max"} reason=$reason"
-                )
-                apply(chosen)
-            } else {
-                AppLog.w(
-                    TAG,
-                    "transport auto: no working transport for host=$host (udp=${udp.error}; tcp=${tcp.error}); " +
-                        "keeping guessed transport=${choice.transport.name.lowercase()} reason=$reason"
-                )
-                choice
+        }
+        return try {
+            checkNotCancelled(generation)
+            AppLog.i(TAG, "transport/qtype validation start host=$host preferredQtype=${config.dnsQueryType} guess=${choice.transport.name.lowercase()} reason=$reason")
+            for (qtype in qtypeCandidates) {
+                checkNotCancelled(generation)
+                val best = probeBestTransport(qtype)
+                if (best != null) {
+                    // Lock the winning qtype for the real client; it persists in SlipstreamBridge and is
+                    // reused across same-network recoveries (which do not re-run this validation).
+                    SlipstreamBridge.dnsQueryType = qtype
+                    rememberTransport(context, config, host, best.transport)
+                    AppLog.i(
+                        TAG,
+                        "transport auto: validated host=$host qtype=$qtype transport=${best.transport.name.lowercase()} " +
+                            "totalMs=${best.totalMs} qnameMtu=${if (best.qnameMtu > 0) best.qnameMtu else "max"} reason=$reason"
+                    )
+                    return choice.copy(transport = best.transport, qnameMtu = best.qnameMtu, latencyMs = best.totalMs)
+                }
+                AppLog.w(TAG, "transport auto: qtype=$qtype failed on udp and tcp for host=$host; trying next candidate reason=$reason")
             }
+            SlipstreamBridge.dnsQueryType = config.dnsQueryType
+            AppLog.w(TAG, "transport auto: no working transport/qtype for host=$host; keeping guessed transport=${choice.transport.name.lowercase()} qtype=${config.dnsQueryType} reason=$reason")
+            choice
         } catch (e: Throwable) {
+            SlipstreamBridge.dnsQueryType = config.dnsQueryType
             AppLog.w(
                 TAG,
                 "transport auto: validation error host=$host: ${e.message ?: e::class.java.simpleName}; " +
