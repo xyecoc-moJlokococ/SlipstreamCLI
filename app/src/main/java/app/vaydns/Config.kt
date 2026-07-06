@@ -18,7 +18,10 @@ data class Config(
     val mode: Mode,
     val authMode: AuthMode,
     val username: String,
-    val password: String
+    val password: String,
+    // Anti-fingerprinting: DNS query type (RR type) sent in tunnel queries. 16 = TXT (default).
+    // 65 = HTTPS/SVCB (less suspicious carrier). Requires a server that accepts the same type.
+    val dnsQueryType: Int = 16
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
@@ -321,6 +324,7 @@ object ConfigStore {
             .put("authMode", config.authMode.name)
             .put("username", config.username)
             .put("password", config.password)
+            .put("dnsQueryType", config.dnsQueryType)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -334,7 +338,8 @@ object ConfigStore {
             mode = enumValue(json.optString("mode"), Config.Mode.PROXY),
             authMode = enumValue(json.optString("authMode"), Config.AuthMode.NO_AUTH),
             username = json.optString("username", ""),
-            password = json.optString("password", "")
+            password = json.optString("password", ""),
+            dnsQueryType = json.optInt("dnsQueryType", 16)
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =

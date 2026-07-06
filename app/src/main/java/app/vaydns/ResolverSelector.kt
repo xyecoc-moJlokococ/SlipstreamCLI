@@ -53,6 +53,13 @@ object ResolverSelector {
     private const val SPEED_PROBE_BATCH_SIZE = 5
     private const val SPEED_PROBE_READY_TIMEOUT_MS = 5000
     private const val SPEED_PROBE_SOCKET_TIMEOUT_MS = 5000
+    // Transport auto-validation: UDP probe totalMs at/under this is "clearly healthy" -> keep UDP
+    // without also probing TCP (fast path for good networks like Beeline). Above it, UDP is either
+    // dead or throttled (e.g. Tele2 delivered 5 KB in ~5.4 s), so we probe TCP too and pick the better.
+    private const val TRANSPORT_VALIDATE_UDP_FAST_MS = 3000L
+    // When both transports pass, keep UDP (lower latency when healthy) unless TCP is faster than UDP
+    // by more than this margin -- avoids flipping to TCP over probe noise, but switches on a real gap.
+    private const val TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS = 800L
     private const val SPEED_PROBE_HOST = "speed.cloudflare.com"
     private const val SPEED_PROBE_PATH = "/__down?bytes=$SPEED_PROBE_BYTES"
     private val QNAME_MTU_PROBE_ORDER = intArrayOf(0)
@@ -617,6 +624,72 @@ object ResolverSelector {
         )
     }
 
+    // Validate the DNS carrier transport (UDP vs TCP) for an already-chosen resolver with a real-data
+    // probe, mirroring light-dns's "auto" connect: UDP-first, but kept only if actual data flows.
+    // A recursive/authoritative resolver's UDP path can pass the QUIC HELLO handshake and then
+    // throttle or silently drop data queries under load (e.g. Tele2 hard-throttles UDP-53), so the
+    // QUIC ready check alone -- and any cached/guessed transport -- cannot be trusted. speedProbeBatch
+    // already tries TRANSPORT_PROBE_ORDER = [UDP, TCP] and validates each with a genuine 5 KB download
+    // through the tunnel, so UDP is kept only when it truly delivers, otherwise it falls back to TCP.
+    // On probe failure the original (guessed) transport is left untouched so start never regresses.
+    fun validateTransport(context: Context, config: Config, choice: ResolverChoice, reason: String): ResolverChoice {
+        if (config.resolverMode != Config.ResolverMode.AUTO) return choice
+        val host = choice.selectedHost.takeIf { it.isNotBlank() } ?: return choice
+        val hosts = choice.hosts.ifEmpty { listOf(host) }
+        val generation = beginProbe("$reason:transport")
+        val user = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null
+        val pass = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+        fun probe(transport: Config.ResolverTransport): SpeedProbeResult =
+            speedProbeBatch(config.domain, hosts, choice.port, user, pass, QNAME_MTU_PROBE_ORDER, generation, listOf(transport))
+        fun apply(result: SpeedProbeResult): ResolverChoice {
+            rememberTransport(context, config, host, result.transport)
+            return choice.copy(transport = result.transport, qnameMtu = result.qnameMtu, latencyMs = result.totalMs)
+        }
+        return try {
+            checkNotCancelled(generation)
+            AppLog.i(TAG, "transport validation start host=$host guess=${choice.transport.name.lowercase()} reason=$reason")
+            // Probe UDP first. Note: passing the ≥512-byte download alone is NOT enough -- Tele2's UDP
+            // delivers the 5 KB but crawls (~5.4 s), so we require UDP to also be FAST to keep it as-is.
+            val udp = probe(Config.ResolverTransport.UDP)
+            if (udp.ok && udp.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) {
+                AppLog.i(TAG, "transport auto: udp healthy (totalMs=${udp.totalMs}<=${TRANSPORT_VALIDATE_UDP_FAST_MS}) host=$host -> keep udp reason=$reason")
+                return apply(udp)
+            }
+            // UDP dead or throttled -> probe TCP and pick the transport that actually performs.
+            val tcp = probe(Config.ResolverTransport.TCP)
+            val chosen = when {
+                udp.ok && tcp.ok ->
+                    if (udp.totalMs <= tcp.totalMs + TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS) udp else tcp
+                tcp.ok -> tcp
+                udp.ok -> udp
+                else -> null
+            }
+            if (chosen != null) {
+                AppLog.i(
+                    TAG,
+                    "transport auto: validated host=$host transport=${chosen.transport.name.lowercase()} " +
+                        "(udp ok=${udp.ok} totalMs=${udp.totalMs}; tcp ok=${tcp.ok} totalMs=${tcp.totalMs}) " +
+                        "qnameMtu=${if (chosen.qnameMtu > 0) chosen.qnameMtu else "max"} reason=$reason"
+                )
+                apply(chosen)
+            } else {
+                AppLog.w(
+                    TAG,
+                    "transport auto: no working transport for host=$host (udp=${udp.error}; tcp=${tcp.error}); " +
+                        "keeping guessed transport=${choice.transport.name.lowercase()} reason=$reason"
+                )
+                choice
+            }
+        } catch (e: Throwable) {
+            AppLog.w(
+                TAG,
+                "transport auto: validation error host=$host: ${e.message ?: e::class.java.simpleName}; " +
+                    "keeping transport=${choice.transport.name.lowercase()}"
+            )
+            choice
+        }
+    }
+
     fun chooseFastestByDownload(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice? {
         val generation = beginProbe(reason)
         checkNotCancelled(generation)
@@ -991,12 +1064,13 @@ object ResolverSelector {
         username: String?,
         password: String?,
         qnameMtuOrder: IntArray,
-        generation: Long
+        generation: Long,
+        transportOrder: List<Config.ResolverTransport> = TRANSPORT_PROBE_ORDER
     ): SpeedProbeResult {
         checkNotCancelled(generation)
         val primaryHost = resolverHosts.firstOrNull().orEmpty()
         var lastError = ""
-        for (transport in TRANSPORT_PROBE_ORDER) {
+        for (transport in transportOrder) {
             for (qnameMtu in qnameMtuOrder) {
                 val slipstreamPort = findFreeLocalPort()
                 val startAt = System.nanoTime()

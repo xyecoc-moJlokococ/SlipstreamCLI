@@ -53,6 +53,8 @@ class TinyVpnService : VpnService() {
     private var lastHeavyUploadAt = 0L
     private var slowResponseSince = 0L
     private var lowBandwidthSince = 0L
+    private var lastTransportSwitchAt = 0L
+    private var transportSwitchesThisEpisode = 0
     private var readyFalseSince = 0L
     private var lastRecoveryAt = 0L
     private var recoveryCount = 0
@@ -121,9 +123,16 @@ class TinyVpnService : VpnService() {
             }
             SlipstreamBridge.setVpnService(this)
             SlipstreamBridge.proxyOnlyMode = false
+            SlipstreamBridge.dnsQueryType = config.dnsQueryType
             resetTrafficBase()
             failedAutoResolvers.clear()
             var choice = ResolverSelector.chooseFast(this, config, "vpn_start")
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+            // Validate the DNS carrier transport before committing (light-dns "auto" style): probe the
+            // chosen resolver UDP-first with a real 5 KB download and keep UDP only if data actually
+            // flows, else fall back to TCP. This catches "UDP handshakes but is throttled" (e.g. Tele2),
+            // which the ready check and the cached/guessed transport cannot.
+            choice = ResolverSelector.validateTransport(this, config, choice, "vpn_start")
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             currentResolver = choice
             val bridgePort = config.listenPort
@@ -291,6 +300,8 @@ class TinyVpnService : VpnService() {
         ResolverSelector.lastConnectedTransport = null
         resolverOptimizerRunning = false
         failedAutoResolvers.clear()
+        lastTransportSwitchAt = 0
+        transportSwitchesThisEpisode = 0
         readyFalseSince = 0
         handler.removeCallbacks(diagnostics)
         Thread({
@@ -398,6 +409,11 @@ class TinyVpnService : VpnService() {
         } else if (!activeBridge || responseBytesDelta >= LOW_BANDWIDTH_CLEAR_DELTA_BYTES || responseBytesDelta == 0L) {
             lowBandwidthSince = 0
         }
+        // Real throughput returned -> the current transport is delivering, so end the transport-switch
+        // "episode" (let a future degradation start fresh with its full switch budget).
+        if (responseBytesDelta >= LOW_BANDWIDTH_CLEAR_DELTA_BYTES) {
+            transportSwitchesThisEpisode = 0
+        }
         if (appProgressed || requestBytesDelta > 0 || bridgeTxDelta > 0 || usefulProgressed || failureDelta > 0) {
             lastRx = rx
             lastTx = tx
@@ -453,6 +469,41 @@ class TinyVpnService : VpnService() {
                     "requestDelta=$requestBytesDelta responseDelta=$responseBytesDelta bridgeTxDelta=$bridgeTxDelta " +
                     "active=${bridge.activeClients} uploadGrace=$uploadGraceActive"
             )
+        }
+        // Runtime transport self-correction. The tunnel is ready but delivering almost nothing while
+        // the app is demanding bandwidth. QUIC readiness alone cannot tell a good carrier transport
+        // from a ready-but-throttled one -- e.g. Tele2 hard-throttles UDP-53, so UDP connects and looks
+        // "ready" but barely moves data, and neither the ready-timeout fallback nor the cached/remembered
+        // transport catches it (the cache just re-remembers the throttled transport). So when low-bandwidth
+        // persists in AUTO mode, flip to the other transport on the same resolver and see if it delivers.
+        // Bounded per episode (MAX_TRANSPORT_SWITCHES_PER_EPISODE) with a cooldown to avoid udp<->tcp
+        // flapping; transportSwitchesThisEpisode resets above once real throughput returns.
+        if (
+            lowBandwidth &&
+            now - lowBandwidthSince > TRANSPORT_SWITCH_LOW_BW_MS &&
+            currentConfig?.resolverMode == Config.ResolverMode.AUTO &&
+            currentResolver != null &&
+            !recovering &&
+            transportSwitchesThisEpisode < MAX_TRANSPORT_SWITCHES_PER_EPISODE &&
+            now - lastTransportSwitchAt > TRANSPORT_SWITCH_COOLDOWN_MS &&
+            now - lastRecoveryAt > RECOVERY_COOLDOWN_MS
+        ) {
+            val curTransport = currentResolver!!.transport
+            val otherTransport = if (curTransport == Config.ResolverTransport.UDP) {
+                Config.ResolverTransport.TCP
+            } else {
+                Config.ResolverTransport.UDP
+            }
+            AppLog.w(
+                TAG,
+                "traffic low-bandwidth for ${now - lowBandwidthSince}ms on transport=${curTransport.name.lowercase()}; " +
+                    "trying transport=${otherTransport.name.lowercase()} " +
+                    "(switch ${transportSwitchesThisEpisode + 1}/$MAX_TRANSPORT_SWITCHES_PER_EPISODE) " +
+                    "resolver=${currentResolver!!.selectedHost}:${currentResolver!!.port}"
+            )
+            lastTransportSwitchAt = now
+            transportSwitchesThisEpisode += 1
+            restartSlipstreamPath("transport_switch_${otherTransport.name.lowercase()}")
         }
         if (running && ready && failureDelta >= FAILURE_STORM_RECOVERY_DELTA) {
             AppLog.w(
@@ -628,6 +679,9 @@ class TinyVpnService : VpnService() {
                     reason.startsWith("bridge_failures")
                 val failureStormRecovery = reason.startsWith("bridge_failure_storm")
                 val resolverUnreachableRecovery = reason.startsWith("resolver_unreachable")
+                // Reconnect the current resolver with the opposite DNS carrier transport (udp<->tcp).
+                // The resolver itself is fine, so it must not be rotated or marked bad here.
+                val transportSwitchRecovery = reason.startsWith("transport_switch")
                 val trafficRecovery = reason.startsWith("traffic_no_response") ||
                     resolverUnreachableRecovery
                 val bridgeFailureRecovery = reason.startsWith("bridge_failures")
@@ -644,6 +698,20 @@ class TinyVpnService : VpnService() {
                 // bad resolver. Give it the same quick same-resolver retry as "accumulated"; if the
                 // quick retry also fails, the resolver still gets marked bad on the next tick.
                 val bridgeFailureFastRetry = bridgeAccumulatedRecovery || failureStormRecovery
+                // Silence-type failures (tunnel went quiet: traffic_no_response, or bridge failures
+                // during sustained no-response) may be a transient blip rather than a dead resolver.
+                // Retry the CURRENT resolver once before rotating; if it is genuinely dead, the
+                // waitForSlipstreamReady failure below marks it bad, so the next diagnostic tick sees
+                // currentAlreadyFailed and rotates to the next-best cached resolver. resolver_unreachable
+                // is deliberately excluded -- a failed TCP reachability probe already proves the
+                // resolver is gone, so there is nothing to retry and we rotate immediately.
+                val silenceRecovery = reason.startsWith("traffic_no_response") ||
+                    (reason.startsWith("bridge_failures") && reason.endsWith("_no_response"))
+                val currentHostForRetry = currentResolver?.selectedHost?.takeIf { it.isNotBlank() }
+                val currentAlreadyFailed =
+                    currentHostForRetry != null && currentHostForRetry in failedAutoResolvers
+                val retryCurrentFirst =
+                    silenceRecovery && currentResolver != null && !currentAlreadyFailed
                 val nativeNotReadyRecovery = reason.startsWith("native_not_ready")
                 val nativeDownFastRecovery = reason == "native_not_running" &&
                     config.resolverMode == Config.ResolverMode.AUTO &&
@@ -654,12 +722,14 @@ class TinyVpnService : VpnService() {
                     (nativeDownFastRecovery || nativeNotReadyRecovery)
                 val reuseCurrentResolver = isNativeNoProgress ||
                     bridgeFailureFastRetry ||
+                    retryCurrentFirst ||
                     (fastPathRecovery && !trafficRecovery && !bridgeFailureRecovery)
-                val rotateResolver = (reason == "native_not_running" && !isNativeNoProgress) ||
-                    trafficRecovery ||
-                    (bridgeFailureRecovery && !bridgeFailureFastRetry) ||
-                    nativeNotReadyRecovery ||
-                    resolverUnreachableRecovery
+                val rotateResolver = !retryCurrentFirst &&
+                    ((reason == "native_not_running" && !isNativeNoProgress) ||
+                        trafficRecovery ||
+                        (bridgeFailureRecovery && !bridgeFailureFastRetry) ||
+                        nativeNotReadyRecovery ||
+                        resolverUnreachableRecovery)
                 if (isNativeNoProgress) {
                     AppLog.w(TAG, "recovery#$recoveryId native no-progress; reusing current resolver without auto DNS probe: $lastNativeError")
                 }
@@ -678,16 +748,63 @@ class TinyVpnService : VpnService() {
                     failedAutoResolvers.clear()
                 }
                 val quickChoice = if (forcedChoice == null && autoFastRecovery) quickAutoRecoveryChoice(config, recoveryId, reason) else null
-                val choice = forcedChoice ?: quickChoice ?: if (reuseCurrentResolver && currentResolver != null) {
+                val choice = forcedChoice ?: quickChoice ?: if (transportSwitchRecovery && currentResolver != null) {
+                    val cur = currentResolver!!
+                    val flipped = if (cur.transport == Config.ResolverTransport.UDP) {
+                        Config.ResolverTransport.TCP
+                    } else {
+                        Config.ResolverTransport.UDP
+                    }
+                    AppLog.w(
+                        TAG,
+                        "recovery#$recoveryId switching transport ${cur.transport.name.lowercase()} -> " +
+                            "${flipped.name.lowercase()} resolver=${cur.selectedHost}:${cur.port}"
+                    )
+                    cur.copy(transport = flipped)
+                } else if (reuseCurrentResolver && currentResolver != null) {
                     AppLog.w(TAG, "recovery#$recoveryId reusing resolver ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
                     currentResolver!!
                 } else {
-                    ResolverSelector.choose(
-                        this,
-                        config,
-                        "recovery#$recoveryId:$reason",
-                        failedAutoResolvers
-                    )
+                    // Cheap next-best failover: pick the next-best resolver from the cached ranked
+                    // list using only a TCP-reachability probe (no slipstream speed-probe / probe
+                    // QUIC clients, which were the expensive, device-loading part of the old path).
+                    // Falls back to a full speed-probe rescan only if the cache yields nothing usable.
+                    runCatching {
+                        ResolverSelector.chooseFast(
+                            this,
+                            config,
+                            "recovery#$recoveryId:$reason",
+                            failedAutoResolvers
+                        )
+                    }.getOrElse { fastErr ->
+                        AppLog.w(
+                            TAG,
+                            "recovery#$recoveryId chooseFast found no cached resolver (${fastErr.message}); " +
+                                "falling back to full speed-probe rescan"
+                        )
+                        try {
+                            ResolverSelector.choose(
+                                this,
+                                config,
+                                "recovery#$recoveryId:$reason:rescan",
+                                failedAutoResolvers
+                            )
+                        } catch (rescanErr: Throwable) {
+                            // Total exhaustion: every local + cached resolver failed this session.
+                            // Clear the failed set so the next tick retries from scratch instead of
+                            // staying dark forever (the safety valve the old quickAutoRecovery clear
+                            // used to provide, now applied only at true exhaustion).
+                            if (failedAutoResolvers.isNotEmpty()) {
+                                AppLog.w(
+                                    TAG,
+                                    "recovery#$recoveryId all resolvers exhausted; clearing failed set to retry: " +
+                                        failedAutoResolvers.joinToString()
+                                )
+                                failedAutoResolvers.clear()
+                            }
+                            throw rescanErr
+                        }
+                    }
                 }
                 currentResolver = choice
                 ResolverSelector.lastConnectedTransport = choice.transport
@@ -699,6 +816,7 @@ class TinyVpnService : VpnService() {
                 }
                 SlipstreamBridge.setVpnService(this)
                 SlipstreamBridge.proxyOnlyMode = false
+                SlipstreamBridge.dnsQueryType = config.dnsQueryType
                 SlipstreamBridge.startClient(
                     config.domain,
                     ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
@@ -708,7 +826,11 @@ class TinyVpnService : VpnService() {
                 ).getOrThrow()
                 if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
                     runCatching { SlipstreamBridge.stopClient() }
-                    if (config.resolverMode == Config.ResolverMode.AUTO && choice.selectedHost.isNotBlank()) {
+                    // A transport switch that fails to become ready is a transport problem, not a dead
+                    // resolver -- don't condemn the resolver in that case.
+                    if (config.resolverMode == Config.ResolverMode.AUTO && choice.selectedHost.isNotBlank() &&
+                        !transportSwitchRecovery
+                    ) {
                         failedAutoResolvers += choice.selectedHost
                         AppLog.w(
                             TAG,
@@ -738,6 +860,18 @@ class TinyVpnService : VpnService() {
                 resolverHealthFailures = 0
                 lastResolverHealthCheckAt = System.currentTimeMillis()
                 lastProgressAt = System.currentTimeMillis()
+                if (transportSwitchRecovery && config.resolverMode == Config.ResolverMode.AUTO &&
+                    choice.selectedHost.isNotBlank()
+                ) {
+                    // Persist the switched-to transport so the next connect on this network profile
+                    // starts on it directly instead of re-guessing the throttled one.
+                    ResolverSelector.rememberTransport(this, config, choice.selectedHost, choice.transport)
+                    AppLog.w(
+                        TAG,
+                        "recovery#$recoveryId remembered switched transport=${choice.transport.name.lowercase()} " +
+                            "for ${choice.selectedHost}"
+                    )
+                }
                 AppLog.w(
                     TAG,
                     "recovery#$recoveryId done ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()} " +
@@ -875,13 +1009,19 @@ class TinyVpnService : VpnService() {
             .filter { it.isNotBlank() }
             .distinct()
 
-        if (preferred.isEmpty() && failedAutoResolvers.isNotEmpty()) {
+        if (preferred.isEmpty()) {
+            // Every local (DHCP) + current-connection resolver is already marked bad this session.
+            // Previously this cleared the failed set and re-cycled the same operator DNS servers, which
+            // caused an oscillation between them without ever trying the known-good resolvers in the
+            // speed-probed cache. Instead return null so the caller escalates to chooseFast(), which
+            // draws the next-best resolver from the full cache. The failed set is preserved (and only
+            // cleared on true total exhaustion, in the rotate branch's rescan fallback).
             AppLog.w(
                 TAG,
-                "recovery#$recoveryId auto-fast exhausted resolver candidates; clearing failed set: " +
-                    failedAutoResolvers.joinToString()
+                "recovery#$recoveryId auto-fast local candidates exhausted; escalating to cached resolver pool " +
+                    "failed=${failedAutoResolvers.joinToString()}"
             )
-            failedAutoResolvers.clear()
+            return null
         }
 
         val ordered = buildList {
@@ -1012,6 +1152,12 @@ class TinyVpnService : VpnService() {
         private const val LOW_BANDWIDTH_MAX_DELTA_BYTES = 8L * 1024L
         private const val LOW_BANDWIDTH_CLEAR_DELTA_BYTES = 32L * 1024L
         private const val LOW_BANDWIDTH_ACTIVE_CLIENTS = 10
+        // Runtime transport self-correction (auto udp<->tcp switch when the chosen carrier is ready but
+        // throttled to near-uselessness). Reacts far sooner than LOW_BANDWIDTH_RECOVERY_MS (45s) because
+        // a wrong transport never self-heals; bounded per episode to prevent flapping.
+        private const val TRANSPORT_SWITCH_LOW_BW_MS = 15_000L
+        private const val TRANSPORT_SWITCH_COOLDOWN_MS = 18_000L
+        private const val MAX_TRANSPORT_SWITCHES_PER_EPISODE = 2
         private const val RECOVERY_COOLDOWN_MS = 5_000L
         private const val FAILURE_RECOVERY_DELTA = 8L
         private const val FAILURE_STORM_RECOVERY_DELTA = 12L

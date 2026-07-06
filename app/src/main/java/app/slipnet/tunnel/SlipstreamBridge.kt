@@ -27,6 +27,9 @@ object SlipstreamBridge {
     @Volatile private var loaded = false
     @Volatile private var currentPort = 1080
     @Volatile var proxyOnlyMode = true
+    // Anti-fingerprinting: DNS query type (RR type) sent by the native client (16 = TXT default,
+    // 65 = HTTPS/SVCB). Applied globally to the main + probe clients right before each native start.
+    @Volatile var dnsQueryType = 16
 
     init {
         try {
@@ -116,6 +119,7 @@ object SlipstreamBridge {
         val transport = resolverTransport.lowercase().takeIf { it == "udp" || it == "tcp" } ?: "tcp"
         val pathMode = if (resolver.authoritative) "authoritative" else "recursive"
         if (nativeIsClientRunning()) stopClient()
+        runCatching { nativeSetDnsQueryType(dnsQueryType) }
         currentPort = listenPort
         AppLog.i(
             TAG,
@@ -173,6 +177,7 @@ object SlipstreamBridge {
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
                 "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
+        runCatching { nativeSetDnsQueryType(dnsQueryType) }
         val code = nativeStartProbeClient(
             domain,
             hosts.toTypedArray(),
@@ -244,6 +249,7 @@ object SlipstreamBridge {
     ): Int
 
     private external fun nativeStopSlipstreamClient()
+    private external fun nativeSetDnsQueryType(qtype: Int)
     private external fun nativeStartProbeClient(
         domain: String,
         resolverHosts: Array<String>,
