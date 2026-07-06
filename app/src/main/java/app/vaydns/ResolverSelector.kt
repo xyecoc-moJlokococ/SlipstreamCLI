@@ -720,6 +720,11 @@ object ResolverSelector {
                     "keeping transport=${choice.transport.name.lowercase()}"
             )
             choice
+        } finally {
+            // Clear the "probing" indicator so the UI doesn't stay stuck on DNS probing after this
+            // validation. At normal start the background optimizer clears it, but a network-change
+            // re-validation has no such follow-up, so reset it here on every exit path.
+            lastProgress = lastProgress.copy(active = false, phase = "done")
         }
     }
 
