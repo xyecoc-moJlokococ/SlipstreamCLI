@@ -57,6 +57,9 @@ object ResolverSelector {
     // without also probing TCP (fast path for good networks like Beeline). Above it, UDP is either
     // dead or throttled (e.g. Tele2 delivered 5 KB in ~5.4 s), so we probe TCP too and pick the better.
     private const val TXT_QUERY_TYPE = 16
+    // A masking qtype (e.g. 65=HTTPS) is kept only if its 5 KB validation probe finishes within this;
+    // above it the qtype "works" but crawls (Tele2 SVCB ~5 s for 5 KB), so fall back to TXT.
+    private const val QTYPE_PREFER_FAST_MS = 3500L
     private const val TRANSPORT_VALIDATE_UDP_FAST_MS = 3000L
     // When both transports pass, keep UDP (lower latency when healthy) unless TCP is faster than UDP
     // by more than this margin -- avoids flipping to TCP over probe noise, but switches on a real gap.
@@ -696,18 +699,27 @@ object ResolverSelector {
                 checkNotCancelled(generation)
                 val best = probeBestTransport(qtype)
                 if (best != null) {
-                    // Lock the winning qtype for the real client; it persists in SlipstreamBridge and is
-                    // reused across same-network recoveries (which do not re-run this validation).
-                    SlipstreamBridge.dnsQueryType = qtype
-                    rememberTransport(context, config, host, best.transport)
-                    AppLog.i(
-                        TAG,
-                        "transport auto: validated host=$host qtype=$qtype transport=${best.transport.name.lowercase()} " +
-                            "totalMs=${best.totalMs} qnameMtu=${if (best.qnameMtu > 0) best.qnameMtu else "max"} reason=$reason"
-                    )
-                    return choice.copy(transport = best.transport, qnameMtu = best.qnameMtu, latencyMs = best.totalMs)
+                    val isTxtBaseline = qtype == TXT_QUERY_TYPE
+                    // A masking qtype (non-TXT, e.g. 65=HTTPS) is kept ONLY when it's genuinely fast.
+                    // On Tele2 SVCB "works" -- the 5 KB probe eventually completes -- but crawls (~5 s),
+                    // which would leave the tunnel at ~1 KB/s; fall through to TXT (the reliable fast
+                    // baseline) instead. TXT is accepted whenever it works.
+                    if (isTxtBaseline || best.totalMs <= QTYPE_PREFER_FAST_MS) {
+                        // Lock the winning qtype for the real client; it persists in SlipstreamBridge and
+                        // is reused across same-network recoveries (which do not re-run this validation).
+                        SlipstreamBridge.dnsQueryType = qtype
+                        rememberTransport(context, config, host, best.transport)
+                        AppLog.i(
+                            TAG,
+                            "transport auto: validated host=$host qtype=$qtype transport=${best.transport.name.lowercase()} " +
+                                "totalMs=${best.totalMs} qnameMtu=${if (best.qnameMtu > 0) best.qnameMtu else "max"} reason=$reason"
+                        )
+                        return choice.copy(transport = best.transport, qnameMtu = best.qnameMtu, latencyMs = best.totalMs)
+                    }
+                    AppLog.w(TAG, "transport auto: qtype=$qtype works but slow (totalMs=${best.totalMs}>$QTYPE_PREFER_FAST_MS) for host=$host; falling back to TXT reason=$reason")
+                } else {
+                    AppLog.w(TAG, "transport auto: qtype=$qtype failed on udp and tcp for host=$host; trying next candidate reason=$reason")
                 }
-                AppLog.w(TAG, "transport auto: qtype=$qtype failed on udp and tcp for host=$host; trying next candidate reason=$reason")
             }
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
             AppLog.w(TAG, "transport auto: no working transport/qtype for host=$host; keeping guessed transport=${choice.transport.name.lowercase()} qtype=${config.dnsQueryType} reason=$reason")

@@ -811,18 +811,13 @@ class TinyVpnService : VpnService() {
                 }
                 val quickChoice = if (forcedChoice == null && autoFastRecovery) quickAutoRecoveryChoice(config, recoveryId, reason) else null
                 val choice = forcedChoice ?: quickChoice ?: if (transportSwitchRecovery && currentResolver != null) {
-                    val cur = currentResolver!!
-                    val flipped = if (cur.transport == Config.ResolverTransport.UDP) {
-                        Config.ResolverTransport.TCP
-                    } else {
-                        Config.ResolverTransport.UDP
-                    }
-                    AppLog.w(
-                        TAG,
-                        "recovery#$recoveryId switching transport ${cur.transport.name.lowercase()} -> " +
-                            "${flipped.name.lowercase()} resolver=${cur.selectedHost}:${cur.port}"
-                    )
-                    cur.copy(transport = flipped)
+                    // Sustained low-bandwidth: RE-VALIDATE (probe transports + qtype) and keep whatever
+                    // actually performs, instead of blindly flipping the transport. Blind flipping caused
+                    // tcp<->udp flapping on Tele2 (where udp+HTTPS doesn't work), which shredded
+                    // throughput; re-validation re-picks the working transport and stops the flap.
+                    AppLog.w(TAG, "recovery#$recoveryId re-validating transport/qtype for ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
+                    SlipstreamBridge.dnsQueryType = config.dnsQueryType
+                    ResolverSelector.validateTransport(this, config, currentResolver!!, "recovery#$recoveryId:$reason")
                 } else if (networkChangedRecovery) {
                     // Fresh network: forget the previous network's failed resolvers, pick a resolver for
                     // the current network, and re-run transport/qtype validation for it.
