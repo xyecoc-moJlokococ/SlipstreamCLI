@@ -21,7 +21,13 @@ data class Config(
     val password: String,
     // Anti-fingerprinting: DNS query type (RR type) sent in tunnel queries. 16 = TXT (default).
     // 65 = HTTPS/SVCB (less suspicious carrier). Requires a server that accepts the same type.
-    val dnsQueryType: Int = 16
+    val dnsQueryType: Int = 16,
+    // Client-only knobs (no server-side counterpart -- safe to change unilaterally):
+    // DNS label length (1-63, default 57) for the encoded subdomain; the server strips dots before
+    // decoding, so this never needs to match anything server-side.
+    val dnsLabelLength: Int = 57,
+    // Cap on DNS poll queries/second (0 = unlimited, default). Purely a client-side pacing choice.
+    val maxPollQps: Int = 0
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
@@ -82,7 +88,9 @@ object ConfigStore {
             authMode = Config.AuthMode.valueOf(p.getString("authMode", Config.AuthMode.NO_AUTH.name) ?: Config.AuthMode.NO_AUTH.name),
             username = p.getString("username", "") ?: "",
             password = p.getString("password", "") ?: "",
-            dnsQueryType = p.getInt("dnsQueryType", 16)
+            dnsQueryType = p.getInt("dnsQueryType", 16),
+            dnsLabelLength = p.getInt("dnsLabelLength", 57),
+            maxPollQps = p.getInt("maxPollQps", 0)
         )
     }
 
@@ -288,6 +296,8 @@ object ConfigStore {
             .putString("username", config.username)
             .putString("password", config.password)
             .putInt("dnsQueryType", config.dnsQueryType)
+            .putInt("dnsLabelLength", config.dnsLabelLength)
+            .putInt("maxPollQps", config.maxPollQps)
             .apply()
     }
 
@@ -327,6 +337,8 @@ object ConfigStore {
             .put("username", config.username)
             .put("password", config.password)
             .put("dnsQueryType", config.dnsQueryType)
+            .put("dnsLabelLength", config.dnsLabelLength)
+            .put("maxPollQps", config.maxPollQps)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -341,7 +353,9 @@ object ConfigStore {
             authMode = enumValue(json.optString("authMode"), Config.AuthMode.NO_AUTH),
             username = json.optString("username", ""),
             password = json.optString("password", ""),
-            dnsQueryType = json.optInt("dnsQueryType", 16)
+            dnsQueryType = json.optInt("dnsQueryType", 16),
+            dnsLabelLength = json.optInt("dnsLabelLength", 57),
+            maxPollQps = json.optInt("maxPollQps", 0)
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
@@ -407,6 +421,9 @@ private object SlipstreamLinkParser {
         } else {
             base.authMode
         }
+        val dnsLabelLength = first(params, "dnslabellength")?.toIntOrNull()?.coerceIn(1, 63) ?: base.dnsLabelLength
+        val maxPollQps = first(params, "maxpollqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxPollQps
+        val dnsQueryType = first(params, "dnsquerytype")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: base.dnsQueryType
         val config = base.copy(
             domain = domain,
             resolverHost = resolver ?: base.resolverHost,
@@ -416,7 +433,10 @@ private object SlipstreamLinkParser {
             resolverPathMode = pathMode,
             authMode = authMode,
             username = first(params, "username", "user") ?: base.username,
-            password = first(params, "password", "pass") ?: base.password
+            password = first(params, "password", "pass") ?: base.password,
+            dnsLabelLength = dnsLabelLength,
+            maxPollQps = maxPollQps,
+            dnsQueryType = dnsQueryType
         )
         return ImportedProfile(first(params, "name", "profileName") ?: domain, config)
     }
