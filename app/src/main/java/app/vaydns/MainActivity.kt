@@ -57,22 +57,28 @@ class MainActivity : android.app.Activity() {
     private lateinit var resolverHost: EditText
     private lateinit var resolverHostContainer: View
     private lateinit var resolverPort: EditText
-    private lateinit var resolverMode: Spinner
-    private lateinit var resolverTransport: Spinner
+    private lateinit var resolverMode: LinearLayout
+    private lateinit var resolverTransport: LinearLayout
     private lateinit var resolverTransportContainer: View
-    private lateinit var resolverPathMode: Spinner
+    private lateinit var resolverPathMode: LinearLayout
     private lateinit var useLocalDns: Button
     private lateinit var listenPort: EditText
     private lateinit var username: EditText
     private lateinit var password: EditText
     private lateinit var mode: Spinner
-    private lateinit var auth: Spinner
+    private lateinit var auth: LinearLayout
+    private lateinit var dnsLabelLengthField: EditText
+    private lateinit var maxPollQpsField: EditText
     private lateinit var fileLogging: CheckBox
     private lateinit var trafficNotification: CheckBox
     private lateinit var localSocksAuth: CheckBox
     private lateinit var localSocksUsername: EditText
     private lateinit var localSocksPassword: EditText
     private lateinit var profileName: EditText
+    // The config the editor was opened with (profile's own config, or active/default for a new
+    // profile). Used to preserve fields that have no editor UI (e.g. dnsQueryType) across saves,
+    // so editing unrelated fields doesn't silently reset them to their defaults.
+    private var editingBaseConfig: Config? = null
     private lateinit var connectButton: Button
     private lateinit var connectProgress: ProgressBar
     private lateinit var connectButtonBackground: GradientDrawable
@@ -279,16 +285,16 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot().apply {
-            setPadding(dp(16), 0, dp(16), dp(82))
+            setPadding(dp(10), 0, dp(10), dp(82))
         }
-        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         root.addView(profileList(), compactSectionParams())
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
                 root.setPadding(
-                    dp(16),
-                    dp(6) + insets.systemWindowInsetTop,
-                    dp(16),
+                    dp(10),
+                    dp(4) + insets.systemWindowInsetTop,
+                    dp(10),
                     dp(82) + insets.systemWindowInsetBottom
                 )
                 insets
@@ -309,10 +315,16 @@ class MainActivity : android.app.Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // 60dp (up from 52dp) for a bigger tap target; iconButton uses ScaleType.CENTER so the
+            // drawn icon stays the same visual size, only the invisible touch area grows.
+            // Static background (like the back button in topBarBack): no press-color block fill.
             addView(iconButton(R.drawable.ic_menu, "Menu").apply {
                 id = R.id.global_settings_button
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
+                stateListAnimator = null
+                isHapticFeedbackEnabled = false
                 setOnClickListener { openDrawer() }
-            }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            }, LinearLayout.LayoutParams(dp(60), dp(60)))
             addView(TextView(this@MainActivity).apply {
                 text = title
                 textSize = 22f
@@ -321,15 +333,16 @@ class MainActivity : android.app.Activity() {
                 setSingleLine(true)
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                leftMargin = dp(10)
+                leftMargin = dp(6)
             })
             if (showAdd) {
                 addView(iconButton(R.drawable.ic_add, "New profile").apply {
                     id = R.id.add_profile_button
+                    background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
+                    stateListAnimator = null
+                    isHapticFeedbackEnabled = false
                     setOnClickListener { showProfileEditor(null) }
-                }, LinearLayout.LayoutParams(dp(52), dp(52)).apply {
-                    leftMargin = dp(8)
-                })
+                }, LinearLayout.LayoutParams(dp(60), dp(60)))
             }
         }
 
@@ -342,7 +355,7 @@ class MainActivity : android.app.Activity() {
                 stateListAnimator = null
                 isHapticFeedbackEnabled = false
                 setOnClickListener { showMainScreen(ScreenTransition.BACK) }
-            }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            }, LinearLayout.LayoutParams(dp(60), dp(60)))
             addView(TextView(this@MainActivity).apply {
                 text = title
                 textSize = 22f
@@ -351,7 +364,7 @@ class MainActivity : android.app.Activity() {
                 setSingleLine(true)
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                leftMargin = dp(10)
+                leftMargin = dp(6)
             })
         }
 
@@ -382,7 +395,11 @@ class MainActivity : android.app.Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setBackgroundColor(color(R.color.slipnet_card))
-            setPadding(dp(18), dp(58), dp(18), dp(18))
+            // dp(58) top padding used to compensate for content drawing under a transparent
+            // status bar in forced edge-to-edge mode; now that the window fits system windows
+            // again (see AppTheme's windowOptOutEdgeToEdgeEnforcement), the status bar area is
+            // already excluded from this layout, so that offset would double-count.
+            setPadding(dp(18), dp(18), dp(18), dp(18))
             translationX = -width.toFloat()
             addView(TextView(this@MainActivity).apply {
                 text = "SlipstreamCLI"
@@ -472,7 +489,7 @@ class MainActivity : android.app.Activity() {
                         drawerDragging = false
                         val panel = drawerPanel ?: return@setOnTouchListener true
                         val width = drawerWidth.takeIf { it > 0 } ?: panel.width
-                        if (shouldOpenDrawer(panel.translationX, width)) openDrawer() else closeDrawer()
+                        if (shouldStayOpenWhileClosing(panel.translationX, width)) openDrawer() else closeDrawer()
                     } else {
                         persistGlobalSettingsIfVisible()
                         if (selected) {
@@ -590,8 +607,16 @@ class MainActivity : android.app.Activity() {
 
     private fun drawerContentShift(): Float = dp(34).toFloat()
 
+    // Used when the drawer starts CLOSED (edge/global swipe-to-open gestures): opens once the
+    // panel has been dragged in by more than 20% of its width.
     private fun shouldOpenDrawer(translationX: Float, width: Int): Boolean =
         translationX > -width * 0.8f
+
+    // Used when the drawer starts OPEN (drag-to-close gestures): stays open only while still
+    // shown by more than 80% (i.e. closes once dragged out by just 20%), so the open and close
+    // triggers feel symmetric instead of requiring an 80% drag to close.
+    private fun shouldStayOpenWhileClosing(translationX: Float, width: Int): Boolean =
+        translationX > -width * 0.2f
 
     private fun setDrawerContentShift(value: Float) {
         val frame = (drawerPanel?.parent as? ViewGroup) ?: return
@@ -755,7 +780,7 @@ class MainActivity : android.app.Activity() {
                     if (!drawerDragging || !drawerOpen) return@setOnTouchListener false
                     drawerDragging = false
                     val width = drawerWidth.takeIf { it > 0 } ?: panel.width
-                    if (shouldOpenDrawer(panel.translationX, width)) openDrawer() else closeDrawer()
+                    if (shouldStayOpenWhileClosing(panel.translationX, width)) openDrawer() else closeDrawer()
                     true
                 }
                 else -> false
@@ -794,9 +819,6 @@ class MainActivity : android.app.Activity() {
                     setSingleLine(true)
                 }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             }
-            val more = iconButton(R.drawable.ic_more_vert, "Profile menu").apply {
-                setOnClickListener { showProfileEditor(profile) }
-            }
             val edit = iconButton(R.drawable.ic_edit_profile, "Edit profile").apply {
                 id = R.id.edit_profile_button
                 setOnClickListener { showProfileEditor(profile) }
@@ -809,13 +831,16 @@ class MainActivity : android.app.Activity() {
             addView(textColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 leftMargin = dp(8)
             })
-            addView(more, LinearLayout.LayoutParams(dp(36), dp(36)))
-            addView(edit, LinearLayout.LayoutParams(dp(36), dp(36)))
-            addView(delete, LinearLayout.LayoutParams(dp(36), dp(36)))
+            // Bigger than the old 36dp (below Android's 48dp touch-target guideline); the icon stays
+            // visually the same size (iconButton uses ScaleType.CENTER, so growing the box only grows
+            // the invisible tap area, not the drawn icon).
+            addView(edit, LinearLayout.LayoutParams(dp(44), dp(44)))
+            addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(4) })
         }
 
     private fun showProfileEditor(profile: ConfigProfile?) {
         val config = profile?.config ?: activeConfig ?: ConfigStore.load(this)
+        editingBaseConfig = config
         editorVisible = true
         settingsVisible = false
         diagnosticsVisible = false
@@ -830,10 +855,10 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot()
-        root.setPadding(dp(16), 0, dp(16), dp(82))
+        root.setPadding(dp(10), 0, dp(10), dp(82))
         root.addView(
             topBarBack(if (profile == null) "New Profile" else "Edit Profile"),
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60))
         )
 
         profileName = edit("profile name").apply {
@@ -842,68 +867,92 @@ class MainActivity : android.app.Activity() {
         }
         domain = edit("domain").apply { id = R.id.domain_field }
         resolverHost = edit("resolver host").apply { id = R.id.resolver_host_field }
-        useLocalDns = button("USE LOCAL DNS").apply {
+        // Ghost/link style (transparent, accent-colored text) instead of a full secondary button --
+        // a compact inline "quick-fill" action next to the resolver field.
+        useLocalDns = button("LOCAL").apply {
             id = R.id.use_local_dns_button
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
+            setTextColor(color(R.color.slipnet_accent))
+            stateListAnimator = null
+            isHapticFeedbackEnabled = false
             setOnClickListener { fillLocalDns() }
         }
         val resolverRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(resolverHost, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(useLocalDns, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)).apply {
-                leftMargin = dp(8)
+            addView(useLocalDns, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+                leftMargin = dp(4)
             })
         }
         resolverPort = edit("resolver port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.resolver_port_field }
-        resolverMode = spinner(listOf("manual dns", "auto dns")).apply {
+        resolverMode = pillSelector(listOf("manual dns", "auto dns")) { updateResolverUi() }.apply {
             id = R.id.resolver_mode_spinner
-            setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    updateResolverUi()
-                }
-
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-            })
         }
-        resolverTransport = spinner(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
-        resolverPathMode = spinner(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
-        auth = spinner(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
+        resolverTransport = pillSelector(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
+        resolverPathMode = pillSelector(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
+        auth = pillSelector(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
         password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
             id = R.id.password_field
         }
+        dnsLabelLengthField = edit("dns label length", InputType.TYPE_CLASS_NUMBER).apply {
+            id = R.id.dns_label_length_field
+        }
+        maxPollQpsField = edit("max poll qps", InputType.TYPE_CLASS_NUMBER).apply {
+            id = R.id.max_poll_qps_field
+        }
 
-        root.addView(card().apply {
-            addView(labeledField("Profile name", profileName), fieldParams())
-            addView(labeledField("Domain", domain), fieldParams())
-            addView(labeledField("DNS mode", resolverMode), fieldParams())
-            resolverHostContainer = labeledField("Resolver host", resolverRow)
-            addView(resolverHostContainer, fieldParams())
-            resolverTransportContainer = labeledField("Transport", resolverTransport)
-            addView(row(
-                labeledField("Resolver port", resolverPort),
-                resolverTransportContainer
-            ), fieldParams())
-            addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
-            addView(labeledField("Auth mode", auth), fieldParams())
-            addView(labeledField("Username", username), fieldParams())
-            addView(labeledField("Password", password), fieldParams())
-            if (profile != null) {
-                addView(button("DELETE PROFILE").apply {
-                    id = R.id.delete_profile_button
-                    setOnClickListener { confirmDeleteProfile(profile) }
-                }, fieldParams())
-            }
-        }, sectionParams())
+        root.addView(labeledField("Profile name", profileName), fieldParams())
+        root.addView(labeledField("Domain", domain), fieldParams())
+
+        root.addView(sectionTitle("DNS Resolver"), sectionParams())
+        root.addView(labeledField("DNS mode", resolverMode), fieldParams())
+        resolverHostContainer = labeledField("Resolver host", resolverRow)
+        root.addView(resolverHostContainer, fieldParams())
+        resolverTransportContainer = labeledField("Transport", resolverTransport)
+        root.addView(
+            row(labeledField("Resolver port", resolverPort), resolverTransportContainer),
+            fieldParams()
+        )
+        root.addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
+
+        root.addView(sectionTitle("Authentication"), sectionParams())
+        root.addView(labeledField("Auth mode", auth), fieldParams())
+        root.addView(labeledField("Username", username), fieldParams())
+        root.addView(labeledField("Password", password), fieldParams())
+
+        root.addView(sectionTitle("Advanced (client-only)"), sectionParams())
+        root.addView(
+            hintText("These only shape this device's own traffic; the server does not need to match them."),
+            fieldParams()
+        )
+        root.addView(labeledField("DNS label length", dnsLabelLengthField), fieldParams())
+        root.addView(
+            hintText("1-63, default 57. Length of each DNS label in the encoded query."),
+            compactSectionParams()
+        )
+        root.addView(labeledField("Max poll rate (queries/sec)", maxPollQpsField), fieldParams())
+        root.addView(
+            hintText("0 = unlimited (default). Caps how many DNS queries/sec this device sends."),
+            compactSectionParams()
+        )
+
+        if (profile != null) {
+            root.addView(button("DELETE PROFILE").apply {
+                id = R.id.delete_profile_button
+                setOnClickListener { confirmDeleteProfile(profile) }
+            }, sectionParams())
+        }
 
         root.requestFocus()
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
                 val bottomInset = insets.systemWindowInsetBottom
                 root.setPadding(
-                    dp(16),
-                    dp(6) + insets.systemWindowInsetTop,
-                    dp(16),
+                    dp(10),
+                    dp(4) + insets.systemWindowInsetTop,
+                    dp(10),
                     dp(82) + bottomInset
                 )
                 insets
@@ -960,6 +1009,7 @@ class MainActivity : android.app.Activity() {
             id = R.id.main_scroll
             isFillViewport = true
             clipToPadding = false
+            isVerticalScrollBarEnabled = false
             setBackgroundColor(color(R.color.slipnet_bg))
             setOnApplyWindowInsetsListener { _, insets ->
                 root.setPadding(
@@ -981,9 +1031,9 @@ class MainActivity : android.app.Activity() {
         scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
                 root.setPadding(
-                    dp(16),
-                    dp(6) + insets.systemWindowInsetTop,
-                    dp(16),
+                    dp(10),
+                    dp(4) + insets.systemWindowInsetTop,
+                    dp(10),
                     bottomPadding + insets.systemWindowInsetBottom
                 )
                 insets
@@ -1019,7 +1069,8 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot()
-        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        root.setPadding(dp(10), 0, dp(10), dp(24))
+        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         status = TextView(this).apply {
             id = R.id.status_text
             textSize = 12f
@@ -1146,7 +1197,8 @@ class MainActivity : android.app.Activity() {
             setBackgroundColor(color(R.color.slipnet_bg))
         }
         val root = screenRoot()
-        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        root.setPadding(dp(10), 0, dp(10), dp(24))
+        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
         mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
         fileLogging = debugLogCheckbox()
@@ -1363,6 +1415,68 @@ class MainActivity : android.app.Activity() {
             setTextColor(color(R.color.slipnet_text_primary))
         }
 
+    // Small gray description line placed under a field/section, matching e.g. "Server's Noise
+    // protocol public key in hex format" style hint text.
+    private fun hintText(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            setTextColor(color(R.color.slipnet_text_muted))
+        }
+
+    private fun pillBackground(selected: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(22).toFloat()
+            if (selected) {
+                setColor(color(R.color.slipnet_accent))
+            } else {
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1), color(R.color.slipnet_stroke))
+            }
+        }
+
+    // Segmented "pill" selector replacing Spinner for short enum-like choices (transport, auth
+    // mode, etc.), matching the reference design's UDP/TCP/DoT/DoH style row. Selection state is
+    // kept in the row's own `tag` (an Int index) and read/written via the extension functions
+    // below, mirroring Spinner's selectedItemPosition/setSelection so call sites stay simple.
+    private fun pillSelector(options: List<String>, onChange: ((Int) -> Unit)? = null): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            tag = 0
+            options.forEachIndexed { index, label ->
+                addView(TextView(this@MainActivity).apply {
+                    text = label
+                    textSize = 13f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    minHeight = dp(44)
+                    isClickable = true
+                    isFocusable = true
+                    background = pillBackground(index == 0)
+                    setTextColor(color(if (index == 0) R.color.slipnet_button_text_primary else R.color.slipnet_text_primary))
+                    setOnClickListener {
+                        val row = parent as LinearLayout
+                        row.setPillSelectedIndex(row.indexOfChild(this))
+                        onChange?.invoke(row.pillSelectedIndex())
+                    }
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (index > 0) leftMargin = dp(8)
+                })
+            }
+        }
+
+    private fun LinearLayout.pillSelectedIndex(): Int = (tag as? Int) ?: 0
+
+    private fun LinearLayout.setPillSelectedIndex(index: Int) {
+        if (index < 0 || index >= childCount) return
+        tag = index
+        for (i in 0 until childCount) {
+            val child = getChildAt(i) as? TextView ?: continue
+            child.background = pillBackground(i == index)
+            child.setTextColor(color(if (i == index) R.color.slipnet_button_text_primary else R.color.slipnet_text_primary))
+        }
+    }
+
     private fun row(vararg views: View): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1402,12 +1516,14 @@ class MainActivity : android.app.Activity() {
         domain.setText(c.domain)
         resolverHost.setText(c.resolverHost)
         resolverPort.setText(c.resolverPort.toString())
-        resolverMode.setSelection(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
-        resolverTransport.setSelection(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
-        resolverPathMode.setSelection(if (c.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE) 1 else 0)
-        auth.setSelection(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
+        resolverMode.setPillSelectedIndex(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
+        resolverTransport.setPillSelectedIndex(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
+        resolverPathMode.setPillSelectedIndex(if (c.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE) 1 else 0)
+        auth.setPillSelectedIndex(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
         username.setText(c.username)
         password.setText(c.password)
+        dnsLabelLengthField.setText(c.dnsLabelLength.toString())
+        maxPollQpsField.setText(c.maxPollQps.toString())
         updateResolverUi()
     }
 
@@ -1519,7 +1635,7 @@ class MainActivity : android.app.Activity() {
 
     private fun readConfig(): Config {
         if (!editorVisible) return currentConfig()
-        val resolverModeValue = if (resolverMode.selectedItemPosition == 1) {
+        val resolverModeValue = if (resolverMode.pillSelectedIndex() == 1) {
             Config.ResolverMode.AUTO
         } else {
             Config.ResolverMode.MANUAL
@@ -1535,21 +1651,26 @@ class MainActivity : android.app.Activity() {
             resolverHost = host,
             resolverPort = resolverPort.text.toString().toIntOrNull() ?: 53,
             resolverMode = resolverModeValue,
-            resolverTransport = if (resolverTransport.selectedItemPosition == 1) {
+            resolverTransport = if (resolverTransport.pillSelectedIndex() == 1) {
                 Config.ResolverTransport.TCP
             } else {
                 Config.ResolverTransport.UDP
             },
-            resolverPathMode = if (resolverPathMode.selectedItemPosition == 1) {
+            resolverPathMode = if (resolverPathMode.pillSelectedIndex() == 1) {
                 Config.ResolverPathMode.AUTHORITATIVE
             } else {
                 Config.ResolverPathMode.RECURSIVE
             },
             listenPort = global.listenPort,
             mode = global.mode,
-            authMode = if (auth.selectedItemPosition == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
+            authMode = if (auth.pillSelectedIndex() == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
             username = username.text.toString(),
-            password = password.text.toString()
+            password = password.text.toString(),
+            // No editor UI for dnsQueryType (it requires a matching server setting) -- preserve
+            // whatever the profile already had instead of silently resetting it to the default.
+            dnsQueryType = editingBaseConfig?.dnsQueryType ?: 16,
+            dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
+            maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0
         )
     }
 
@@ -1752,10 +1873,11 @@ class MainActivity : android.app.Activity() {
         updateConnectButtonColor(running && !loading)
         updateBottomStatus(running, resolverProgress, if (idle) 0 else displayRx, if (idle) 0 else displayTx)
         if (::status.isInitialized) {
+            val diag = TinyVpnService.liveDiag
             status.text = buildString {
                 appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
-                appendLine("transport=${(ResolverSelector.lastConnectedTransport ?: config.resolverTransport).name.lowercase()} resolver=${config.resolverPathMode.name.lowercase()} cc=authoritative-fast")
-                appendLine("upstream=qname")
+                appendLine("transport=${(ResolverSelector.lastConnectedTransport ?: config.resolverTransport).name.lowercase()} qtype=${SlipstreamBridge.dnsQueryType} resolver=${config.resolverPathMode.name.lowercase()} cc=authoritative-fast")
+                appendLine("upstream=qname qnameMtu=${diag.qnameMtu.takeIf { it > 0 } ?: "max"}")
                 if (config.resolverMode == Config.ResolverMode.AUTO) {
                     appendLine("resolver mode=auto")
                     appendLine(
@@ -1769,6 +1891,18 @@ class MainActivity : android.app.Activity() {
                     )
                 } else {
                     appendLine("resolver mode=manual host=${config.resolverHost.ifBlank { "-" }}")
+                }
+                if (running) {
+                    appendLine(
+                        "active resolver=${diag.resolverHost.ifBlank { "-" }}:${diag.resolverPort} " +
+                            "tested=${diag.dnsTested} alive=${diag.dnsAlive} skipped=${diag.dnsSkipped}"
+                    )
+                    appendLine("recovering=${diag.recovering} recoveries=${diag.recoveries}")
+                    appendLine(
+                        "lastProgressMs=${diag.lastProgressMs} readyFalseMs=${diag.readyFalseMs} " +
+                            "slowResponseMs=${diag.slowResponseMs} lowBandwidthMs=${diag.lowBandwidthMs}"
+                    )
+                    appendLine("network=${diag.networkSignature.ifBlank { "-" }}")
                 }
                 appendLine("app rx=${formatBytes(rx)} tx=${formatBytes(tx)}")
                 appendLine("vpn rx=${formatBytes(hev.rxBytes)} tx=${formatBytes(hev.txBytes)}")
@@ -1849,7 +1983,7 @@ class MainActivity : android.app.Activity() {
 
     private fun updateResolverUi() {
         if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized || !::resolverTransportContainer.isInitialized) return
-        val manual = resolverMode.selectedItemPosition == 0
+        val manual = resolverMode.pillSelectedIndex() == 0
         resolverHost.isEnabled = manual
         resolverHostContainer.visibility = if (manual) View.VISIBLE else View.GONE
         useLocalDns.visibility = if (manual) View.VISIBLE else View.GONE
@@ -1912,6 +2046,7 @@ class MainActivity : android.app.Activity() {
             setPadding(24, 16, 24, 16)
         }
         val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
             addView(reportView)
         }
         AlertDialog.Builder(this)

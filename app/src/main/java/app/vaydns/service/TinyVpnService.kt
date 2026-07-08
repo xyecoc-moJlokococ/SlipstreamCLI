@@ -65,6 +65,8 @@ class TinyVpnService : VpnService() {
     private var readyFalseSince = 0L
     private var lastRecoveryAt = 0L
     private var recoveryCount = 0
+    private var recoveryRetryPending: Runnable? = null
+    private var recoveryRetryBackoffMs = RECOVERY_RETRY_BASE_MS
     @Volatile private var resolverHealthCheckRunning = false
     private var lastResolverHealthCheckAt = 0L
     private var resolverHealthFailures = 0
@@ -131,6 +133,8 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.setVpnService(this)
             SlipstreamBridge.proxyOnlyMode = false
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
+            SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+            SlipstreamBridge.maxPollQps = config.maxPollQps
             resetTrafficBase()
             failedAutoResolvers.clear()
             var choice = ResolverSelector.chooseFast(this, config, "vpn_start")
@@ -143,9 +147,11 @@ class TinyVpnService : VpnService() {
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             currentResolver = choice
             val bridgePort = config.listenPort
-            val slipstreamPort = config.listenPort + 1
+            var slipstreamPort = config.listenPort + 1
             val localSocks = localSocksCredentials()
-            choice = startSlipstreamWithTransportFallback(config, choice, slipstreamPort, generation)
+            val startResult = startSlipstreamWithTransportFallback(config, choice, slipstreamPort, generation)
+            choice = startResult.first
+            slipstreamPort = startResult.second
             currentResolver = choice
             ResolverSelector.lastConnectedTransport = choice.transport
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
@@ -214,20 +220,14 @@ class TinyVpnService : VpnService() {
         choice: ResolverChoice,
         slipstreamPort: Int,
         generation: Int
-    ): ResolverChoice {
-        SlipstreamBridge.startClient(
-            config.domain,
-            ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
-            slipstreamPort,
-            choice.qnameMtu,
-            choice.transport.name.lowercase()
-        ).getOrThrow()
+    ): Pair<ResolverChoice, Int> {
+        var port = startSlipstreamClientEscapingWedge(config, choice, slipstreamPort, "vpn_start")
         if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
         if (waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
             if (config.resolverMode == Config.ResolverMode.AUTO && choice.selectedHost.isNotBlank()) {
                 ResolverSelector.rememberTransport(this, config, choice.selectedHost, choice.transport)
             }
-            return choice
+            return choice to port
         }
         if (config.resolverMode != Config.ResolverMode.AUTO) {
             error("slipstream not ready after ${START_READY_TIMEOUT_MS}ms resolver=${choice.selectedHost}:${choice.port}")
@@ -245,20 +245,14 @@ class TinyVpnService : VpnService() {
         runCatching { SlipstreamBridge.stopClient() }
         if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
         val altChoice = choice.copy(transport = altTransport)
-        SlipstreamBridge.startClient(
-            config.domain,
-            ResolverListConfig(altChoice.hosts, altChoice.port, isAuthoritativeResolverPath(config)),
-            slipstreamPort,
-            altChoice.qnameMtu,
-            altChoice.transport.name.lowercase()
-        ).getOrThrow()
+        port = startSlipstreamClientEscapingWedge(config, altChoice, port, "vpn_start:fallback")
         if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
         require(waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
             "slipstream not ready after transport fallback resolver=${altChoice.selectedHost}:${altChoice.port} " +
                 "triedTransports=${choice.transport.name.lowercase()},${altTransport.name.lowercase()}"
         }
         ResolverSelector.rememberTransport(this, config, altChoice.selectedHost, altTransport)
-        return altChoice
+        return altChoice to port
     }
 
     private fun normalizeAutoConfig(config: Config): Config {
@@ -433,6 +427,21 @@ class TinyVpnService : VpnService() {
             lastBridgeFailures = failureTotal
         }
         updateBridgeFailureWatch(now, running, ready, failureTotal)
+        liveDiag = LiveDiag(
+            resolverHost = currentResolver?.selectedHost.orEmpty(),
+            resolverPort = currentResolver?.port ?: 0,
+            qnameMtu = currentResolver?.qnameMtu ?: 0,
+            dnsTested = currentResolver?.testedCount ?: 0,
+            dnsAlive = currentResolver?.aliveCount ?: 0,
+            dnsSkipped = currentResolver?.skippedCount ?: 0,
+            recovering = recovering,
+            recoveries = recoveryCount,
+            lastProgressMs = now - lastProgressAt,
+            readyFalseMs = if (readyFalseSince == 0L) 0 else now - readyFalseSince,
+            slowResponseMs = if (slowResponseSince == 0L) 0 else now - slowResponseSince,
+            lowBandwidthMs = if (lowBandwidthSince == 0L) 0 else now - lowBandwidthSince,
+            networkSignature = lastNetworkSignature
+        )
         AppLog.i(
             TAG,
             "diag running=$running ready=$ready hevRunning=${HevSocks5Tunnel.isRunning()} " +
@@ -480,41 +489,15 @@ class TinyVpnService : VpnService() {
                     "active=${bridge.activeClients} uploadGrace=$uploadGraceActive"
             )
         }
-        // Runtime transport self-correction. The tunnel is ready but delivering almost nothing while
-        // the app is demanding bandwidth. QUIC readiness alone cannot tell a good carrier transport
-        // from a ready-but-throttled one -- e.g. Tele2 hard-throttles UDP-53, so UDP connects and looks
-        // "ready" but barely moves data, and neither the ready-timeout fallback nor the cached/remembered
-        // transport catches it (the cache just re-remembers the throttled transport). So when low-bandwidth
-        // persists in AUTO mode, flip to the other transport on the same resolver and see if it delivers.
-        // Bounded per episode (MAX_TRANSPORT_SWITCHES_PER_EPISODE) with a cooldown to avoid udp<->tcp
-        // flapping; transportSwitchesThisEpisode resets above once real throughput returns.
-        if (
-            lowBandwidth &&
-            now - lowBandwidthSince > TRANSPORT_SWITCH_LOW_BW_MS &&
-            currentConfig?.resolverMode == Config.ResolverMode.AUTO &&
-            currentResolver != null &&
-            !recovering &&
-            transportSwitchesThisEpisode < MAX_TRANSPORT_SWITCHES_PER_EPISODE &&
-            now - lastTransportSwitchAt > TRANSPORT_SWITCH_COOLDOWN_MS &&
-            now - lastRecoveryAt > RECOVERY_COOLDOWN_MS
-        ) {
-            val curTransport = currentResolver!!.transport
-            val otherTransport = if (curTransport == Config.ResolverTransport.UDP) {
-                Config.ResolverTransport.TCP
-            } else {
-                Config.ResolverTransport.UDP
-            }
-            AppLog.w(
-                TAG,
-                "traffic low-bandwidth for ${now - lowBandwidthSince}ms on transport=${curTransport.name.lowercase()}; " +
-                    "trying transport=${otherTransport.name.lowercase()} " +
-                    "(switch ${transportSwitchesThisEpisode + 1}/$MAX_TRANSPORT_SWITCHES_PER_EPISODE) " +
-                    "resolver=${currentResolver!!.selectedHost}:${currentResolver!!.port}"
-            )
-            lastTransportSwitchAt = now
-            transportSwitchesThisEpisode += 1
-            restartSlipstreamPath("transport_switch_${otherTransport.name.lowercase()}")
-        }
+        // NOTE: the runtime low-bandwidth "transport self-correction" was REMOVED here. It fired on any
+        // sustained low-throughput stretch (common during normal browsing and file downloads over this
+        // inherently slow DNS carrier) and, after being changed to re-validate rather than blind-flip,
+        // each firing became a ~15-20s DNS-probing teardown of a working tunnel -- so on a slow network
+        // (e.g. Tele2) it looped: dip -> re-probe -> pick the same transport -> dip -> re-probe, leaving
+        // the app "stuck in DNS probing" repeatedly. Transport selection is now handled correctly at
+        // connect time (validateTransport, with a throughput gate) and on network change, which covers
+        // the "ready-but-throttled transport" case without tearing down a live session. A genuine total
+        // stall is still caught by the traffic_no_response / bridge-failure recovery paths below.
         if (running && ready && failureDelta >= FAILURE_STORM_RECOVERY_DELTA) {
             AppLog.w(
                 TAG,
@@ -616,6 +599,9 @@ class TinyVpnService : VpnService() {
         if (config.resolverMode != Config.ResolverMode.AUTO) return
         if (!tunnelActive || !running || !ready || recovering || resolverHealthCheckRunning) return
         if (now - lastResolverHealthCheckAt < RESOLVER_HEALTH_CHECK_INTERVAL_MS) return
+        // Don't count a health failure (which rotates + condemns the resolver) when the phone has no
+        // usable network — the resolver is fine, the network is gone. Wait for it to come back.
+        if (!ResolverSelector.hasUsableNetwork(this)) return
         val host = resolver.selectedHost.takeIf { it.isNotBlank() } ?: return
         val port = resolver.port
         resolverHealthCheckRunning = true
@@ -650,6 +636,87 @@ class TinyVpnService : VpnService() {
         restartSlipstreamPath(reason, forcedChoice = null)
     }
 
+    private fun isAddressInUse(e: Throwable): Boolean =
+        e.message?.contains("Address already in use", ignoreCase = true) == true ||
+            e.message?.contains("os error 98") == true
+
+    /// Grab a currently-free localhost TCP port by binding a throwaway socket to :0. Used to dodge
+    /// the EADDRINUSE wedge where a detached native accept thread is still holding the fixed
+    /// slipstream listen port after stopClient() gave up joining it. Returns [fallback] if the probe
+    /// itself fails (nothing lost — the caller was going to use that port anyway).
+    private fun findFreeLocalPort(fallback: Int): Int =
+        runCatching {
+            java.net.ServerSocket().use { sock ->
+                sock.bind(java.net.InetSocketAddress("127.0.0.1", 0))
+                sock.localPort
+            }
+        }.getOrDefault(fallback)
+
+    /// Start the native client on [preferredPort]; if the bind fails with EADDRINUSE (a previous
+    /// client's detached thread is still holding the port past the native STOP_JOIN_TIMEOUT), retry
+    /// once on a fresh free port instead of looping on the wedged one. Returns the port actually used
+    /// so the caller can point the SOCKS bridge at it. Throws the start error if it isn't EADDRINUSE,
+    /// or if the fresh-port retry also fails. Used by both the initial start and recovery paths.
+    private fun startSlipstreamClientEscapingWedge(
+        config: Config,
+        choice: ResolverChoice,
+        preferredPort: Int,
+        tag: String
+    ): Int {
+        var port = preferredPort
+        var err = SlipstreamBridge.startClient(
+            config.domain,
+            ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
+            port,
+            choice.qnameMtu,
+            choice.transport.name.lowercase()
+        ).exceptionOrNull()
+        if (err != null && isAddressInUse(err)) {
+            runCatching { SlipstreamBridge.stopClient() }
+            val fresh = findFreeLocalPort(port)
+            if (fresh != port) {
+                AppLog.w(TAG, "$tag slipstream port $port wedged (EADDRINUSE); retrying on fresh port $fresh")
+                port = fresh
+                Thread.sleep(150)
+                err = SlipstreamBridge.startClient(
+                    config.domain,
+                    ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
+                    port,
+                    choice.qnameMtu,
+                    choice.transport.name.lowercase()
+                ).exceptionOrNull()
+            }
+        }
+        if (err != null) throw err
+        return port
+    }
+
+    /// Schedule a delayed recovery retry with capped exponential backoff. Used when a recovery
+    /// attempt fails outright or is deferred because there is no usable network yet, so the tunnel
+    /// doesn't stay dark waiting for an unrelated diagnostic trigger. Only one retry is ever pending
+    /// (coalesced). The backoff resets to base on the next successful recovery.
+    private fun scheduleRecoveryRetry(reason: String) {
+        if (!tunnelActive) return
+        recoveryRetryPending?.let { handler.removeCallbacks(it) }
+        val delay = recoveryRetryBackoffMs
+        recoveryRetryBackoffMs = (recoveryRetryBackoffMs * 2).coerceAtMost(RECOVERY_RETRY_MAX_MS)
+        val r = Runnable {
+            recoveryRetryPending = null
+            if (!tunnelActive || recovering) return@Runnable
+            if (!ResolverSelector.hasUsableNetwork(this)) {
+                // Still offline — keep waiting (the ConnectivityManager onAvailable callback will
+                // also re-trigger). Don't probe/condemn resolvers on a dead network.
+                AppLog.w(TAG, "recovery retry deferred: still no usable network reason=$reason")
+                scheduleRecoveryRetry(reason)
+                return@Runnable
+            }
+            restartSlipstreamPath(reason)
+        }
+        recoveryRetryPending = r
+        handler.postDelayed(r, delay)
+        AppLog.w(TAG, "recovery retry scheduled in ${delay}ms reason=$reason")
+    }
+
     private fun configureNativeLogging() {
         val path = if (AppLog.isFileLoggingEnabled(this)) AppLog.file(this).absolutePath else ""
         SlipstreamBridge.setLogFilePath(path)
@@ -682,6 +749,8 @@ class TinyVpnService : VpnService() {
         networkCallback = null
         pendingNetworkRecheck?.let { handler.removeCallbacks(it) }
         pendingNetworkRecheck = null
+        recoveryRetryPending?.let { handler.removeCallbacks(it) }
+        recoveryRetryPending = null
     }
 
     private fun scheduleNetworkRecheck() {
@@ -719,14 +788,29 @@ class TinyVpnService : VpnService() {
         }
         recovering = true
         lastRecoveryAt = System.currentTimeMillis()
+        // A fresh recovery (from any trigger) supersedes a scheduled backoff retry.
+        recoveryRetryPending?.let { handler.removeCallbacks(it) }
+        recoveryRetryPending = null
         recoveryCount += 1
         val recoveryId = recoveryCount
         AppLog.w(TAG, "recovery#$recoveryId start reason=$reason")
         Thread({
             val previousChoice = currentResolver
             try {
+                if (config.resolverMode == Config.ResolverMode.AUTO &&
+                    !ResolverSelector.hasUsableNetwork(this)
+                ) {
+                    // No underlying network right now (SIM/Wi-Fi dropped mid-switch). Every resolver
+                    // probe would fail and wrongly mark healthy resolvers bad, and restarting the
+                    // native client is pointless with no transport. Keep the current path intact and
+                    // wait for the network to return — the ConnectivityManager callback re-triggers,
+                    // and the backoff retry is the safety net.
+                    AppLog.w(TAG, "recovery#$recoveryId deferred: no usable network reason=$reason")
+                    scheduleRecoveryRetry(reason)
+                    return@Thread
+                }
                 val bridgePort = config.listenPort
-                val slipstreamPort = config.listenPort + 1
+                var slipstreamPort = config.listenPort + 1
                 val lastNativeError = SlipstreamBridge.lastError().orEmpty()
                 val isNativeNoProgress = reason == "native_not_running" &&
                     lastNativeError.startsWith("native no-progress")
@@ -817,6 +901,8 @@ class TinyVpnService : VpnService() {
                     // throughput; re-validation re-picks the working transport and stops the flap.
                     AppLog.w(TAG, "recovery#$recoveryId re-validating transport/qtype for ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
+                    SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+                    SlipstreamBridge.maxPollQps = config.maxPollQps
                     ResolverSelector.validateTransport(this, config, currentResolver!!, "recovery#$recoveryId:$reason")
                 } else if (networkChangedRecovery) {
                     // Fresh network: forget the previous network's failed resolvers, pick a resolver for
@@ -825,6 +911,8 @@ class TinyVpnService : VpnService() {
                     val fresh = ResolverSelector.chooseFast(this, config, "recovery#$recoveryId:$reason", failedAutoResolvers)
                     AppLog.w(TAG, "recovery#$recoveryId network changed; fresh resolver ${fresh.selectedHost}:${fresh.port}; re-validating transport/qtype")
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
+                    SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+                    SlipstreamBridge.maxPollQps = config.maxPollQps
                     ResolverSelector.validateTransport(this, config, fresh, "recovery#$recoveryId:$reason")
                 } else if (reuseCurrentResolver && currentResolver != null) {
                     AppLog.w(TAG, "recovery#$recoveryId reusing resolver ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
@@ -884,13 +972,10 @@ class TinyVpnService : VpnService() {
                 // Do NOT reset dnsQueryType here: keep the qtype that transport/qtype validation locked
                 // in at connect (e.g. a TXT fallback on a resolver that can't forward SVCB). A network
                 // change re-runs validation via startTunnelWorker, which re-picks the qtype.
-                SlipstreamBridge.startClient(
-                    config.domain,
-                    ResolverListConfig(choice.hosts, choice.port, isAuthoritativeResolverPath(config)),
-                    slipstreamPort,
-                    choice.qnameMtu,
-                    choice.transport.name.lowercase()
-                ).getOrThrow()
+                // Rebind on a fresh free port if the previous client's detached thread is still wedged
+                // on slipstreamPort (EADDRINUSE) — bridgePort (what tun2socks targets) is unchanged,
+                // only the internal bridge→native hop moves. Same helper the initial-start path uses.
+                slipstreamPort = startSlipstreamClientEscapingWedge(config, choice, slipstreamPort, "recovery#$recoveryId")
                 if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
                     runCatching { SlipstreamBridge.stopClient() }
                     // A transport switch that fails to become ready is a transport problem, not a dead
@@ -939,6 +1024,10 @@ class TinyVpnService : VpnService() {
                             "for ${choice.selectedHost}"
                     )
                 }
+                // Recovered: cancel any pending backoff retry and reset the backoff window.
+                recoveryRetryPending?.let { handler.removeCallbacks(it) }
+                recoveryRetryPending = null
+                recoveryRetryBackoffMs = RECOVERY_RETRY_BASE_MS
                 AppLog.w(
                     TAG,
                     "recovery#$recoveryId done ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()} " +
@@ -950,6 +1039,10 @@ class TinyVpnService : VpnService() {
                 AppLog.e(TAG, "recovery#$recoveryId failed", e)
                 if (forcedChoice != null && previousChoice != null && tunnelActive) {
                     restoreResolverAfterFailedUpgrade(config, previousChoice, recoveryId)
+                } else if (tunnelActive) {
+                    // Don't leave the tunnel dark after a failed recovery — reschedule with backoff
+                    // instead of waiting for an unrelated diagnostic trigger to fire.
+                    scheduleRecoveryRetry(reason)
                 }
             } finally {
                 recovering = false
@@ -1014,6 +1107,9 @@ class TinyVpnService : VpnService() {
     }
 
     private fun startBackgroundResolverOptimization(config: Config, initialChoice: ResolverChoice) {
+        // Trimmed "до лучших времён": no background throughput-ranking speed probe / resolver upgrade.
+        // Resolver stays whatever the operator-only reachability pick chose; transport/qtype auto stays.
+        if (!RESOLVER_SPEED_OPTIMIZER_ENABLED) return
         if (config.resolverMode != Config.ResolverMode.AUTO) return
         if (resolverOptimizerRunning) return
         resolverOptimizerRunning = true
@@ -1200,6 +1296,28 @@ class TinyVpnService : VpnService() {
     companion object {
         const val ACTION_START = "app.vaydns.START"
         const val ACTION_STOP = "app.vaydns.STOP"
+
+        // Snapshot of the rich per-tick diagnostics already computed for the logcat "diag" line,
+        // additionally exposed here so the in-app Diagnostics screen can show it (not just logcat).
+        data class LiveDiag(
+            val resolverHost: String = "",
+            val resolverPort: Int = 0,
+            val qnameMtu: Int = 0,
+            val dnsTested: Int = 0,
+            val dnsAlive: Int = 0,
+            val dnsSkipped: Int = 0,
+            val recovering: Boolean = false,
+            val recoveries: Int = 0,
+            val lastProgressMs: Long = 0,
+            val readyFalseMs: Long = 0,
+            val slowResponseMs: Long = 0,
+            val lowBandwidthMs: Long = 0,
+            val networkSignature: String = ""
+        )
+
+        @Volatile
+        var liveDiag: LiveDiag = LiveDiag()
+            private set
         private const val CHANNEL = "vaydns"
         private const val TAG = "TinyVpnService"
         private const val VPN_DNS_PRIMARY = "1.1.1.1"
@@ -1226,8 +1344,14 @@ class TinyVpnService : VpnService() {
         private const val TRANSPORT_SWITCH_COOLDOWN_MS = 18_000L
         private const val MAX_TRANSPORT_SWITCHES_PER_EPISODE = 2
         // Debounce for underlying-network (SIM/Wi-Fi) change before re-selecting the resolver.
-        private const val NETWORK_CHANGE_DEBOUNCE_MS = 2500L
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 4_000L
         private const val RECOVERY_COOLDOWN_MS = 5_000L
+        // Auto-DNS trim: background throughput-ranking resolver optimizer is off "до лучших времён".
+        private const val RESOLVER_SPEED_OPTIMIZER_ENABLED = false
+        // Backoff for re-attempting a recovery that failed or was deferred (e.g. no network yet),
+        // so the tunnel doesn't stay dark until an unrelated diagnostic trigger happens to fire.
+        private const val RECOVERY_RETRY_BASE_MS = 3_000L
+        private const val RECOVERY_RETRY_MAX_MS = 60_000L
         private const val FAILURE_RECOVERY_DELTA = 8L
         private const val FAILURE_STORM_RECOVERY_DELTA = 12L
         private const val FAILURE_STORM_RECOVERY_COOLDOWN_MS = 3_000L

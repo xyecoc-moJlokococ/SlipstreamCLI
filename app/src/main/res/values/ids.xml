@@ -19,6 +19,8 @@
     <item name="auth_spinner" type="id" />
     <item name="username_field" type="id" />
     <item name="password_field" type="id" />
+    <item name="dns_label_length_field" type="id" />
+    <item name="max_poll_qps_field" type="id" />
     <item name="local_socks_username_field" type="id" />
     <item name="local_socks_password_field" type="id" />
     <item name="file_logging_checkbox" type="id" />

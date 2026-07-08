@@ -22,6 +22,8 @@ object SlipstreamBridge {
     const val DEFAULT_LISTEN_HOST = "127.0.0.1"
     const val DEFAULT_PACING_GAIN_PROBE = 1.4
     const val DEFAULT_DNS_TCP_PACKET_LOOP_BURST = 32
+    const val DEFAULT_DNS_LABEL_LENGTH = 57
+    const val DEFAULT_MAX_POLL_QPS = 0
 
     @Volatile private var vpnService: VpnService? = null
     @Volatile private var loaded = false
@@ -30,6 +32,11 @@ object SlipstreamBridge {
     // Anti-fingerprinting: DNS query type (RR type) sent by the native client (16 = TXT default,
     // 65 = HTTPS/SVCB). Applied globally to the main + probe clients right before each native start.
     @Volatile var dnsQueryType = 16
+    // Client-only fingerprint knob: DNS label length for the encoded subdomain (1-63, default 57).
+    // Server strips dots before decoding, so this never needs to match a server setting.
+    @Volatile var dnsLabelLength = DEFAULT_DNS_LABEL_LENGTH
+    // Client-only pacing knob: cap on DNS poll queries/second (0 = unlimited). No server counterpart.
+    @Volatile var maxPollQps = DEFAULT_MAX_POLL_QPS
 
     init {
         try {
@@ -120,6 +127,8 @@ object SlipstreamBridge {
         val pathMode = if (resolver.authoritative) "authoritative" else "recursive"
         if (nativeIsClientRunning()) stopClient()
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
+        runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
+        runCatching { nativeSetMaxPollQps(maxPollQps) }
         currentPort = listenPort
         AppLog.i(
             TAG,
@@ -178,6 +187,8 @@ object SlipstreamBridge {
                 "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
+        runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
+        runCatching { nativeSetMaxPollQps(maxPollQps) }
         val code = nativeStartProbeClient(
             domain,
             hosts.toTypedArray(),
@@ -250,6 +261,8 @@ object SlipstreamBridge {
 
     private external fun nativeStopSlipstreamClient()
     private external fun nativeSetDnsQueryType(qtype: Int)
+    private external fun nativeSetDnsLabelLength(labelLength: Int)
+    private external fun nativeSetMaxPollQps(qps: Int)
     private external fun nativeStartProbeClient(
         domain: String,
         resolverHosts: Array<String>,

@@ -107,6 +107,13 @@ object ResolverSelector {
         if (cancelGeneration.get() != generation) error("resolver probe cancelled")
     }
 
+    // Auto-DNS is trimmed "до лучших времён": resolver auto-selection is restricted to the operator's
+    // own (local) DNS servers, and the throughput-ranking speed probe is off. Transport/qtype auto
+    // (validateTransport, UDP↔TCP + query-type) stays on. Flip these back to true to restore the full
+    // behaviour (public unshaped-resolver pool + speed-based ranking).
+    private const val AUTO_PUBLIC_RESOLVERS_ENABLED = false
+    private const val AUTO_SPEED_PROBE_ENABLED = false
+
     private val unshapedResolvers = listOf(
         "185.22.235.137",
         "82.151.127.188",
@@ -223,7 +230,7 @@ object ResolverSelector {
         if (alive.isEmpty()) {
             AppLog.w(TAG, "auto resolver tcp probe found no alive hosts; trying direct slipstream speed probe candidates=${speedCandidates.take(SPEED_PROBE_BATCH_SIZE).joinToString()} reason=$reason")
         }
-        val speedResults = if (speedCandidates.isNotEmpty()) {
+        val speedResults = if (AUTO_SPEED_PROBE_ENABLED && speedCandidates.isNotEmpty()) {
             speedProbeAlive(
                 domain = config.domain,
                 alive = speedCandidates,
@@ -235,6 +242,8 @@ object ResolverSelector {
                 generation = generation
             )
         } else {
+            // Speed probe disabled: select purely by TCP reachability (the fallback logic below picks
+            // the first alive resolver). Transport/qtype is still refined by validateTransport.
             emptyList()
         }
         checkNotCancelled(generation)
@@ -317,6 +326,17 @@ object ResolverSelector {
             caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true
         }
+    }
+
+    /// True when there is a usable underlying (non-VPN) network with INTERNET capability.
+    /// Recovery must not run — nor mark resolvers "bad" — while this is false: on a dead network
+    /// every resolver probe fails and would wrongly condemn otherwise-healthy resolvers, and
+    /// restarting the native client is pointless with no transport to carry it.
+    fun hasUsableNetwork(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = activeNonVpnNetwork(context) ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     /// A stable signature of the current UNDERLYING (non-VPN) network: transport kind + its DNS
@@ -570,8 +590,13 @@ object ResolverSelector {
         }
         val cached = loadResolverCache(context, config)
         if (cached != null) {
+            // With the public resolver pool disabled, a stale cache may still list public resolvers
+            // from before the trim — keep only the current operator (local) resolvers so "operator-only"
+            // holds even on a warm cache.
+            val localSet = if (AUTO_PUBLIC_RESOLVERS_ENABLED) emptySet() else defaultNetworkResolvers(context).resolvers.toSet()
             val cachedHosts = cached.resolvers.map { it.host }
                 .filter { it !in skipHosts }
+                .filter { AUTO_PUBLIC_RESOLVERS_ENABLED || it in localSet }
                 .distinct()
             val aliveCached = probeParallel(cachedHosts, port, "$reason:cache", generation)
             checkNotCancelled(generation)
@@ -888,7 +913,7 @@ object ResolverSelector {
         val local = defaultNetwork.resolvers
         val candidates = buildList {
             addAll(local)
-            addAll(unshapedResolvers)
+            if (AUTO_PUBLIC_RESOLVERS_ENABLED) addAll(unshapedResolvers)
         }.map { it.trim() }
             .filter { it.isNotBlank() }
             .filter { it !in blockedAutoResolvers }
