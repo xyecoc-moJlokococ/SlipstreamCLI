@@ -16,7 +16,18 @@ object MiniSlipstreamSocksBridge {
     private const val TAG = "MiniSlipstreamSocksBridge"
     private const val BUFFER_SIZE = 65536
     private const val SOCKET_BUFFER_SIZE = 1024 * 1024
-    private const val MAX_ACTIVE_CLIENTS = 128
+    // The DNS-over-QUIC carrier saturates well below the old 128 cap: throughput is shared across
+    // all in-flight connections and bounded by the poll round-trip rate + a single operator resolver,
+    // so a burst of ~70 parallel connections stalls every response and new CONNECT handshakes time
+    // out (congestion collapse). Empirically ~40 stays functional (just slower), ~70 collapses — so
+    // bound in-flight connections below the knee. The accept loop backpressures (waits) instead of
+    // rejecting, so a burst just queues in the OS listen backlog rather than failing.
+    private const val MAX_ACTIVE_CLIENTS = 48
+    // Accept-loop backpressure: poll every STEP ms while at capacity, but never block a new
+    // connection longer than MAX ms (idle-but-open connections also count toward the cap, so an
+    // unbounded wait could deadlock; after MAX we accept anyway and handleClient trims an old socket).
+    private const val ACCEPT_BACKPRESSURE_STEP_MS = 10L
+    private const val ACCEPT_BACKPRESSURE_MAX_MS = 2000L
     private const val OVERLOAD_CLOSE_BATCH = 16
     // The SOCKS handshake reads (greeting/auth/connect-reply) traverse the DNS tunnel to the
     // server and back. Under a heavy upload, these small control round-trips get queued behind
@@ -100,6 +111,15 @@ object MiniSlipstreamSocksBridge {
             acceptThread = Thread({
                 while (running.get()) {
                     try {
+                        // Backpressure: hold off accepting while the carrier is already at capacity, so
+                        // a burst of new connections queues in the OS listen backlog instead of being
+                        // admitted and collapsing the carrier (which makes every connection time out).
+                        var waited = 0L
+                        while (running.get() && activeClients.get() >= MAX_ACTIVE_CLIENTS && waited < ACCEPT_BACKPRESSURE_MAX_MS) {
+                            Thread.sleep(ACCEPT_BACKPRESSURE_STEP_MS)
+                            waited += ACCEPT_BACKPRESSURE_STEP_MS
+                        }
+                        if (!running.get()) break
                         handleClient(ss.accept())
                     } catch (e: Throwable) {
                         if (running.get()) AppLog.w(TAG, "accept failed: ${e.message}")
