@@ -809,70 +809,25 @@ class TinyVpnService : VpnService() {
                 val bridgePort = config.listenPort
                 var slipstreamPort = config.listenPort + 1
                 val lastNativeError = SlipstreamBridge.lastError().orEmpty()
-                val isNativeNoProgress = reason == "native_not_running" &&
-                    lastNativeError.startsWith("native no-progress")
-                val fastPathRecovery = reason.startsWith("traffic_no_response") ||
-                    reason.startsWith("traffic_slow_response") ||
-                    reason.startsWith("traffic_low_bandwidth") ||
-                    reason.startsWith("resolver_speed_upgrade") ||
-                    reason.startsWith("bridge_failures")
-                val failureStormRecovery = reason.startsWith("bridge_failure_storm")
-                val resolverUnreachableRecovery = reason.startsWith("resolver_unreachable")
-                // Reconnect the current resolver with the opposite DNS carrier transport (udp<->tcp).
-                // The resolver itself is fine, so it must not be rotated or marked bad here.
-                val transportSwitchRecovery = reason.startsWith("transport_switch")
-                // Network/SIM change: the old resolver belongs to the previous network and may be
-                // unreachable or slow now. Re-select a resolver for the CURRENT network from scratch and
-                // re-validate transport + qtype (both can differ per operator).
-                val networkChangedRecovery = reason.startsWith("network_changed")
-                val trafficRecovery = reason.startsWith("traffic_no_response") ||
-                    resolverUnreachableRecovery
-                val bridgeFailureRecovery = reason.startsWith("bridge_failures")
-                    || failureStormRecovery
-                // "accumulated" fires from a rolling failure count, which a heavy burst can trip
-                // even when the resolver itself is fine (it's just momentarily overwhelmed by a
-                // wave of parallel SOCKS CONNECTs during an upload). Give it one quick same-resolver
-                // retry before condemning the resolver and paying for a full multi-candidate rescan
-                // (~20s of total tunnel downtime). The "..._no_response" bridge-failure variant
-                // (sustained silence) still rotates immediately -- that's a real dead-resolver signal.
-                val bridgeAccumulatedRecovery = reason.startsWith("bridge_failures_accumulated")
-                // A storm (>=12 new bridge failures within one 5s diag tick) can likewise just be
-                // many parallel CONNECTs timing out together during a legitimate large upload, not a
-                // bad resolver. Give it the same quick same-resolver retry as "accumulated"; if the
-                // quick retry also fails, the resolver still gets marked bad on the next tick.
-                val bridgeFailureFastRetry = bridgeAccumulatedRecovery || failureStormRecovery
-                // Silence-type failures (tunnel went quiet: traffic_no_response, or bridge failures
-                // during sustained no-response) may be a transient blip rather than a dead resolver.
-                // Retry the CURRENT resolver once before rotating; if it is genuinely dead, the
-                // waitForSlipstreamReady failure below marks it bad, so the next diagnostic tick sees
-                // currentAlreadyFailed and rotates to the next-best cached resolver. resolver_unreachable
-                // is deliberately excluded -- a failed TCP reachability probe already proves the
-                // resolver is gone, so there is nothing to retry and we rotate immediately.
-                val silenceRecovery = reason.startsWith("traffic_no_response") ||
-                    (reason.startsWith("bridge_failures") && reason.endsWith("_no_response"))
                 val currentHostForRetry = currentResolver?.selectedHost?.takeIf { it.isNotBlank() }
                 val currentAlreadyFailed =
                     currentHostForRetry != null && currentHostForRetry in failedAutoResolvers
-                val retryCurrentFirst =
-                    silenceRecovery && currentResolver != null && !currentAlreadyFailed
-                val nativeNotReadyRecovery = reason.startsWith("native_not_ready")
-                val nativeDownFastRecovery = reason == "native_not_running" &&
-                    config.resolverMode == Config.ResolverMode.AUTO &&
-                    currentResolver != null
-                val autoFastRecovery = config.resolverMode == Config.ResolverMode.AUTO &&
-                    currentResolver != null &&
-                    !failureStormRecovery &&
-                    (nativeDownFastRecovery || nativeNotReadyRecovery)
-                val reuseCurrentResolver = isNativeNoProgress ||
-                    bridgeFailureFastRetry ||
-                    retryCurrentFirst ||
-                    (fastPathRecovery && !trafficRecovery && !bridgeFailureRecovery)
-                val rotateResolver = !retryCurrentFirst &&
-                    ((reason == "native_not_running" && !isNativeNoProgress) ||
-                        trafficRecovery ||
-                        (bridgeFailureRecovery && !bridgeFailureFastRetry) ||
-                        nativeNotReadyRecovery ||
-                        resolverUnreachableRecovery)
+                val cls = classifyRecoveryReason(
+                    reason, lastNativeError, config.resolverMode,
+                    hasCurrentResolver = currentResolver != null,
+                    currentResolverAlreadyFailed = currentAlreadyFailed
+                )
+                val isNativeNoProgress = cls.isNativeNoProgress
+                val fastPathRecovery = cls.fastPathRecovery
+                val failureStormRecovery = cls.failureStormRecovery
+                val resolverUnreachableRecovery = cls.resolverUnreachableRecovery
+                val transportSwitchRecovery = cls.transportSwitchRecovery
+                val networkChangedRecovery = cls.networkChangedRecovery
+                val bridgeFailureRecovery = cls.bridgeFailureRecovery
+                val nativeDownFastRecovery = cls.nativeDownFastRecovery
+                val autoFastRecovery = cls.autoFastRecovery
+                val reuseCurrentResolver = cls.reuseCurrentResolver
+                val rotateResolver = cls.rotateResolver
                 if (isNativeNoProgress) {
                     AppLog.w(TAG, "recovery#$recoveryId native no-progress; reusing current resolver without auto DNS probe: $lastNativeError")
                 }
