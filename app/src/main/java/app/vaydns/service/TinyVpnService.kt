@@ -139,7 +139,7 @@ class TinyVpnService : VpnService() {
             failedAutoResolvers.clear()
             var choice = ResolverSelector.chooseFast(this, config, "vpn_start")
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
-            if (config.resolverMode == Config.ResolverMode.AUTO && choice.source == "auto-cache" && choice.qtype != 0) {
+            if (ResolverSelector.shouldSkipTransportValidation(config.resolverMode, choice)) {
                 // Fresh cache hit with a previously-validated transport+qtype: skip the full real-data
                 // probe matrix (up to ~4 sequential 5 KB downloads, the "10-15s on every start" cost)
                 // and reuse the known-good combo directly. If the network quietly changed underneath

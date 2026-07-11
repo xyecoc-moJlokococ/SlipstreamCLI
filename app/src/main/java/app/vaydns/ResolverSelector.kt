@@ -44,6 +44,13 @@ data class ResolverChoice(
 )
 
 object ResolverSelector {
+    // Pure decision extracted out of TinyVpnService.startTunnelWorker so it's testable without a
+    // real VpnService: a fresh cache hit with a previously-validated qtype lets vpn_start skip the
+    // full transport/qtype probe matrix (the "10-15s on every start" cost) and reuse the known-good
+    // combo directly. See ResolverChoice.qtype's doc comment for the safety net this relies on.
+    fun shouldSkipTransportValidation(resolverMode: Config.ResolverMode, choice: ResolverChoice): Boolean =
+        resolverMode == Config.ResolverMode.AUTO && choice.source == "auto-cache" && choice.qtype != 0
+
     private const val TAG = "ResolverSelector"
     private const val CACHE_PREFS = "resolver_cache_v1"
     private const val CONNECT_TIMEOUT_MS = 1200
@@ -144,13 +151,15 @@ object ResolverSelector {
         val defaultNetwork: DefaultNetworkResolvers
     )
 
-    private data class NetworkProfile(
+    // internal (not private) so tests can read the cache back directly instead of only through
+    // the slower/network-dependent public entry points (chooseFast/choose).
+    internal data class NetworkProfile(
         val key: String,
         val label: String,
         val whitelistEnabled: Boolean
     )
 
-    private data class CachedResolver(
+    internal data class CachedResolver(
         val host: String,
         val totalMs: Long,
         val qnameMtu: Int,
@@ -160,7 +169,7 @@ object ResolverSelector {
         val qtype: Int = 0
     )
 
-    private data class ResolverCacheEntry(
+    internal data class ResolverCacheEntry(
         val profile: NetworkProfile,
         val resolvers: List<CachedResolver>,
         val updatedAt: Long
@@ -451,7 +460,7 @@ object ResolverSelector {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    private fun loadResolverCache(context: Context, config: Config): ResolverCacheEntry? {
+    internal fun loadResolverCache(context: Context, config: Config): ResolverCacheEntry? {
         val profile = currentNetworkProfile(context, config)
         val raw = context.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
             .getString(profile.key, null)
