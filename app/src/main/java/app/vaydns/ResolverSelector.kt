@@ -37,7 +37,10 @@ data class ResolverChoice(
     val aliveCount: Int = hosts.size,
     val skippedCount: Int = 0,
     val latencyMs: Long = -1,
-    val transport: Config.ResolverTransport = Config.ResolverTransport.UDP
+    val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
+    // Cached qtype from a prior validateTransport() winner (0 = unknown/not yet validated). Lets
+    // vpn_start skip the full transport/qtype probe matrix when a fresh cache hit already has one.
+    val qtype: Int = 0
 )
 
 object ResolverSelector {
@@ -152,7 +155,9 @@ object ResolverSelector {
         val totalMs: Long,
         val qnameMtu: Int,
         val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
-        val lastOkAt: Long
+        val lastOkAt: Long,
+        // qtype validated by validateTransport() for this host (0 = not yet validated).
+        val qtype: Int = 0
     )
 
     private data class ResolverCacheEntry(
@@ -469,7 +474,8 @@ object ResolverSelector {
                             totalMs = item.optLong("totalMs", Long.MAX_VALUE),
                             qnameMtu = item.optInt("qnameMtu", 0),
                             transport = parseTransport(item.optString("transport")),
-                            lastOkAt = item.optLong("lastOkAt", updatedAt)
+                            lastOkAt = item.optLong("lastOkAt", updatedAt),
+                            qtype = item.optInt("qtype", 0)
                         )
                     )
                 }
@@ -521,7 +527,16 @@ object ResolverSelector {
         )
     }
 
-    fun rememberTransport(context: Context, config: Config, host: String, transport: Config.ResolverTransport) {
+    // qtype = 0 means "unknown/not (re)validated this call" -- preserve whatever was cached before
+    // rather than clobbering it. Callers that just validated a qtype (validateTransport) pass it in;
+    // callers that only learned a transport fallback (startSlipstreamWithTransportFallback) don't.
+    fun rememberTransport(
+        context: Context,
+        config: Config,
+        host: String,
+        transport: Config.ResolverTransport,
+        qtype: Int = 0
+    ) {
         if (config.resolverMode != Config.ResolverMode.AUTO) return
         val cleanHost = host.trim()
         if (cleanHost.isBlank()) return
@@ -542,7 +557,8 @@ object ResolverSelector {
                             totalMs = item.optLong("totalMs", Long.MAX_VALUE),
                             qnameMtu = item.optInt("qnameMtu", 0),
                             transport = parseTransport(item.optString("transport")),
-                            lastOkAt = item.optLong("lastOkAt", 0L)
+                            lastOkAt = item.optLong("lastOkAt", 0L),
+                            qtype = item.optInt("qtype", 0)
                         )
                     )
                 }
@@ -555,7 +571,8 @@ object ResolverSelector {
             totalMs = prior?.totalMs ?: Long.MAX_VALUE,
             qnameMtu = prior?.qnameMtu ?: 0,
             transport = transport,
-            lastOkAt = now
+            lastOkAt = now,
+            qtype = if (qtype != 0) qtype else (prior?.qtype ?: 0)
         )
         val merged = (existing.filterNot { it.host == cleanHost } + updatedEntry).sortedBy { it.totalMs }
         val arr = JSONArray()
@@ -567,6 +584,7 @@ object ResolverSelector {
                     .put("qnameMtu", r.qnameMtu)
                     .put("transport", r.transport.name)
                     .put("lastOkAt", r.lastOkAt)
+                    .put("qtype", r.qtype)
             )
         }
         val json = JSONObject()
@@ -627,7 +645,8 @@ object ResolverSelector {
                     aliveCount = aliveCached.size,
                     skippedCount = skipHosts.size,
                     latencyMs = cachedResolver?.totalMs ?: -1,
-                    transport = cachedResolver?.transport ?: Config.ResolverTransport.UDP
+                    transport = cachedResolver?.transport ?: Config.ResolverTransport.UDP,
+                    qtype = cachedResolver?.qtype ?: 0
                 )
             }
             AppLog.w(
@@ -733,13 +752,13 @@ object ResolverSelector {
                         // Lock the winning qtype for the real client; it persists in SlipstreamBridge and
                         // is reused across same-network recoveries (which do not re-run this validation).
                         SlipstreamBridge.dnsQueryType = qtype
-                        rememberTransport(context, config, host, best.transport)
+                        rememberTransport(context, config, host, best.transport, qtype)
                         AppLog.i(
                             TAG,
                             "transport auto: validated host=$host qtype=$qtype transport=${best.transport.name.lowercase()} " +
                                 "totalMs=${best.totalMs} qnameMtu=${if (best.qnameMtu > 0) best.qnameMtu else "max"} reason=$reason"
                         )
-                        return choice.copy(transport = best.transport, qnameMtu = best.qnameMtu, latencyMs = best.totalMs)
+                        return choice.copy(transport = best.transport, qnameMtu = best.qnameMtu, latencyMs = best.totalMs, qtype = qtype)
                     }
                     AppLog.w(TAG, "transport auto: qtype=$qtype works but slow (totalMs=${best.totalMs}>$QTYPE_PREFER_FAST_MS) for host=$host; falling back to TXT reason=$reason")
                 } else {

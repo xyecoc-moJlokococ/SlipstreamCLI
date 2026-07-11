@@ -139,11 +139,28 @@ class TinyVpnService : VpnService() {
             failedAutoResolvers.clear()
             var choice = ResolverSelector.chooseFast(this, config, "vpn_start")
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
-            // Validate the DNS carrier transport before committing (light-dns "auto" style): probe the
-            // chosen resolver UDP-first with a real 5 KB download and keep UDP only if data actually
-            // flows, else fall back to TCP. This catches "UDP handshakes but is throttled" (e.g. Tele2),
-            // which the ready check and the cached/guessed transport cannot.
-            choice = ResolverSelector.validateTransport(this, config, choice, "vpn_start")
+            if (config.resolverMode == Config.ResolverMode.AUTO && choice.source == "auto-cache" && choice.qtype != 0) {
+                // Fresh cache hit with a previously-validated transport+qtype: skip the full real-data
+                // probe matrix (up to ~4 sequential 5 KB downloads, the "10-15s on every start" cost)
+                // and reuse the known-good combo directly. If the network quietly changed underneath
+                // it, startSlipstreamWithTransportFallback below still catches a hard not-ready within
+                // START_READY_TIMEOUT_MS and retries the other transport, and the (now much faster)
+                // resolver_silent/no-progress detector catches a stalled resolver within seconds --
+                // so skipping the defensive re-probe here no longer trades away correctness the way it
+                // would have before those fixes.
+                SlipstreamBridge.dnsQueryType = choice.qtype
+                AppLog.i(
+                    TAG,
+                    "transport/qtype validation skipped: fresh cache hit host=${choice.selectedHost} " +
+                        "transport=${choice.transport.name.lowercase()} qtype=${choice.qtype} reason=vpn_start"
+                )
+            } else {
+                // Validate the DNS carrier transport before committing (light-dns "auto" style): probe the
+                // chosen resolver UDP-first with a real 5 KB download and keep UDP only if data actually
+                // flows, else fall back to TCP. This catches "UDP handshakes but is throttled" (e.g. Tele2),
+                // which the ready check and the cached/guessed transport cannot.
+                choice = ResolverSelector.validateTransport(this, config, choice, "vpn_start")
+            }
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
             currentResolver = choice
             val bridgePort = config.listenPort
