@@ -51,8 +51,10 @@ class TinyVpnService : VpnService() {
     private var lastBridgeRx = 0L
     private var lastBridgeTx = 0L
     private var lastBridgeFailures = 0L
-    private var bridgeFailureWatchStartAt = 0L
-    private var bridgeFailureWatchBase = 0L
+    private val bridgeFailureWatch = BridgeFailureWatch(
+        ACCUMULATED_FAILURE_RECOVERY_TOTAL,
+        ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS
+    )
     private var lastProgressAt = 0L
     private var lastHeavyUploadAt = 0L
     private var slowResponseSince = 0L
@@ -367,8 +369,7 @@ class TinyVpnService : VpnService() {
         lastBridgeRx = 0
         lastBridgeTx = 0
         lastBridgeFailures = 0
-        bridgeFailureWatchStartAt = 0
-        bridgeFailureWatchBase = 0
+        bridgeFailureWatch.reset()
         lastProgressAt = System.currentTimeMillis()
         lastHeavyUploadAt = 0
         slowResponseSince = 0
@@ -578,36 +579,15 @@ class TinyVpnService : VpnService() {
     }
 
     private fun updateBridgeFailureWatch(now: Long, running: Boolean, ready: Boolean, failureTotal: Long) {
-        if (!running || !ready || recovering) {
-            bridgeFailureWatchStartAt = 0
-            bridgeFailureWatchBase = failureTotal
-            return
-        }
-        if (failureTotal <= bridgeFailureWatchBase) {
-            bridgeFailureWatchStartAt = 0
-            bridgeFailureWatchBase = failureTotal
-            return
-        }
-        if (bridgeFailureWatchStartAt == 0L) {
-            bridgeFailureWatchStartAt = now
-            bridgeFailureWatchBase = (failureTotal - 1).coerceAtLeast(0)
-            return
-        }
-        val accumulated = failureTotal - bridgeFailureWatchBase
-        if (
-            accumulated >= ACCUMULATED_FAILURE_RECOVERY_TOTAL &&
-            now - bridgeFailureWatchStartAt >= ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS &&
-            now - lastRecoveryAt > RECOVERY_COOLDOWN_MS
-        ) {
-            AppLog.w(
-                TAG,
-                "bridge accumulated failures total=$failureTotal accumulated=$accumulated " +
-                    "windowMs=${now - bridgeFailureWatchStartAt}; restarting path"
-            )
-            bridgeFailureWatchStartAt = 0
-            bridgeFailureWatchBase = failureTotal
-            restartSlipstreamPath("bridge_failures_accumulated_${accumulated}")
-        }
+        val fired = bridgeFailureWatch.tick(
+            now, running, ready, recovering, failureTotal, lastRecoveryAt, RECOVERY_COOLDOWN_MS
+        ) ?: return
+        AppLog.w(
+            TAG,
+            "bridge accumulated failures total=$failureTotal accumulated=${fired.accumulated} " +
+                "windowMs=${fired.windowMs}; restarting path"
+        )
+        restartSlipstreamPath("bridge_failures_accumulated_${fired.accumulated}")
     }
 
     private fun maybeCheckResolverHealth(now: Long, running: Boolean, ready: Boolean) {
@@ -653,7 +633,7 @@ class TinyVpnService : VpnService() {
         restartSlipstreamPath(reason, forcedChoice = null)
     }
 
-    private fun isAddressInUse(e: Throwable): Boolean =
+    internal fun isAddressInUse(e: Throwable): Boolean =
         e.message?.contains("Address already in use", ignoreCase = true) == true ||
             e.message?.contains("os error 98") == true
 
@@ -661,7 +641,7 @@ class TinyVpnService : VpnService() {
     /// the EADDRINUSE wedge where a detached native accept thread is still holding the fixed
     /// slipstream listen port after stopClient() gave up joining it. Returns [fallback] if the probe
     /// itself fails (nothing lost — the caller was going to use that port anyway).
-    private fun findFreeLocalPort(fallback: Int): Int =
+    internal fun findFreeLocalPort(fallback: Int): Int =
         runCatching {
             java.net.ServerSocket().use { sock ->
                 sock.bind(java.net.InetSocketAddress("127.0.0.1", 0))
