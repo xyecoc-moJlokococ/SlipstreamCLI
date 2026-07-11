@@ -617,10 +617,15 @@ class TinyVpnService : VpnService() {
                     "resolver health failed host=$host:$port failures=$resolverHealthFailures/$RESOLVER_HEALTH_FAILURES_BEFORE_ROTATE"
                 )
                 if (
-                    resolverHealthFailures >= RESOLVER_HEALTH_FAILURES_BEFORE_ROTATE &&
-                    tunnelActive &&
-                    !recovering &&
-                    System.currentTimeMillis() - lastRecoveryAt > RESOLVER_HEALTH_RECOVERY_COOLDOWN_MS
+                    shouldRotateOnResolverHealthFailure(
+                        resolverHealthFailures,
+                        RESOLVER_HEALTH_FAILURES_BEFORE_ROTATE,
+                        tunnelActive,
+                        recovering,
+                        System.currentTimeMillis(),
+                        lastRecoveryAt,
+                        RESOLVER_HEALTH_RECOVERY_COOLDOWN_MS
+                    )
                 ) {
                     restartSlipstreamPath("resolver_unreachable_${host}_${resolverHealthFailures}")
                 }
