@@ -22,7 +22,11 @@ object MiniSlipstreamSocksBridge {
     // out (congestion collapse). Empirically ~40 stays functional (just slower), ~70 collapses — so
     // bound in-flight connections below the knee. The accept loop backpressures (waits) instead of
     // rejecting, so a burst just queues in the OS listen backlog rather than failing.
-    private const val MAX_ACTIVE_CLIENTS = 48
+    // Default in-flight connection cap; overridable per-profile via start(maxActiveClients=...).
+    // On operators that hard rate-limit DNS queries (e.g. Megafon ~50 q/s per client) the poll
+    // budget fragments across concurrent connections and none can bootstrap a handshake, so a
+    // much lower cap (~4-6) is what keeps the tunnel usable there.
+    const val DEFAULT_MAX_ACTIVE_CLIENTS = 48
     // Accept-loop backpressure: poll every STEP ms while at capacity, but never block a new
     // connection longer than MAX ms (idle-but-open connections also count toward the cap, so an
     // unbounded wait could deadlock; after MAX we accept anyway and handleClient trims an old socket).
@@ -65,6 +69,7 @@ object MiniSlipstreamSocksBridge {
     @Volatile private var password: String? = null
     @Volatile private var localUsername: String? = null
     @Volatile private var localPassword: String? = null
+    @Volatile private var maxActiveClients = DEFAULT_MAX_ACTIVE_CLIENTS
 
     fun start(
         listenHost: String,
@@ -75,9 +80,11 @@ object MiniSlipstreamSocksBridge {
         username: String?,
         password: String?,
         localUsername: String? = null,
-        localPassword: String? = null
+        localPassword: String? = null,
+        maxActiveClients: Int = DEFAULT_MAX_ACTIVE_CLIENTS
     ): Result<Unit> {
         stop()
+        this.maxActiveClients = maxActiveClients.coerceAtLeast(1)
         this.slipstreamHost = slipstreamHost
         this.slipstreamPort = slipstreamPort
         this.dnsHost = dnsHost.trim()
@@ -115,7 +122,7 @@ object MiniSlipstreamSocksBridge {
                         // a burst of new connections queues in the OS listen backlog instead of being
                         // admitted and collapsing the carrier (which makes every connection time out).
                         var waited = 0L
-                        while (running.get() && activeClients.get() >= MAX_ACTIVE_CLIENTS && waited < ACCEPT_BACKPRESSURE_MAX_MS) {
+                        while (running.get() && activeClients.get() >= maxActiveClients && waited < ACCEPT_BACKPRESSURE_MAX_MS) {
                             Thread.sleep(ACCEPT_BACKPRESSURE_STEP_MS)
                             waited += ACCEPT_BACKPRESSURE_STEP_MS
                         }
@@ -161,13 +168,13 @@ object MiniSlipstreamSocksBridge {
     )
 
     private fun handleClient(socket: Socket) {
-        if (activeClients.get() >= MAX_ACTIVE_CLIENTS) {
+        if (activeClients.get() >= maxActiveClients) {
             closeOldBridgeSockets("active limit pre-trim")
         }
-        if (activeClients.incrementAndGet() > MAX_ACTIVE_CLIENTS) {
+        if (activeClients.incrementAndGet() > maxActiveClients) {
             activeClients.decrementAndGet()
             connectFail.incrementAndGet()
-            AppLog.w(TAG, "client rejected: active limit $MAX_ACTIVE_CLIENTS reached")
+            AppLog.w(TAG, "client rejected: active limit $maxActiveClients reached")
             runCatching { socket.close() }
             return
         }

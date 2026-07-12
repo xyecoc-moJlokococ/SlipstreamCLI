@@ -60,6 +60,9 @@ class MainActivity : android.app.Activity() {
     private lateinit var resolverMode: LinearLayout
     private lateinit var resolverTransport: LinearLayout
     private lateinit var resolverTransportContainer: View
+    private lateinit var dnsQueryType: LinearLayout
+    private lateinit var dnsQueryTypeContainer: View
+    private lateinit var dnsQueryTypeHint: View
     private lateinit var resolverPathMode: LinearLayout
     private lateinit var useLocalDns: Button
     private lateinit var listenPort: EditText
@@ -69,6 +72,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var auth: LinearLayout
     private lateinit var dnsLabelLengthField: EditText
     private lateinit var maxPollQpsField: EditText
+    private lateinit var maxActiveClientsField: EditText
     private lateinit var fileLogging: CheckBox
     private lateinit var trafficNotification: CheckBox
     private lateinit var localSocksAuth: CheckBox
@@ -890,6 +894,7 @@ class MainActivity : android.app.Activity() {
             id = R.id.resolver_mode_spinner
         }
         resolverTransport = pillSelector(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
+        dnsQueryType = pillSelector(listOf("txt", "https")).apply { id = R.id.dns_query_type_spinner }
         resolverPathMode = pillSelector(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
         auth = pillSelector(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
@@ -901,6 +906,9 @@ class MainActivity : android.app.Activity() {
         }
         maxPollQpsField = edit("max poll qps", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.max_poll_qps_field
+        }
+        maxActiveClientsField = edit("max active connections", InputType.TYPE_CLASS_NUMBER).apply {
+            id = R.id.max_active_clients_field
         }
 
         root.addView(labeledField("Profile name", profileName), fieldParams())
@@ -915,7 +923,13 @@ class MainActivity : android.app.Activity() {
             row(labeledField("Resolver port", resolverPort), resolverTransportContainer),
             fieldParams()
         )
-        root.addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
+        dnsQueryTypeContainer = labeledField("DNS query type", dnsQueryType)
+        root.addView(
+            row(dnsQueryTypeContainer, labeledField("DNS path mode", resolverPathMode)),
+            fieldParams()
+        )
+        dnsQueryTypeHint = hintText("https masks the tunnel as SVCB DNS traffic but not every resolver forwards it; falls back if it doesn't work. The server must accept the same type.")
+        root.addView(dnsQueryTypeHint, fieldParams())
 
         root.addView(sectionTitle("Authentication"), sectionParams())
         root.addView(labeledField("Auth mode", auth), fieldParams())
@@ -935,6 +949,11 @@ class MainActivity : android.app.Activity() {
         root.addView(labeledField("Max poll rate (queries/sec)", maxPollQpsField), fieldParams())
         root.addView(
             hintText("0 = unlimited (default). Caps how many DNS queries/sec this device sends."),
+            compactSectionParams()
+        )
+        root.addView(labeledField("Max active connections", maxActiveClientsField), fieldParams())
+        root.addView(
+            hintText("Default 48. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections."),
             compactSectionParams()
         )
 
@@ -1518,21 +1537,29 @@ class MainActivity : android.app.Activity() {
         resolverPort.setText(c.resolverPort.toString())
         resolverMode.setPillSelectedIndex(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
         resolverTransport.setPillSelectedIndex(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
+        dnsQueryType.setPillSelectedIndex(if (c.dnsQueryType == 65) 1 else 0)
         resolverPathMode.setPillSelectedIndex(if (c.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE) 1 else 0)
         auth.setPillSelectedIndex(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
         username.setText(c.username)
         password.setText(c.password)
         dnsLabelLengthField.setText(c.dnsLabelLength.toString())
         maxPollQpsField.setText(c.maxPollQps.toString())
+        maxActiveClientsField.setText(c.maxActiveClients.toString())
         updateResolverUi()
     }
 
     private fun selectProfile(profile: ConfigProfile) {
+        if (profile.id == ConfigStore.activeProfileId(this)) return
+        val shouldReconnect = isTunnelRunning() || connecting || pendingStartVpn
         ConfigStore.setActiveProfile(this, profile.id)
         activeConfig = profile.config
         profiles = ConfigStore.loadProfiles(this)
         navigateTo(buildMainUi(), ScreenTransition.NONE)
         updateStatus()
+        if (shouldReconnect) {
+            toast("switching profile…")
+            stopAll { toggle() }
+        }
     }
 
     private fun confirmDeleteProfile(profile: ConfigProfile) {
@@ -1666,11 +1693,17 @@ class MainActivity : android.app.Activity() {
             authMode = if (auth.pillSelectedIndex() == 1) Config.AuthMode.LOGIN_PASSWORD else Config.AuthMode.NO_AUTH,
             username = username.text.toString(),
             password = password.text.toString(),
-            // No editor UI for dnsQueryType (it requires a matching server setting) -- preserve
-            // whatever the profile already had instead of silently resetting it to the default.
-            dnsQueryType = editingBaseConfig?.dnsQueryType ?: 16,
+            // Manual mode: read the qtype the user picked (server must accept the same type).
+            // Auto mode: preserve whatever the profile already had -- validateTransport's own
+            // probe-and-fallback picks the live qtype at connect time, same as before.
+            dnsQueryType = if (resolverModeValue == Config.ResolverMode.MANUAL) {
+                if (dnsQueryType.pillSelectedIndex() == 1) 65 else 16
+            } else {
+                editingBaseConfig?.dnsQueryType ?: 16
+            },
             dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
-            maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0
+            maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+            maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 48
         )
     }
 
@@ -1755,7 +1788,8 @@ class MainActivity : android.app.Activity() {
                     username = if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) c.username else null,
                     password = if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) c.password else null,
                     localUsername = localSocks.first,
-                    localPassword = localSocks.second
+                    localPassword = localSocks.second,
+                    maxActiveClients = c.maxActiveClients
                 ).getOrThrow()
                 proxyStarted = true
                 AppLog.i(
@@ -1795,7 +1829,7 @@ class MainActivity : android.app.Activity() {
         }
     }
 
-    private fun stopAll() {
+    private fun stopAll(onComplete: (() -> Unit)? = null) {
         if (stopping) return
         stopping = true
         pendingStartVpn = false
@@ -1818,6 +1852,7 @@ class MainActivity : android.app.Activity() {
                     stopping = false
                     connectButton.isEnabled = true
                     updateStatus()
+                    onComplete?.invoke()
                 }
             }
         }, "disconnect-cleanup").start()
@@ -1982,12 +2017,14 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun updateResolverUi() {
-        if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized || !::resolverTransportContainer.isInitialized) return
+        if (!editorVisible || !::resolverMode.isInitialized || !::resolverHost.isInitialized || !::resolverTransportContainer.isInitialized || !::dnsQueryTypeContainer.isInitialized) return
         val manual = resolverMode.pillSelectedIndex() == 0
         resolverHost.isEnabled = manual
         resolverHostContainer.visibility = if (manual) View.VISIBLE else View.GONE
         useLocalDns.visibility = if (manual) View.VISIBLE else View.GONE
         resolverTransportContainer.visibility = if (manual) View.VISIBLE else View.GONE
+        dnsQueryTypeContainer.visibility = if (manual) View.VISIBLE else View.GONE
+        dnsQueryTypeHint.visibility = if (manual) View.VISIBLE else View.GONE
     }
 
     private fun updateLocalSocksAuthUi() {

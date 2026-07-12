@@ -183,7 +183,8 @@ class TinyVpnService : VpnService() {
                 username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
                 password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
                 localUsername = localSocks.first,
-                localPassword = localSocks.second
+                localPassword = localSocks.second,
+                maxActiveClients = config.maxActiveClients
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 
@@ -961,7 +962,8 @@ class TinyVpnService : VpnService() {
                     username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
                     password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
                     localUsername = localSocks.first,
-                    localPassword = localSocks.second
+                    localPassword = localSocks.second,
+                    maxActiveClients = config.maxActiveClients
                 ).getOrThrow()
                 readyFalseSince = 0
                 slowResponseSince = 0
@@ -1043,7 +1045,8 @@ class TinyVpnService : VpnService() {
                 username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
                 password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
                 localUsername = localSocks.first,
-                localPassword = localSocks.second
+                localPassword = localSocks.second,
+                maxActiveClients = config.maxActiveClients
             ).getOrThrow()
             currentResolver = choice
             ResolverSelector.lastConnectedTransport = choice.transport

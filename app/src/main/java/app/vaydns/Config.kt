@@ -27,7 +27,11 @@ data class Config(
     // decoding, so this never needs to match anything server-side.
     val dnsLabelLength: Int = 57,
     // Cap on DNS poll queries/second (0 = unlimited, default). Purely a client-side pacing choice.
-    val maxPollQps: Int = 0
+    val maxPollQps: Int = 0,
+    // Max simultaneous SOCKS/tunnel connections the bridge admits (default 48). On operators that
+    // hard rate-limit DNS queries per client (e.g. Megafon ~50 q/s), a much lower value (~4-6) keeps
+    // the tiny query budget from fragmenting across many connections; pairs with maxPollQps.
+    val maxActiveClients: Int = 48
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
@@ -90,7 +94,8 @@ object ConfigStore {
             password = p.getString("password", "") ?: "",
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
-            maxPollQps = p.getInt("maxPollQps", 0)
+            maxPollQps = p.getInt("maxPollQps", 0),
+            maxActiveClients = p.getInt("maxActiveClients", 48)
         )
     }
 
@@ -298,6 +303,7 @@ object ConfigStore {
             .putInt("dnsQueryType", config.dnsQueryType)
             .putInt("dnsLabelLength", config.dnsLabelLength)
             .putInt("maxPollQps", config.maxPollQps)
+            .putInt("maxActiveClients", config.maxActiveClients)
             .apply()
     }
 
@@ -339,6 +345,7 @@ object ConfigStore {
             .put("dnsQueryType", config.dnsQueryType)
             .put("dnsLabelLength", config.dnsLabelLength)
             .put("maxPollQps", config.maxPollQps)
+            .put("maxActiveClients", config.maxActiveClients)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -355,7 +362,8 @@ object ConfigStore {
             password = json.optString("password", ""),
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
-            maxPollQps = json.optInt("maxPollQps", 0)
+            maxPollQps = json.optInt("maxPollQps", 0),
+            maxActiveClients = json.optInt("maxActiveClients", 48)
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
@@ -423,6 +431,7 @@ private object SlipstreamLinkParser {
         }
         val dnsLabelLength = first(params, "dnslabellength")?.toIntOrNull()?.coerceIn(1, 63) ?: base.dnsLabelLength
         val maxPollQps = first(params, "maxpollqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxPollQps
+        val maxActiveClients = first(params, "maxactiveclients")?.toIntOrNull()?.coerceAtLeast(1) ?: base.maxActiveClients
         val dnsQueryType = first(params, "dnsquerytype")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: base.dnsQueryType
         val config = base.copy(
             domain = domain,
@@ -436,6 +445,7 @@ private object SlipstreamLinkParser {
             password = first(params, "password", "pass") ?: base.password,
             dnsLabelLength = dnsLabelLength,
             maxPollQps = maxPollQps,
+            maxActiveClients = maxActiveClients,
             dnsQueryType = dnsQueryType
         )
         return ImportedProfile(first(params, "name", "profileName") ?: domain, config)
