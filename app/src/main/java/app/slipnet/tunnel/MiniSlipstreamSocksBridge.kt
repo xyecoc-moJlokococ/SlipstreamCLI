@@ -59,6 +59,10 @@ object MiniSlipstreamSocksBridge {
     private val udpDroppedPackets = AtomicLong(0)
     private val udpDnsPackets = AtomicLong(0)
     private val activeClients = AtomicInteger(0)
+    // Backs the overload-eviction policy in closeOldBridgeSockets: prefer killing the most IDLE
+    // socket, not simply the oldest-opened one (a long-lived but actively-used connection, e.g. a
+    // game's persistent session socket, should survive; a socket that's gone quiet is safer to cut).
+    private val activity = SocketActivityTracker<Socket>()
 
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var acceptThread: Thread? = null
@@ -148,6 +152,7 @@ object MiniSlipstreamSocksBridge {
         remotes.forEach { closeSocketNow(it) }
         clients.clear()
         remotes.clear()
+        activity.clear()
         threads.forEach { it.interrupt() }
         threads.clear()
     }
@@ -180,6 +185,7 @@ object MiniSlipstreamSocksBridge {
         }
         val thread = Thread({
             clients.add(socket)
+            activity.touch(socket)
             try {
                 socket.use {
                     configureBridgeSocket(it)
@@ -201,6 +207,7 @@ object MiniSlipstreamSocksBridge {
                 if (running.get()) AppLog.d(TAG, "client error: ${e.message}")
             } finally {
                 clients.remove(socket)
+                activity.remove(socket)
                 activeClients.decrementAndGet()
                 threads.remove(Thread.currentThread())
             }
@@ -211,8 +218,11 @@ object MiniSlipstreamSocksBridge {
     }
 
     private fun closeOldBridgeSockets(reason: String) {
-        val clientSnapshot = clients.take(OVERLOAD_CLOSE_BATCH)
-        val remoteSnapshot = remotes.take(OVERLOAD_CLOSE_BATCH)
+        // Least-recently-active first, NOT oldest-opened first: a long-lived, actively-used
+        // connection (e.g. a game's persistent session socket) has recent activity and survives;
+        // a socket that's gone quiet -- regardless of how old it is -- is what gets cut.
+        val clientSnapshot = activity.selectLeastRecentlyActive(clients.toList(), OVERLOAD_CLOSE_BATCH)
+        val remoteSnapshot = activity.selectLeastRecentlyActive(remotes.toList(), OVERLOAD_CLOSE_BATCH)
         if (clientSnapshot.isEmpty() && remoteSnapshot.isEmpty()) return
         AppLog.w(
             TAG,
@@ -370,7 +380,10 @@ object MiniSlipstreamSocksBridge {
             null
         } finally {
             runCatching { sock?.close() }
-            if (sock != null) remotes.remove(sock)
+            if (sock != null) {
+                remotes.remove(sock)
+                activity.remove(sock)
+            }
         }
     }
 
@@ -393,6 +406,7 @@ object MiniSlipstreamSocksBridge {
         sock.connect(InetSocketAddress(slipstreamHost, slipstreamPort), CONNECT_TIMEOUT_MS)
         sock.soTimeout = CONNECT_TIMEOUT_MS
         remotes.add(sock)
+        activity.touch(sock)
         try {
             val input = sock.getInputStream()
             val output = sock.getOutputStream()
@@ -434,6 +448,7 @@ object MiniSlipstreamSocksBridge {
             return sock
         } catch (e: Throwable) {
             remotes.remove(sock)
+            activity.remove(sock)
             runCatching { sock.close() }
             throw e
         }
@@ -445,7 +460,7 @@ object MiniSlipstreamSocksBridge {
             val remoteOutput = it.getOutputStream()
             val up = Thread({
                 try {
-                    copy(clientInput, remoteOutput, txBytes)
+                    copy(clientInput, remoteOutput, txBytes) { touchPair(client, remote) }
                     runCatching { remote.shutdownOutput() }
                 } finally {
                     closeSocketNow(remote)
@@ -457,13 +472,14 @@ object MiniSlipstreamSocksBridge {
             threads.add(up)
             up.start()
             try {
-                copy(remoteInput, clientOutput, rxBytes)
+                copy(remoteInput, clientOutput, rxBytes) { touchPair(client, remote) }
                 runCatching { client.shutdownOutput() }
             } finally {
                 closeSocketNow(remote)
                 closeSocketNow(client)
                 runCatching { up.join(500) }
                 remotes.remove(remote)
+                activity.remove(remote)
             }
         }
     }
@@ -474,7 +490,12 @@ object MiniSlipstreamSocksBridge {
         runCatching { socket.close() }
     }
 
-    private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong) {
+    private fun touchPair(client: Socket, remote: Socket) {
+        activity.touch(client)
+        activity.touch(remote)
+    }
+
+    private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong, onProgress: () -> Unit = {}) {
         val buf = ByteArray(BUFFER_SIZE)
         while (running.get()) {
             val n = try {
@@ -489,6 +510,7 @@ object MiniSlipstreamSocksBridge {
                 return
             }
             counter.addAndGet(n.toLong())
+            onProgress()
         }
     }
 

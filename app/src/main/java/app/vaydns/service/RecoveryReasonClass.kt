@@ -43,9 +43,16 @@ fun classifyRecoveryReason(
 ): RecoveryReasonClass {
     val isNativeNoProgress = reason == "native_not_running" &&
         lastNativeError.startsWith("native no-progress")
+    // traffic_starved (StallRatioWatch: ready but downstream is a useless trickle relative to
+    // upstream requests) is a fast-path, reuse-current-resolver recovery: the resolver itself is
+    // reachable (a thin response stream is still coming back), the carrier is just throttled, so a
+    // quick same-resolver path restart is tried before condemning/rotating it. It is deliberately
+    // NOT a trafficRecovery/bridgeFailureRecovery, so it lands in the reuseCurrentResolver branch
+    // exactly like traffic_low_bandwidth, and never in rotateResolver.
     val fastPathRecovery = reason.startsWith("traffic_no_response") ||
         reason.startsWith("traffic_slow_response") ||
         reason.startsWith("traffic_low_bandwidth") ||
+        reason.startsWith("traffic_starved") ||
         reason.startsWith("resolver_speed_upgrade") ||
         reason.startsWith("bridge_failures")
     val failureStormRecovery = reason.startsWith("bridge_failure_storm")

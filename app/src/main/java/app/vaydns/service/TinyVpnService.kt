@@ -1,5 +1,6 @@
 package app.vaydns.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -15,6 +16,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.Process
+import android.os.SystemClock
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.MiniSlipstreamSocksBridge
 import app.slipnet.tunnel.ResolverListConfig
@@ -55,6 +58,16 @@ class TinyVpnService : VpnService() {
         ACCUMULATED_FAILURE_RECOVERY_TOTAL,
         ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS
     )
+    private val stallRatioWatch = StallRatioWatch(
+        STALL_RATIO_MIN_REQUEST_BYTES,
+        STALL_RATIO_RESPONSE_DIVISOR,
+        STALL_RATIO_RECOVERY_WINDOW_MS
+    )
+    private val detachedThreadWatch = DetachedThreadWatch(
+        DETACHED_RESTART_THRESHOLD,
+        DETACHED_RESTART_WINDOW_MS
+    )
+    @Volatile private var processRestartRequested = false
     private var lastProgressAt = 0L
     private var lastHeavyUploadAt = 0L
     private var slowResponseSince = 0L
@@ -371,6 +384,8 @@ class TinyVpnService : VpnService() {
         lastBridgeTx = 0
         lastBridgeFailures = 0
         bridgeFailureWatch.reset()
+        stallRatioWatch.reset()
+        detachedThreadWatch.reset()
         lastProgressAt = System.currentTimeMillis()
         lastHeavyUploadAt = 0
         slowResponseSince = 0
@@ -446,6 +461,7 @@ class TinyVpnService : VpnService() {
             lastBridgeFailures = failureTotal
         }
         updateBridgeFailureWatch(now, running, ready, failureTotal)
+        updateStallRatioWatch(now, running, ready, uploadGraceActive, requestBytesDelta, responseBytesDelta)
         liveDiag = LiveDiag(
             resolverHost = currentResolver?.selectedHost.orEmpty(),
             resolverPort = currentResolver?.port ?: 0,
@@ -591,6 +607,26 @@ class TinyVpnService : VpnService() {
         restartSlipstreamPath("bridge_failures_accumulated_${fired.accumulated}")
     }
 
+    private fun updateStallRatioWatch(
+        now: Long,
+        running: Boolean,
+        ready: Boolean,
+        uploadGraceActive: Boolean,
+        requestBytesDelta: Long,
+        responseBytesDelta: Long
+    ) {
+        val fired = stallRatioWatch.tick(
+            now, running, ready, recovering, uploadGraceActive,
+            requestBytesDelta, responseBytesDelta, lastRecoveryAt, RECOVERY_COOLDOWN_MS
+        ) ?: return
+        AppLog.w(
+            TAG,
+            "traffic starved (downstream trickle) for ${fired.windowMs}ms while native ready " +
+                "requestDelta=${fired.requestBytesDelta} responseDelta=${fired.responseBytesDelta}; restarting path"
+        )
+        restartSlipstreamPath("traffic_starved_${fired.windowMs}ms")
+    }
+
     private fun maybeCheckResolverHealth(now: Long, running: Boolean, ready: Boolean) {
         val config = currentConfig ?: return
         val resolver = currentResolver ?: return
@@ -675,6 +711,13 @@ class TinyVpnService : VpnService() {
             choice.transport.name.lowercase()
         ).exceptionOrNull()
         if (err != null && isAddressInUse(err)) {
+            // EADDRINUSE here means the previous client's native thread never died (it's still
+            // holding the listen port past STOP_JOIN_TIMEOUT) -- i.e. a detached, likely
+            // CPU-burning thread. Rebinding on a fresh port works around the port conflict but not
+            // the leaked core; if these pile up, escalate to a clean process restart.
+            if (detachedThreadWatch.onIncident(System.currentTimeMillis())) {
+                requestCleanProcessRestart("$tag:eaddrinuse_x${detachedThreadWatch.countInWindow()}")
+            }
             runCatching { SlipstreamBridge.stopClient() }
             val fresh = findFreeLocalPort(port)
             if (fresh != port) {
@@ -692,6 +735,43 @@ class TinyVpnService : VpnService() {
         }
         if (err != null) throw err
         return port
+    }
+
+    /// Last-resort escalation for the detached-native-thread spiral: a wedged native thread stuck
+    /// in a synchronous native call (e.g. the picoquic reassembly-splay infinite loop) can never
+    /// observe the shutdown/stale signal, so it burns a CPU core forever and no amount of
+    /// fresh-port rebinding reclaims it. The only thing that actually reaps such a thread is the
+    /// death of its process. Schedule a relaunch (belt) and kill our own process (suspenders); the
+    /// START_STICKY service is brought back by the system, and the sticky-restart null-intent path
+    /// re-runs startTunnel() in a fresh process with the burned cores freed.
+    private fun requestCleanProcessRestart(reason: String) {
+        if (processRestartRequested) return
+        processRestartRequested = true
+        AppLog.e(
+            TAG,
+            "detached-native-thread spiral ($reason): killing process for a clean restart to " +
+                "reclaim CPU cores burned by wedged native threads"
+        )
+        // Belt: an explicit alarm-driven relaunch so we don't rely solely on START_STICKY.
+        runCatching {
+            val intent = Intent(this, TinyVpnService::class.java)
+            val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            val pi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(this, RESTART_REQUEST_CODE, intent, flags)
+            } else {
+                PendingIntent.getService(this, RESTART_REQUEST_CODE, intent, flags)
+            }
+            getSystemService(AlarmManager::class.java)?.set(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + PROCESS_RESTART_DELAY_MS,
+                pi
+            )
+        }.onFailure { AppLog.w(TAG, "restart alarm scheduling failed: ${it.message}") }
+        // Tear down what we cleanly can, then kill the process (this also takes the wedged native
+        // thread down with it). START_STICKY relaunches the service.
+        runCatching { HevSocks5Tunnel.stop() }
+        runCatching { MiniSlipstreamSocksBridge.stop() }
+        Process.killProcess(Process.myPid())
     }
 
     /// Schedule a delayed recovery retry with capped exponential backoff. Used when a recovery
@@ -1322,11 +1402,28 @@ class TinyVpnService : VpnService() {
         private const val RESOLVER_HEALTH_RECOVERY_COOLDOWN_MS = 5_000L
         private const val ACCUMULATED_FAILURE_RECOVERY_TOTAL = 24L
         private const val ACCUMULATED_FAILURE_RECOVERY_WINDOW_MS = 20_000L
+        // Half-silent-degradation detector (StallRatioWatch): fires when the tunnel is ready and
+        // the app keeps sending upstream requests but downstream comes back as a useless trickle
+        // (requestDelta >= 8x responseDelta) for a sustained window. Fills the gap where a thin
+        // non-zero response stream keeps lastProgressAt fresh (so traffic_no_response never fires)
+        // while failures stay too sparse for the storm/accumulated thresholds. Observed live on
+        // Tele2 TCP: deltaReq≈40k vs deltaResp≈3k for 100+s with recovering=false.
+        private const val STALL_RATIO_MIN_REQUEST_BYTES = 8_192L
+        private const val STALL_RATIO_RESPONSE_DIVISOR = 8L
+        private const val STALL_RATIO_RECOVERY_WINDOW_MS = 25_000L
         private const val HEAVY_UPLOAD_DELTA_BYTES = 256L * 1024L
         private const val HEAVY_UPLOAD_GRACE_MS = 120_000L
         private const val BACKGROUND_RESOLVER_PROBE_DELAY_MS = 1_500L
         private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
+        // Detached-native-thread spiral -> clean process restart. One or two EADDRINUSE incidents
+        // are handled by the fresh-port escape; 3 within 2 minutes is a genuine spiral of leaked,
+        // CPU-burning native threads, at which point a process restart (the only thing that reaps
+        // a wedged native thread) is cheaper than accumulating burned cores.
+        private const val DETACHED_RESTART_THRESHOLD = 3
+        private const val DETACHED_RESTART_WINDOW_MS = 120_000L
+        private const val PROCESS_RESTART_DELAY_MS = 1_500L
+        private const val RESTART_REQUEST_CODE = 4711
     }
 }

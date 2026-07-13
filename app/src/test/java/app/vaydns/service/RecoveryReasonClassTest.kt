@@ -150,6 +150,28 @@ class RecoveryReasonClassTest {
         assertFalse(cls.rotateResolver)
     }
 
+    @Test
+    fun traffic_starved_is_a_fast_path_reuse_never_a_rotate() {
+        // StallRatioWatch's half-silent-degradation trigger: the resolver is still trickling
+        // responses back (reachable), the carrier is just throttled -- so restart the current path
+        // quickly rather than condemning/rotating the resolver.
+        val cls = classify("traffic_starved_25000ms")
+        assertTrue(cls.fastPathRecovery)
+        assertFalse(cls.trafficRecovery)
+        assertFalse(cls.bridgeFailureRecovery)
+        assertTrue(cls.reuseCurrentResolver)
+        assertFalse(cls.rotateResolver)
+    }
+
+    @Test
+    fun traffic_starved_reuses_even_with_no_current_resolver_state() {
+        // Like the other fast-path reasons, the classifier flag doesn't depend on resolver state;
+        // the actual null-guard is applied at the call site.
+        val cls = classify("traffic_starved_25000ms", hasCurrentResolver = false)
+        assertTrue(cls.reuseCurrentResolver)
+        assertFalse(cls.rotateResolver)
+    }
+
     // -- transport_switch / network_changed: neither reuse nor rotate (handled by their own branch) --
 
     @Test
