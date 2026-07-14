@@ -1,71 +1,87 @@
 package app.slipnet.tunnel
 
+import app.slipnet.tunnel.SocksProtocol.ParseResult
 import app.slipnet.util.AppLog
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.util.concurrent.CopyOnWriteArrayList
+import java.net.StandardSocketOptions
+import java.nio.ByteBuffer
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
+import java.nio.channels.ServerSocketChannel
+import java.nio.channels.SocketChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Non-blocking (NIO) SOCKS5 bridge. A SINGLE selector thread services all connections, replacing
+ * the old thread-per-connection design (2 threads + a 30s blocking read-timeout per connection),
+ * which piled up hundreds of leaked threads/fds and CLOSE-WAIT sockets under a slow DNS carrier --
+ * the root cause of the phone-heating incident (confirmed by a debuggerd dump: 116 threads parked
+ * in blocking SocketInputStream.socketRead, growing 38->116 between snapshots).
+ *
+ * Each connection is a state machine: client SOCKS handshake -> connect+handshake to the local
+ * slipstream SOCKS server -> bidirectional relay. Backpressure is expressed purely through
+ * interestOps (stop reading a side while its outbound buffer is full), so a slow upstream can never
+ * block a thread -- it just stops us reading from the corresponding peer. A time-based idle reaper
+ * closes connections that make no progress, so stuck/orphaned connections can't accumulate.
+ *
+ * Public API (start/stop/isRunning/stats/TrafficStats) is unchanged so TinyVpnService needs no edits.
+ */
 object MiniSlipstreamSocksBridge {
     private const val TAG = "MiniSlipstreamSocksBridge"
-    private const val BUFFER_SIZE = 65536
-    private const val SOCKET_BUFFER_SIZE = 1024 * 1024
-    // The DNS-over-QUIC carrier saturates well below the old 128 cap: throughput is shared across
-    // all in-flight connections and bounded by the poll round-trip rate + a single operator resolver,
-    // so a burst of ~70 parallel connections stalls every response and new CONNECT handshakes time
-    // out (congestion collapse). Empirically ~40 stays functional (just slower), ~70 collapses — so
-    // bound in-flight connections below the knee. The accept loop backpressures (waits) instead of
-    // rejecting, so a burst just queues in the OS listen backlog rather than failing.
-    // Default in-flight connection cap; overridable per-profile via start(maxActiveClients=...).
-    // On operators that hard rate-limit DNS queries (e.g. Megafon ~50 q/s per client) the poll
-    // budget fragments across concurrent connections and none can bootstrap a handshake, so a
-    // much lower cap (~4-6) is what keeps the tunnel usable there.
+    private const val RELAY_BUF = 64 * 1024
+    private const val HS_BUF = 1024 // SOCKS handshake messages are tiny (<~520 bytes)
     const val DEFAULT_MAX_ACTIVE_CLIENTS = 48
-    // Accept-loop backpressure: poll every STEP ms while at capacity, but never block a new
-    // connection longer than MAX ms (idle-but-open connections also count toward the cap, so an
-    // unbounded wait could deadlock; after MAX we accept anyway and handleClient trims an old socket).
-    private const val ACCEPT_BACKPRESSURE_STEP_MS = 10L
-    private const val ACCEPT_BACKPRESSURE_MAX_MS = 2000L
-    private const val OVERLOAD_CLOSE_BATCH = 16
-    // The SOCKS handshake reads (greeting/auth/connect-reply) traverse the DNS tunnel to the
-    // server and back. Under a heavy upload, these small control round-trips get queued behind
-    // bulk data (head-of-line blocking) and tunnel latency balloons past several seconds
-    // (observed slowResponseMs up to ~35s). A 5s timeout here caused every fresh connection a
-    // parallel upload tried to open (a speedtest / large file opens many at once) to fail with
-    // "Read timed out", so upload stalled while small reused-connection traffic went through.
-    // Raised to 20s to ride out congestion bursts; the drop in spurious connect failures also
-    // stops the failure-accumulation recovery from tearing down a working tunnel mid-upload.
-    private const val CONNECT_TIMEOUT_MS = 20000
-    private const val READ_TIMEOUT_MS = 30000
-    private const val DNS_TIMEOUT_MS = 5000
-    private val REMOTE_DNS_FALLBACKS = listOf("1.1.1.1", "8.8.8.8")
+    // Idle reaper timeouts. A fully-open connection is reaped only after a long quiet stretch; a
+    // HALF-closed one (one side already EOF) is reaped much sooner -- otherwise a byte-trickle
+    // download over a degraded carrier keeps refreshing activity forever and the half-open socket
+    // lingers in CLOSE-WAIT, which is exactly what accumulated in the field after the NIO rewrite.
+    private const val FULL_IDLE_MS = 90_000L
+    private const val HALF_IDLE_MS = 15_000L
+    private const val HALF_MAX_MS = 45_000L
+    // A relay buffer that can't drain for this long means the far side (slipstream over a dead
+    // carrier, or a departed client) isn't accepting -- force the connection closed. Also the only
+    // way to reclaim a CLOSE-WAIT whose FIN we never read because write-backpressure stopped us.
+    private const val STUCK_MS = 30_000L
+    private const val SELECT_TIMEOUT_MS = 5_000L
+
+    private enum class Phase {
+        CLIENT_GREETING, CLIENT_AUTH, CLIENT_REQUEST,
+        UPSTREAM_CONNECTING, UPSTREAM_GREETING, UPSTREAM_AUTH, UPSTREAM_COMMAND,
+        RELAY
+    }
+
+    private class Conn(val client: SocketChannel) {
+        var remote: SocketChannel? = null
+        var clientKey: SelectionKey? = null
+        var remoteKey: SelectionKey? = null
+        var phase = Phase.CLIENT_GREETING
+        val hs = ByteBuffer.allocate(HS_BUF) // accumulates the current handshake message
+        val toRemote = ByteBuffer.allocate(RELAY_BUF) // pending bytes to write to remote (write-mode)
+        val toClient = ByteBuffer.allocate(RELAY_BUF) // pending bytes to write to client (write-mode)
+        var clientEof = false
+        var remoteEof = false
+        var closeAfterFlush = false // flush toClient (e.g. an error reply) then close
+        var cmd = 0
+        var rawAddr: ByteArray = ByteArray(0)
+        var portBytes: ByteArray = ByteArray(0)
+        var earlyData: ByteArray? = null // client bytes received before relay began (rare pipelining)
+        var lastActivityMs = 0L
+        var halfClosedAtMs = 0L // set when the first side hits EOF; 0 while fully open
+        var bufferStuckSinceMs = 0L // set while a relay buffer stays non-empty; 0 when both drain
+    }
 
     private val running = AtomicBoolean(false)
-    private val clients = CopyOnWriteArrayList<Socket>()
-    private val remotes = CopyOnWriteArrayList<Socket>()
-    private val threads = CopyOnWriteArrayList<Thread>()
     private val txBytes = AtomicLong(0)
     private val rxBytes = AtomicLong(0)
     private val connectOk = AtomicLong(0)
     private val connectFail = AtomicLong(0)
-    private val dnsOk = AtomicLong(0)
-    private val dnsFail = AtomicLong(0)
-    private val udpDroppedPackets = AtomicLong(0)
-    private val udpDnsPackets = AtomicLong(0)
     private val activeClients = AtomicInteger(0)
-    // Backs the overload-eviction policy in closeOldBridgeSockets: prefer killing the most IDLE
-    // socket, not simply the oldest-opened one (a long-lived but actively-used connection, e.g. a
-    // game's persistent session socket, should survive; a socket that's gone quiet is safer to cut).
-    private val activity = SocketActivityTracker<Socket>()
 
-    @Volatile private var serverSocket: ServerSocket? = null
-    @Volatile private var acceptThread: Thread? = null
+    @Volatile private var selector: Selector? = null
+    @Volatile private var serverChannel: ServerSocketChannel? = null
+    @Volatile private var loopThread: Thread? = null
     @Volatile private var slipstreamHost = "127.0.0.1"
     @Volatile private var slipstreamPort = 1081
     @Volatile private var dnsHost = ""
@@ -74,6 +90,9 @@ object MiniSlipstreamSocksBridge {
     @Volatile private var localUsername: String? = null
     @Volatile private var localPassword: String? = null
     @Volatile private var maxActiveClients = DEFAULT_MAX_ACTIVE_CLIENTS
+
+    // Live set of connections, only ever touched on the selector thread.
+    private val conns = HashSet<Conn>()
 
     fun start(
         listenHost: String,
@@ -96,485 +115,476 @@ object MiniSlipstreamSocksBridge {
         this.password = password?.takeIf { it.isNotBlank() }
         this.localUsername = localUsername?.takeIf { it.isNotBlank() }
         this.localPassword = localPassword?.takeIf { it.isNotBlank() }
-        txBytes.set(0)
-        rxBytes.set(0)
-        connectOk.set(0)
-        connectFail.set(0)
-        dnsOk.set(0)
-        dnsFail.set(0)
-        udpDroppedPackets.set(0)
-        udpDnsPackets.set(0)
-        activeClients.set(0)
+        txBytes.set(0); rxBytes.set(0); connectOk.set(0); connectFail.set(0); activeClients.set(0)
 
         return runCatching {
-            val ss = ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(listenHost, listenPort))
-            }
-            serverSocket = ss
+            val sel = Selector.open()
+            val ssc = ServerSocketChannel.open()
+            ssc.configureBlocking(false)
+            ssc.setOption(StandardSocketOptions.SO_REUSEADDR, true)
+            ssc.bind(InetSocketAddress(listenHost, listenPort))
+            ssc.register(sel, SelectionKey.OP_ACCEPT)
+            selector = sel
+            serverChannel = ssc
             running.set(true)
             AppLog.i(
                 TAG,
-                "bridge start listen=$listenHost:$listenPort slipstream=$slipstreamHost:$slipstreamPort transportDns=$dnsHost " +
-                    "upstreamAuth=${if (this.username != null) "login/password" else "no-auth"} " +
+                "bridge start (nio) listen=$listenHost:$listenPort slipstream=$slipstreamHost:$slipstreamPort " +
+                    "transportDns=$dnsHost upstreamAuth=${if (this.username != null) "login/password" else "no-auth"} " +
                     "localAuth=${if (this.localUsername != null && this.localPassword != null) "login/password" else "no-auth"}"
             )
-            acceptThread = Thread({
-                while (running.get()) {
-                    try {
-                        // Backpressure: hold off accepting while the carrier is already at capacity, so
-                        // a burst of new connections queues in the OS listen backlog instead of being
-                        // admitted and collapsing the carrier (which makes every connection time out).
-                        var waited = 0L
-                        while (running.get() && activeClients.get() >= maxActiveClients && waited < ACCEPT_BACKPRESSURE_MAX_MS) {
-                            Thread.sleep(ACCEPT_BACKPRESSURE_STEP_MS)
-                            waited += ACCEPT_BACKPRESSURE_STEP_MS
-                        }
-                        if (!running.get()) break
-                        handleClient(ss.accept())
-                    } catch (e: Throwable) {
-                        if (running.get()) AppLog.w(TAG, "accept failed: ${e.message}")
-                    }
-                }
-            }, "mini-slip-bridge-accept").also { it.isDaemon = true; it.start() }
+            loopThread = Thread({ loop() }, "nio-slip-bridge").also { it.isDaemon = true; it.start() }
+        }.onFailure {
+            runCatching { selector?.close() }
+            runCatching { serverChannel?.close() }
+            selector = null; serverChannel = null; running.set(false)
         }
     }
 
     fun stop() {
-        if (!running.getAndSet(false) && serverSocket == null) return
-        AppLog.i(TAG, "bridge stop tx=${txBytes.get()} rx=${rxBytes.get()} connectOk=${connectOk.get()} connectFail=${connectFail.get()} dnsOk=${dnsOk.get()} dnsFail=${dnsFail.get()} active=${activeClients.get()} clients=${clients.size} remotes=${remotes.size} threads=${threads.size}")
-        runCatching { serverSocket?.close() }
-        serverSocket = null
-        runCatching { acceptThread?.interrupt() }
-        runCatching { acceptThread?.join(200) }
-        acceptThread = null
-        clients.forEach { closeSocketNow(it) }
-        remotes.forEach { closeSocketNow(it) }
-        clients.clear()
-        remotes.clear()
-        activity.clear()
-        threads.forEach { it.interrupt() }
-        threads.clear()
+        if (!running.getAndSet(false) && selector == null) return
+        AppLog.i(
+            TAG,
+            "bridge stop (nio) tx=${txBytes.get()} rx=${rxBytes.get()} connectOk=${connectOk.get()} " +
+                "connectFail=${connectFail.get()} active=${activeClients.get()}"
+        )
+        selector?.wakeup()
+        runCatching { loopThread?.join(500) }
+        loopThread = null
+        // The loop closes everything on exit; also close here in case it never ran.
+        runCatching { serverChannel?.close() }
+        runCatching { selector?.close() }
+        serverChannel = null
+        selector = null
     }
 
     fun isRunning(): Boolean = running.get()
 
-    fun stats(): TrafficStats = TrafficStats(
-        txBytes.get(),
-        rxBytes.get(),
-        connectOk.get(),
-        connectFail.get(),
-        dnsOk.get(),
-        dnsFail.get(),
-        activeClients.get(),
-        clients.size,
-        remotes.size,
-        threads.size
-    )
+    fun stats(): TrafficStats {
+        val active = activeClients.get()
+        return TrafficStats(
+            txBytes.get(), rxBytes.get(), connectOk.get(), connectFail.get(),
+            dnsOk = 0, dnsFail = 0,
+            activeClients = active, clientSockets = active, remoteSockets = active,
+            threads = if (running.get()) 1 else 0
+        )
+    }
 
-    private fun handleClient(socket: Socket) {
-        if (activeClients.get() >= maxActiveClients) {
-            closeOldBridgeSockets("active limit pre-trim")
+    // ---- selector loop ----
+
+    private fun loop() {
+        val sel = selector ?: return
+        try {
+            while (running.get()) {
+                sel.select(SELECT_TIMEOUT_MS)
+                if (!running.get()) break
+                val it = sel.selectedKeys().iterator()
+                while (it.hasNext()) {
+                    val key = it.next(); it.remove()
+                    if (!key.isValid) continue
+                    try {
+                        when {
+                            key.isAcceptable -> onAccept()
+                            else -> {
+                                val conn = key.attachment() as? Conn ?: continue
+                                if (key.isConnectable) onConnectable(conn)
+                                if (key.isValid && (key.isReadable || key.isWritable)) service(conn)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        (key.attachment() as? Conn)?.let { c -> closeConn(c, "key error: ${e.message}") }
+                    }
+                }
+                reapIdle()
+            }
+        } catch (e: Throwable) {
+            if (running.get()) AppLog.w(TAG, "selector loop error: ${e.message}")
+        } finally {
+            for (c in conns.toList()) closeConn(c, "bridge stopping")
+            conns.clear()
+            runCatching { serverChannel?.close() }
+            runCatching { sel.close() }
         }
-        if (activeClients.incrementAndGet() > maxActiveClients) {
-            activeClients.decrementAndGet()
-            connectFail.incrementAndGet()
-            AppLog.w(TAG, "client rejected: active limit $maxActiveClients reached")
-            runCatching { socket.close() }
+    }
+
+    private fun onAccept() {
+        val ssc = serverChannel ?: return
+        while (true) {
+            val ch = ssc.accept() ?: break
+            if (activeClients.get() >= maxActiveClients) {
+                evictLeastRecentlyActive()
+            }
+            runCatching {
+                ch.configureBlocking(false)
+                configure(ch)
+            }.onFailure { runCatching { ch.close() }; return@onAccept }
+            val conn = Conn(ch)
+            conn.lastActivityMs = now()
+            conn.clientKey = ch.register(selector, SelectionKey.OP_READ, conn)
+            conns.add(conn)
+            activeClients.incrementAndGet()
+        }
+    }
+
+    private fun onConnectable(conn: Conn) {
+        val remote = conn.remote ?: return
+        try {
+            if (remote.finishConnect()) {
+                // Connected. Send the upstream greeting and start the upstream handshake.
+                queue(conn.toRemote, SocksProtocol.upstreamGreeting(username != null && password != null))
+                conn.phase = Phase.UPSTREAM_GREETING
+                conn.hs.clear()
+                touch(conn)
+                updateInterest(conn)
+            }
+        } catch (e: Throwable) {
+            failUpstream(conn, "upstream connect failed: ${e.message}")
+        }
+    }
+
+    /** Attempt all currently-possible reads/writes for a connection, then recompute interest and
+     * check for termination. Non-blocking ops that aren't ready simply move 0 bytes, so it's safe
+     * to call opportunistically. */
+    private fun service(conn: Conn) {
+        try {
+            when (conn.phase) {
+                Phase.CLIENT_GREETING, Phase.CLIENT_AUTH, Phase.CLIENT_REQUEST -> {
+                    flush(conn.client, conn.toClient) // e.g. a queued method-select / error reply
+                    if (conn.closeAfterFlush) { if (conn.toClient.position() == 0) closeConn(conn, "handshake reply flushed"); return }
+                    readClientHandshake(conn)
+                }
+                Phase.UPSTREAM_CONNECTING -> { /* driven by onConnectable */ }
+                Phase.UPSTREAM_GREETING, Phase.UPSTREAM_AUTH, Phase.UPSTREAM_COMMAND -> {
+                    conn.remote?.let { flush(it, conn.toRemote) }
+                    flush(conn.client, conn.toClient)
+                    if (conn.closeAfterFlush) { if (conn.toClient.position() == 0) closeConn(conn, "upstream error flushed"); return }
+                    readUpstreamHandshake(conn)
+                }
+                Phase.RELAY -> relay(conn)
+            }
+            if (conn.phase != Phase.RELAY) updateInterest(conn)
+        } catch (e: Throwable) {
+            closeConn(conn, "service error: ${e.message}")
+        }
+    }
+
+    // ---- client handshake ----
+
+    private fun readClientHandshake(conn: Conn) {
+        val n = readInto(conn.client, conn.hs)
+        if (n == -1) { closeConn(conn, "client eof during handshake"); return }
+        if (n > 0) touch(conn)
+        var progressed = true
+        while (progressed) {
+            progressed = false
+            val arr = conn.hs.array()
+            val len = conn.hs.position()
+            when (conn.phase) {
+                Phase.CLIENT_GREETING -> when (val r = SocksProtocol.parseClientGreeting(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> closeConn(conn, "greeting: ${r.reason}")
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        val needAuth = !localUsername.isNullOrBlank() && !localPassword.isNullOrBlank()
+                        if (needAuth) {
+                            if (r.value.contains(0x02.toByte())) {
+                                queue(conn.toClient, byteArrayOf(0x05, 0x02)); conn.phase = Phase.CLIENT_AUTH; progressed = true
+                            } else rejectClient(conn)
+                        } else {
+                            if (r.value.contains(0x00.toByte())) {
+                                queue(conn.toClient, byteArrayOf(0x05, 0x00)); conn.phase = Phase.CLIENT_REQUEST; progressed = true
+                            } else rejectClient(conn)
+                        }
+                    }
+                }
+                Phase.CLIENT_AUTH -> when (val r = SocksProtocol.parseClientAuth(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> closeConn(conn, "auth: ${r.reason}")
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        val ok = r.value.first == localUsername.orEmpty() && r.value.second == localPassword.orEmpty()
+                        queue(conn.toClient, byteArrayOf(0x01, if (ok) 0x00 else 0x01))
+                        if (ok) { conn.phase = Phase.CLIENT_REQUEST; progressed = true } else conn.closeAfterFlush = true
+                    }
+                }
+                Phase.CLIENT_REQUEST -> when (val r = SocksProtocol.parseClientRequest(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> { queue(conn.toClient, SocksProtocol.clientReply(0x07)); conn.closeAfterFlush = true }
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        conn.cmd = r.value.cmd; conn.rawAddr = r.value.rawAddr; conn.portBytes = r.value.portBytes
+                        // Any leftover client bytes are early app data; stash to inject after relay starts.
+                        if (conn.hs.position() > 0) {
+                            conn.earlyData = conn.hs.array().copyOf(conn.hs.position()); conn.hs.clear()
+                        }
+                        startUpstream(conn)
+                    }
+                }
+                else -> {}
+            }
+            flush(conn.client, conn.toClient)
+        }
+        if (conn.phase != Phase.RELAY) updateInterest(conn)
+    }
+
+    private fun rejectClient(conn: Conn) {
+        queue(conn.toClient, byteArrayOf(0x05, 0xFF.toByte()))
+        conn.closeAfterFlush = true
+    }
+
+    private fun startUpstream(conn: Conn) {
+        try {
+            val remote = SocketChannel.open()
+            remote.configureBlocking(false)
+            configure(remote)
+            conn.remote = remote
+            conn.phase = Phase.UPSTREAM_CONNECTING
+            conn.remoteKey = remote.register(selector, SelectionKey.OP_CONNECT, conn)
+            remote.connect(InetSocketAddress(slipstreamHost, slipstreamPort))
+            touch(conn)
+        } catch (e: Throwable) {
+            failUpstream(conn, "upstream open failed: ${e.message}")
+        }
+    }
+
+    // ---- upstream handshake ----
+
+    private fun readUpstreamHandshake(conn: Conn) {
+        val remote = conn.remote ?: return
+        val n = readInto(remote, conn.hs)
+        if (n == -1) { failUpstream(conn, "upstream eof during handshake"); return }
+        if (n > 0) touch(conn)
+        var progressed = true
+        while (progressed) {
+            progressed = false
+            val arr = conn.hs.array(); val len = conn.hs.position()
+            when (conn.phase) {
+                Phase.UPSTREAM_GREETING -> when (val r = SocksProtocol.parseUpstreamGreetingReply(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> failUpstream(conn, r.reason)
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        if (r.value == 0x02) {
+                            queue(conn.toRemote, SocksProtocol.upstreamAuth(username.orEmpty(), password.orEmpty()))
+                            conn.phase = Phase.UPSTREAM_AUTH
+                        } else {
+                            queue(conn.toRemote, SocksProtocol.upstreamCommand(conn.cmd, conn.rawAddr, conn.portBytes))
+                            conn.phase = Phase.UPSTREAM_COMMAND
+                        }
+                        progressed = true
+                    }
+                }
+                Phase.UPSTREAM_AUTH -> when (val r = SocksProtocol.parseUpstreamAuthReply(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> failUpstream(conn, r.reason)
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        queue(conn.toRemote, SocksProtocol.upstreamCommand(conn.cmd, conn.rawAddr, conn.portBytes))
+                        conn.phase = Phase.UPSTREAM_COMMAND; progressed = true
+                    }
+                }
+                Phase.UPSTREAM_COMMAND -> when (val r = SocksProtocol.parseUpstreamCommandReply(arr, len)) {
+                    is ParseResult.NeedMore -> {}
+                    is ParseResult.Bad -> failUpstream(conn, r.reason)
+                    is ParseResult.Ok -> {
+                        consume(conn.hs, r.consumed)
+                        connectOk.incrementAndGet()
+                        AppLog.d(TAG, "CONNECT ${hostLabel(conn)} OK")
+                        // Tell tun2socks the tunnel is up, then begin relaying.
+                        queue(conn.toClient, SocksProtocol.clientReply(0x00))
+                        // Inject any early client data (pipelined before our reply) ahead of relay.
+                        conn.earlyData?.let { queue(conn.toRemote, it) }
+                        conn.earlyData = null
+                        // Any leftover upstream bytes after the reply are real downstream data.
+                        if (conn.hs.position() > 0) { queue(conn.toClient, conn.hs.array().copyOf(conn.hs.position())); conn.hs.clear() }
+                        conn.phase = Phase.RELAY
+                        relay(conn)
+                        return
+                    }
+                }
+                else -> {}
+            }
+            conn.remote?.let { flush(it, conn.toRemote) }
+        }
+        if (conn.phase != Phase.RELAY) updateInterest(conn)
+    }
+
+    private fun failUpstream(conn: Conn, reason: String) {
+        connectFail.incrementAndGet()
+        AppLog.w(TAG, "upstream failed ${hostLabel(conn)}: $reason")
+        runCatching { conn.remote?.close() }
+        conn.remote = null; conn.remoteKey?.cancel(); conn.remoteKey = null
+        // Best-effort tell the client it failed, then close.
+        if (conn.toClient.position() == 0) queue(conn.toClient, SocksProtocol.clientReply(0x05))
+        conn.closeAfterFlush = true
+        conn.phase = Phase.CLIENT_REQUEST // so service() flushes toClient then closes
+        flush(conn.client, conn.toClient)
+        if (conn.toClient.position() == 0) closeConn(conn, "upstream failed")
+        else updateInterest(conn)
+    }
+
+    // ---- relay ----
+
+    private fun relay(conn: Conn) {
+        val remote = conn.remote ?: run { closeConn(conn, "relay without remote"); return }
+        var progress = false
+        // client -> remote
+        if (!conn.clientEof && conn.toRemote.hasRemaining()) {
+            val n = readInto(conn.client, conn.toRemote)
+            if (n == -1) { conn.clientEof = true; markHalfClosed(conn) }
+            else if (n > 0) { txBytes.addAndGet(n.toLong()); progress = true }
+        }
+        if (drain(remote, conn.toRemote)) progress = true
+        // remote -> client
+        if (!conn.remoteEof && conn.toClient.hasRemaining()) {
+            val n = readInto(remote, conn.toClient)
+            if (n == -1) { conn.remoteEof = true; markHalfClosed(conn) }
+            else if (n > 0) { rxBytes.addAndGet(n.toLong()); progress = true }
+        }
+        if (drain(conn.client, conn.toClient)) progress = true
+        if (progress) touch(conn)
+        // Track how long a relay buffer stays non-empty. On a healthy localhost hop buffers clear
+        // in microseconds; a buffer stuck for tens of seconds means the far side isn't accepting
+        // (dead carrier / gone peer) -- and this is the ONLY signal when write-backpressure has
+        // stopped us reading the client, so its FIN is never observed by the EOF path.
+        if (conn.toRemote.position() > 0 || conn.toClient.position() > 0) {
+            if (conn.bufferStuckSinceMs == 0L) conn.bufferStuckSinceMs = now()
+        } else {
+            conn.bufferStuckSinceMs = 0L
+        }
+
+        // Half-close propagation: once a side is EOF and its buffer is fully flushed, send FIN onward.
+        if (conn.clientEof && conn.toRemote.position() == 0) runCatching { remote.shutdownOutput() }
+        if (conn.remoteEof && conn.toClient.position() == 0) runCatching { conn.client.shutdownOutput() }
+
+        // Done when both directions are closed and drained.
+        if (conn.clientEof && conn.remoteEof && conn.toRemote.position() == 0 && conn.toClient.position() == 0) {
+            closeConn(conn, "relay complete"); return
+        }
+        updateInterest(conn)
+    }
+
+    // ---- buffer/channel helpers ----
+
+    /** Read from [ch] into [buf] (write-mode). Returns bytes read, 0 if none, -1 on EOF. */
+    private fun readInto(ch: SocketChannel, buf: ByteBuffer): Int {
+        if (!buf.hasRemaining()) return 0
+        return ch.read(buf)
+    }
+
+    /** Flush pending bytes in [buf] (write-mode) to [ch]. Returns true if any bytes were written. */
+    private fun drain(ch: SocketChannel, buf: ByteBuffer): Boolean {
+        if (buf.position() == 0) return false
+        buf.flip()
+        val w = ch.write(buf)
+        buf.compact()
+        return w > 0
+    }
+
+    private fun flush(ch: SocketChannel, buf: ByteBuffer) { drain(ch, buf) }
+
+    private fun queue(buf: ByteBuffer, bytes: ByteArray) {
+        // Handshake/reply frames are tiny and buffers are large; a full buffer here would be a bug.
+        if (buf.remaining() < bytes.size) {
+            AppLog.w(TAG, "queue overflow need=${bytes.size} free=${buf.remaining()}")
             return
         }
-        val thread = Thread({
-            clients.add(socket)
-            activity.touch(socket)
-            try {
-                socket.use {
-                    configureBridgeSocket(it)
-                    it.soTimeout = 30000
-                    val input = it.getInputStream()
-                    val output = it.getOutputStream()
-                    if (!readSocksGreeting(input, output)) return@use
-                    val req = readSocksRequest(input) ?: run {
-                        writeSocksReply(output, 0x07)
-                        return@use
-                    }
-                    when (req.cmd) {
-                        0x01 -> handleConnect(req, it, input, output)
-                        0x05 -> handleFwdUdp(it, input, output)
-                        else -> writeSocksReply(output, 0x07)
-                    }
-                }
-            } catch (e: Throwable) {
-                if (running.get()) AppLog.d(TAG, "client error: ${e.message}")
-            } finally {
-                clients.remove(socket)
-                activity.remove(socket)
-                activeClients.decrementAndGet()
-                threads.remove(Thread.currentThread())
+        buf.put(bytes)
+    }
+
+    private fun consume(buf: ByteBuffer, count: Int) {
+        val arr = buf.array(); val cur = buf.position()
+        if (count >= cur) { buf.clear(); return }
+        System.arraycopy(arr, count, arr, 0, cur - count)
+        buf.position(cur - count)
+    }
+
+    // ---- interest management ----
+
+    private fun updateInterest(conn: Conn) {
+        val ck = conn.clientKey
+        val rk = conn.remoteKey
+        if (ck != null && ck.isValid) {
+            var ops = 0
+            when (conn.phase) {
+                Phase.CLIENT_GREETING, Phase.CLIENT_AUTH, Phase.CLIENT_REQUEST ->
+                    if (conn.hs.hasRemaining() && !conn.closeAfterFlush) ops = ops or SelectionKey.OP_READ
+                Phase.RELAY -> if (!conn.clientEof && conn.toRemote.hasRemaining()) ops = ops or SelectionKey.OP_READ
+                else -> {}
             }
-        }, "mini-slip-bridge-client")
-        thread.isDaemon = true
-        threads.add(thread)
-        thread.start()
-    }
-
-    private fun closeOldBridgeSockets(reason: String) {
-        // Least-recently-active first, NOT oldest-opened first: a long-lived, actively-used
-        // connection (e.g. a game's persistent session socket) has recent activity and survives;
-        // a socket that's gone quiet -- regardless of how old it is -- is what gets cut.
-        val clientSnapshot = activity.selectLeastRecentlyActive(clients.toList(), OVERLOAD_CLOSE_BATCH)
-        val remoteSnapshot = activity.selectLeastRecentlyActive(remotes.toList(), OVERLOAD_CLOSE_BATCH)
-        if (clientSnapshot.isEmpty() && remoteSnapshot.isEmpty()) return
-        AppLog.w(
-            TAG,
-            "overload cleanup reason=$reason active=${activeClients.get()} " +
-                "closingClients=${clientSnapshot.size} closingRemotes=${remoteSnapshot.size}"
-        )
-        clientSnapshot.forEach { closeSocketNow(it) }
-        remoteSnapshot.forEach { closeSocketNow(it) }
-    }
-
-    private fun readSocksGreeting(input: InputStream, output: OutputStream): Boolean {
-        val ver = input.read()
-        if (ver != 0x05) return false
-        val nMethods = input.read()
-        if (nMethods <= 0) return false
-        val methods = ByteArray(nMethods)
-        input.readFullyStrict(methods)
-        val requiresAuth = !localUsername.isNullOrBlank() && !localPassword.isNullOrBlank()
-        if (requiresAuth) {
-            if (0x02.toByte() !in methods) {
-                output.write(byteArrayOf(0x05, 0xFF.toByte()))
-                output.flush()
-                return false
+            if (conn.toClient.position() > 0) ops = ops or SelectionKey.OP_WRITE
+            ck.interestOps(ops)
+        }
+        if (rk != null && rk.isValid) {
+            var ops = 0
+            when (conn.phase) {
+                Phase.UPSTREAM_CONNECTING -> ops = ops or SelectionKey.OP_CONNECT
+                Phase.UPSTREAM_GREETING, Phase.UPSTREAM_AUTH, Phase.UPSTREAM_COMMAND ->
+                    if (conn.hs.hasRemaining()) ops = ops or SelectionKey.OP_READ
+                Phase.RELAY -> if (!conn.remoteEof && conn.toClient.hasRemaining()) ops = ops or SelectionKey.OP_READ
+                else -> {}
             }
-            output.write(byteArrayOf(0x05, 0x02))
-            output.flush()
-            return readSocksPasswordAuth(input, output)
-        }
-        if (0x00.toByte() !in methods) {
-            output.write(byteArrayOf(0x05, 0xFF.toByte()))
-            output.flush()
-            return false
-        }
-        output.write(byteArrayOf(0x05, 0x00))
-        output.flush()
-        return true
-    }
-
-    private fun readSocksPasswordAuth(input: InputStream, output: OutputStream): Boolean {
-        val ver = input.read()
-        if (ver != 0x01) return false
-        val userLen = input.read()
-        if (userLen < 0) return false
-        val user = ByteArray(userLen)
-        input.readFullyStrict(user)
-        val passLen = input.read()
-        if (passLen < 0) return false
-        val pass = ByteArray(passLen)
-        input.readFullyStrict(pass)
-        val ok = String(user, Charsets.UTF_8) == localUsername.orEmpty() &&
-            String(pass, Charsets.UTF_8) == localPassword.orEmpty()
-        output.write(byteArrayOf(0x01, if (ok) 0x00 else 0x01))
-        output.flush()
-        return ok
-    }
-
-    private fun readSocksRequest(input: InputStream): SocksRequest? {
-        val ver = input.read()
-        val cmd = input.read()
-        input.read()
-        val atyp = input.read()
-        if (ver != 0x05 || cmd < 0 || atyp < 0) return null
-        val rawAddr = when (atyp) {
-            0x01 -> byteArrayOf(0x01) + ByteArray(4).also { input.readFullyStrict(it) }
-            0x03 -> {
-                val len = input.read()
-                if (len <= 0) return null
-                byteArrayOf(0x03, len.toByte()) + ByteArray(len).also { input.readFullyStrict(it) }
-            }
-            0x04 -> byteArrayOf(0x04) + ByteArray(16).also { input.readFullyStrict(it) }
-            else -> return null
-        }
-        val port = ByteArray(2)
-        input.readFullyStrict(port)
-        val host = parseHost(rawAddr) ?: "unknown"
-        val portInt = ((port[0].toInt() and 0xFF) shl 8) or (port[1].toInt() and 0xFF)
-        return SocksRequest(cmd, rawAddr, port, host, portInt)
-    }
-
-    private fun handleConnect(req: SocksRequest, client: Socket, clientInput: InputStream, clientOutput: OutputStream) {
-        var remote: Socket? = null
-        try {
-            remote = openSlipstreamSocks(req.rawAddr, req.portBytes)
-            connectOk.incrementAndGet()
-            writeSocksReply(clientOutput, 0x00)
-            client.soTimeout = READ_TIMEOUT_MS
-            remote.soTimeout = READ_TIMEOUT_MS
-            AppLog.d(TAG, "CONNECT ${req.host}:${req.port} OK")
-            bridgeSockets(client, clientInput, clientOutput, remote)
-        } catch (e: Throwable) {
-            connectFail.incrementAndGet()
-            AppLog.w(TAG, "CONNECT ${req.host}:${req.port} failed: ${e.message}")
-            writeSocksReply(clientOutput, 0x05)
-            runCatching { remote?.close() }
+            if (conn.toRemote.position() > 0) ops = ops or SelectionKey.OP_WRITE
+            rk.interestOps(ops)
         }
     }
 
-    private fun handleFwdUdp(client: Socket, input: InputStream, output: OutputStream) {
-        var remote: Socket? = null
-        try {
-            remote = openSlipstreamFwdUdp()
-            connectOk.incrementAndGet()
-            writeSocksReply(output, 0x00)
-            remote.soTimeout = READ_TIMEOUT_MS
-            AppLog.d(TAG, "FWD_UDP upstream OK")
-            bridgeSockets(client, input, output, remote)
-        } catch (e: Throwable) {
-            connectFail.incrementAndGet()
-            AppLog.w(TAG, "FWD_UDP upstream failed: ${e.message}")
-            writeSocksReply(output, 0x05)
-            remote?.let { closeSocketNow(it) }
+    // ---- lifecycle / reaping ----
+
+    private fun evictLeastRecentlyActive() {
+        val victim = conns.minByOrNull { it.lastActivityMs } ?: return
+        AppLog.w(TAG, "overload cleanup: closing least-recently-active conn active=${activeClients.get()}")
+        closeConn(victim, "overload eviction")
+    }
+
+    private fun markHalfClosed(conn: Conn) {
+        if (conn.halfClosedAtMs == 0L) conn.halfClosedAtMs = now()
+    }
+
+    private fun reapIdle() {
+        if (conns.isEmpty()) return
+        val now = now()
+        val stale = conns.filter {
+            ConnReaper.shouldReap(
+                now, it.lastActivityMs, it.halfClosedAtMs, it.bufferStuckSinceMs,
+                FULL_IDLE_MS, HALF_IDLE_MS, HALF_MAX_MS, STUCK_MS
+            )
+        }
+        if (stale.isNotEmpty()) {
+            AppLog.w(TAG, "reaping ${stale.size} idle conn(s) active=${activeClients.get()}")
+            for (c in stale) closeConn(c, "idle reaped")
         }
     }
 
-    private fun forwardDns(packetHost: String, payload: ByteArray): ByteArray? {
-        var firstNegative: ByteArray? = null
-        for (host in dnsForwarders(packetHost)) {
-            val response = forwardDnsTcpTo(host, payload) ?: continue
-            val rcode = dnsRcode(response)
-            if (rcode == 0) return response
-            if (firstNegative == null) firstNegative = response
-            AppLog.d(TAG, "DNS tcp $host returned rcode=$rcode; trying next resolver")
+    private fun closeConn(conn: Conn, reason: String) {
+        if (!conns.remove(conn)) return
+        AppLog.d(TAG, "close conn: $reason")
+        conn.clientKey?.cancel(); conn.remoteKey?.cancel()
+        runCatching { conn.client.close() }
+        runCatching { conn.remote?.close() }
+        activeClients.decrementAndGet()
+    }
+
+    private fun configure(ch: SocketChannel) {
+        runCatching { ch.setOption(StandardSocketOptions.TCP_NODELAY, true) }
+        runCatching { ch.setOption(StandardSocketOptions.SO_RCVBUF, RELAY_BUF) }
+        runCatching { ch.setOption(StandardSocketOptions.SO_SNDBUF, RELAY_BUF) }
+    }
+
+    private fun now() = System.currentTimeMillis()
+    private fun touch(conn: Conn) { conn.lastActivityMs = now() }
+
+    private fun hostLabel(conn: Conn): String {
+        val raw = conn.rawAddr
+        if (raw.isEmpty()) return "?"
+        val port = if (conn.portBytes.size == 2)
+            ((conn.portBytes[0].toInt() and 0xFF) shl 8) or (conn.portBytes[1].toInt() and 0xFF) else 0
+        val host = when (raw[0].toInt() and 0xFF) {
+            0x01 -> (1..4).joinToString(".") { (raw[it].toInt() and 0xFF).toString() }
+            0x03 -> String(raw, 2, raw[1].toInt() and 0xFF, Charsets.US_ASCII)
+            else -> "ipv6"
         }
-        return firstNegative
-    }
-
-    private fun dnsForwarders(packetHost: String): List<String> =
-        (REMOTE_DNS_FALLBACKS + listOf(packetHost))
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it != "0.0.0.0" && it != dnsHost.trim() }
-            .distinct()
-
-    private fun forwardDnsTcpTo(host: String, payload: ByteArray): ByteArray? {
-        val rawAddr = byteArrayOf(0x03, host.length.toByte()) + host.toByteArray(Charsets.US_ASCII)
-        val port = byteArrayOf(0x00, 0x35)
-        var sock: Socket? = null
-        return try {
-            sock = openSlipstreamSocks(rawAddr, port)
-            sock.soTimeout = DNS_TIMEOUT_MS
-            val input = sock.getInputStream()
-            val output = sock.getOutputStream()
-            val frame = ByteArray(payload.size + 2)
-            frame[0] = ((payload.size shr 8) and 0xFF).toByte()
-            frame[1] = (payload.size and 0xFF).toByte()
-            System.arraycopy(payload, 0, frame, 2, payload.size)
-            output.write(frame)
-            output.flush()
-            val lenBytes = ByteArray(2)
-            input.readFullyStrict(lenBytes)
-            val len = ((lenBytes[0].toInt() and 0xFF) shl 8) or (lenBytes[1].toInt() and 0xFF)
-            if (len <= 0 || len > 65535) return null
-            ByteArray(len).also { input.readFullyStrict(it) }
-        } catch (e: Throwable) {
-            AppLog.d(TAG, "DNS tcp $host failed: ${e.message}")
-            null
-        } finally {
-            runCatching { sock?.close() }
-            if (sock != null) {
-                remotes.remove(sock)
-                activity.remove(sock)
-            }
-        }
-    }
-
-    private fun dnsRcode(response: ByteArray): Int {
-        if (response.size < 4) return -1
-        return response[3].toInt() and 0x0F
-    }
-
-    private fun openSlipstreamSocks(rawAddr: ByteArray, portBytes: ByteArray): Socket {
-        return openSlipstreamSocksCommand(0x01, rawAddr, portBytes)
-    }
-
-    private fun openSlipstreamFwdUdp(): Socket {
-        return openSlipstreamSocksCommand(0x05, byteArrayOf(0x01, 0, 0, 0, 0), byteArrayOf(0, 0))
-    }
-
-    private fun openSlipstreamSocksCommand(cmd: Int, rawAddr: ByteArray, portBytes: ByteArray): Socket {
-        val sock = Socket()
-        configureBridgeSocket(sock)
-        sock.connect(InetSocketAddress(slipstreamHost, slipstreamPort), CONNECT_TIMEOUT_MS)
-        sock.soTimeout = CONNECT_TIMEOUT_MS
-        remotes.add(sock)
-        activity.touch(sock)
-        try {
-            val input = sock.getInputStream()
-            val output = sock.getOutputStream()
-            val hasAuth = !username.isNullOrBlank() && !password.isNullOrBlank()
-            output.write(if (hasAuth) byteArrayOf(0x05, 0x01, 0x02) else byteArrayOf(0x05, 0x01, 0x00))
-            output.flush()
-            val greeting = ByteArray(2)
-            input.readFullyStrict(greeting)
-            if (greeting[0] != 0x05.toByte() || greeting[1] == 0xFF.toByte()) error("upstream greeting rejected")
-            if (greeting[1] == 0x02.toByte()) {
-                val user = username.orEmpty().toByteArray()
-                val pass = password.orEmpty().toByteArray()
-                require(user.size <= 255 && pass.size <= 255) { "auth too long" }
-                val authFrame = ByteArray(3 + user.size + pass.size)
-                authFrame[0] = 0x01
-                authFrame[1] = user.size.toByte()
-                System.arraycopy(user, 0, authFrame, 2, user.size)
-                authFrame[2 + user.size] = pass.size.toByte()
-                System.arraycopy(pass, 0, authFrame, 3 + user.size, pass.size)
-                output.write(authFrame)
-                output.flush()
-                val auth = ByteArray(2)
-                input.readFullyStrict(auth)
-                if (auth[1] != 0x00.toByte()) error("upstream auth failed")
-            }
-            val commandFrame = ByteArray(3 + rawAddr.size + portBytes.size)
-            commandFrame[0] = 0x05
-            commandFrame[1] = cmd.toByte()
-            commandFrame[2] = 0x00
-            System.arraycopy(rawAddr, 0, commandFrame, 3, rawAddr.size)
-            System.arraycopy(portBytes, 0, commandFrame, 3 + rawAddr.size, portBytes.size)
-            output.write(commandFrame)
-            output.flush()
-            val header = ByteArray(4)
-            input.readFullyStrict(header)
-            if (header[1] != 0x00.toByte()) error("upstream connect rejected rep=${header[1].toInt() and 0xFF}")
-            skipSocksBindAddress(input, header[3].toInt() and 0xFF)
-            sock.soTimeout = READ_TIMEOUT_MS
-            return sock
-        } catch (e: Throwable) {
-            remotes.remove(sock)
-            activity.remove(sock)
-            runCatching { sock.close() }
-            throw e
-        }
-    }
-
-    private fun bridgeSockets(client: Socket, clientInput: InputStream, clientOutput: OutputStream, remote: Socket) {
-        remote.use {
-            val remoteInput = it.getInputStream()
-            val remoteOutput = it.getOutputStream()
-            val up = Thread({
-                try {
-                    copy(clientInput, remoteOutput, txBytes) { touchPair(client, remote) }
-                    runCatching { remote.shutdownOutput() }
-                } finally {
-                    closeSocketNow(remote)
-                    closeSocketNow(client)
-                    threads.remove(Thread.currentThread())
-                }
-            }, "mini-slip-up")
-            up.isDaemon = true
-            threads.add(up)
-            up.start()
-            try {
-                copy(remoteInput, clientOutput, rxBytes) { touchPair(client, remote) }
-                runCatching { client.shutdownOutput() }
-            } finally {
-                closeSocketNow(remote)
-                closeSocketNow(client)
-                runCatching { up.join(500) }
-                remotes.remove(remote)
-                activity.remove(remote)
-            }
-        }
-    }
-
-    private fun closeSocketNow(socket: Socket) {
-        runCatching { socket.shutdownInput() }
-        runCatching { socket.shutdownOutput() }
-        runCatching { socket.close() }
-    }
-
-    private fun touchPair(client: Socket, remote: Socket) {
-        activity.touch(client)
-        activity.touch(remote)
-    }
-
-    private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong, onProgress: () -> Unit = {}) {
-        val buf = ByteArray(BUFFER_SIZE)
-        while (running.get()) {
-            val n = try {
-                input.read(buf)
-            } catch (_: Throwable) {
-                return
-            }
-            if (n <= 0) return
-            try {
-                output.write(buf, 0, n)
-            } catch (_: Throwable) {
-                return
-            }
-            counter.addAndGet(n.toLong())
-            onProgress()
-        }
-    }
-
-    private fun configureBridgeSocket(socket: Socket) {
-        runCatching { socket.tcpNoDelay = true }
-        runCatching { socket.receiveBufferSize = SOCKET_BUFFER_SIZE }
-        runCatching { socket.sendBufferSize = SOCKET_BUFFER_SIZE }
-        runCatching { socket.setPerformancePreferences(0, 2, 1) }
-    }
-
-    private fun writeSocksReply(output: OutputStream, rep: Int) {
-        output.write(byteArrayOf(0x05, rep.toByte(), 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-        output.flush()
-    }
-
-    private fun skipSocksBindAddress(input: InputStream, atyp: Int) {
-        when (atyp) {
-            0x01 -> input.readFullyStrict(ByteArray(6))
-            0x03 -> {
-                val len = input.read()
-                if (len < 0) error("bad domain bind response")
-                input.readFullyStrict(ByteArray(len + 2))
-            }
-            0x04 -> input.readFullyStrict(ByteArray(18))
-        }
-    }
-
-    private fun parseUdpDest(raw: ByteArray): Pair<String, Int>? {
-        if (raw.size < 4) return null
-        val host = parseHost(raw) ?: return null
-        val port = ((raw[raw.size - 2].toInt() and 0xFF) shl 8) or (raw[raw.size - 1].toInt() and 0xFF)
-        return host to port
-    }
-
-    private fun parseHost(raw: ByteArray): String? = when (raw[0].toInt() and 0xFF) {
-        0x01 -> raw.copyOfRange(1, 5).joinToString(".") { (it.toInt() and 0xFF).toString() }
-        0x03 -> {
-            val len = raw[1].toInt() and 0xFF
-            String(raw, 2, len, Charsets.US_ASCII)
-        }
-        0x04 -> InetAddress.getByAddress(raw.copyOfRange(1, 17)).hostAddress
-        else -> null
-    }
-
-    private fun socksAddrBytes(address: InetAddress, port: Int): ByteArray {
-        val addr = address.address
-        val portBytes = byteArrayOf(((port shr 8) and 0xFF).toByte(), (port and 0xFF).toByte())
-        return when (addr.size) {
-            4 -> byteArrayOf(0x01) + addr + portBytes
-            16 -> byteArrayOf(0x04) + addr + portBytes
-            else -> {
-                val host = (address.hostAddress ?: address.toString()).toByteArray(Charsets.US_ASCII)
-                byteArrayOf(0x03, host.size.toByte()) + host + portBytes
-            }
-        }
-    }
-
-    private fun InputStream.readFullyStrict(buf: ByteArray) {
-        var off = 0
-        while (off < buf.size) {
-            val n = read(buf, off, buf.size - off)
-            if (n < 0) error("unexpected eof")
-            off += n
-        }
+        return "$host:$port"
     }
 
     data class TrafficStats(
@@ -588,13 +598,5 @@ object MiniSlipstreamSocksBridge {
         val clientSockets: Int = 0,
         val remoteSockets: Int = 0,
         val threads: Int = 0
-    )
-
-    private data class SocksRequest(
-        val cmd: Int,
-        val rawAddr: ByteArray,
-        val portBytes: ByteArray,
-        val host: String,
-        val port: Int
     )
 }
