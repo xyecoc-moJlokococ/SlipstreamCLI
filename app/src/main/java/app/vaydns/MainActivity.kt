@@ -1955,7 +1955,8 @@ class MainActivity : android.app.Activity() {
                     "appRx=$rx appTx=$tx vpnRx=${hev.rxBytes} vpnTx=${hev.txBytes} " +
                     "bridgeRx=${bridge.rxBytes} bridgeTx=${bridge.txBytes} " +
                     "connectOk=${bridge.connectOk} connectFail=${bridge.connectFail} dnsOk=${bridge.dnsOk} dnsFail=${bridge.dnsFail} " +
-                    "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} bridgeThreads=${bridge.threads} " +
+                    "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} " +
+                    "bridgeHalfClosed=${bridge.halfClosedClients} bridgeThreads=${bridge.threads} " +
                     "dnsProbe=${resolverProgress.tested}/${resolverProgress.total} dnsPhase=${resolverProgress.phase} dnsAlive=${resolverProgress.alive} dnsCurrent=${resolverProgress.currentHost} dnsSelected=${resolverProgress.selected} " +
                     "speedProbe=${resolverProgress.speedTested}/${resolverProgress.speedTotal} speedOk=${resolverProgress.speedOk} " +
                     "lastError=${SlipstreamBridge.lastError() ?: "none"}"

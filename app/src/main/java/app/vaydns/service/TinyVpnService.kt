@@ -484,7 +484,8 @@ class TinyVpnService : VpnService() {
                 "tunRx=${hev.rxBytes} tunTx=${hev.txBytes} " +
                 "bridgeRx=${bridge.rxBytes} bridgeTx=${bridge.txBytes} " +
                 "connectOk=${bridge.connectOk} connectFail=${bridge.connectFail} dnsOk=${bridge.dnsOk} dnsFail=${bridge.dnsFail} " +
-                "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} bridgeThreads=${bridge.threads} " +
+                "bridgeActive=${bridge.activeClients} bridgeClients=${bridge.clientSockets} bridgeRemotes=${bridge.remoteSockets} " +
+                "bridgeHalfClosed=${bridge.halfClosedClients} bridgeThreads=${bridge.threads} " +
                 "transport=${currentResolver?.transport?.name?.lowercase() ?: currentConfig?.resolverTransport?.name?.lowercase() ?: "unknown"} " +
                 "qtype=${SlipstreamBridge.dnsQueryType} " +
                 "pathMode=${currentConfig?.resolverPathMode?.name?.lowercase() ?: "unknown"} " +

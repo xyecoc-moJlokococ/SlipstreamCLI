@@ -10,6 +10,7 @@ import org.junit.Test
  *    bridge stops reading the client and never sees its FIN, so only a stuck (non-draining) relay
  *    buffer reveals the connection is dead;
  *  - half-closed reap: quick timeout even while a byte-trickle download refreshes activity;
+ *  - absolute age cap: any connection past maxAge is reaped even if activity keeps trickling;
  *  - fully-open connections keep the generous idle window.
  */
 class ConnReaperTest {
@@ -17,9 +18,18 @@ class ConnReaperTest {
     private val halfIdle = 15_000L
     private val halfMax = 45_000L
     private val stuck = 30_000L
+    private val maxAge = 120_000L
 
-    private fun reap(now: Long, last: Long, halfAt: Long, bufStuck: Long = 0) =
-        ConnReaper.shouldReap(now, last, halfAt, bufStuck, full, halfIdle, halfMax, stuck)
+    private fun reap(
+        now: Long,
+        last: Long,
+        halfAt: Long,
+        bufStuck: Long = 0,
+        created: Long = 0,
+        ageCap: Long = 0
+    ) = ConnReaper.shouldReap(
+        now, last, halfAt, bufStuck, full, halfIdle, halfMax, stuck, created, ageCap
+    )
 
     @Test
     fun fully_open_keeps_the_generous_idle_window() {
@@ -59,11 +69,50 @@ class ConnReaperTest {
     }
 
     @Test
+    fun absolute_age_cap_reaps_active_fully_open_conn() {
+        val now = 200_000L
+        // Activity 1s ago, not half-closed, buffer empty -- only maxAge catches it.
+        assertTrue(
+            reap(
+                now = now,
+                last = now - 1_000,
+                halfAt = 0,
+                created = now - maxAge,
+                ageCap = maxAge
+            )
+        )
+        assertFalse(
+            reap(
+                now = now,
+                last = now - 1_000,
+                halfAt = 0,
+                created = now - (maxAge - 5_000),
+                ageCap = maxAge
+            )
+        )
+    }
+
+    @Test
+    fun age_cap_disabled_when_zero() {
+        val now = 200_000L
+        assertFalse(
+            reap(
+                now = now,
+                last = now - 1_000,
+                halfAt = 0,
+                created = now - 999_999,
+                ageCap = 0
+            )
+        )
+    }
+
+    @Test
     fun boundaries_are_inclusive() {
-        val now = 100_000L
+        val now = 200_000L
         assertTrue(reap(now, now - full, 0))
         assertTrue(reap(now, now - halfIdle, now - 1))
         assertTrue(reap(now, now, now - halfMax))
         assertTrue(reap(now, now, 0, bufStuck = now - stuck)) // exactly stuckMs
+        assertTrue(reap(now, now, 0, created = now - maxAge, ageCap = maxAge))
     }
 }

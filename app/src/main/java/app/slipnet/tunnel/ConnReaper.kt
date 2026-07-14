@@ -11,6 +11,8 @@ package app.slipnet.tunnel
  * half-open connection lingers for minutes, piling up under connection churn.
  *
  * Policy:
+ *  - Absolute age cap: any connection older than [maxAgeMs] is reaped regardless of activity. Bounds
+ *    pathological cases (silent half-open, backpressure-blind FIN) that escape the other rules.
  *  - Jammed buffer: a relay buffer (toRemote or toClient) that has been non-empty continuously for
  *    [stuckMs] means data isn't draining -- on a healthy localhost hop it clears in microseconds, so
  *    a buffer stuck for tens of seconds means the far side (slipstream over a dead carrier, or a
@@ -31,8 +33,11 @@ object ConnReaper {
         fullIdleMs: Long,
         halfIdleMs: Long,
         halfMaxMs: Long,
-        stuckMs: Long
+        stuckMs: Long,
+        createdAtMs: Long = 0L, // 0 = age cap disabled
+        maxAgeMs: Long = 0L     // 0 = age cap disabled
     ): Boolean {
+        if (maxAgeMs > 0L && createdAtMs > 0L && nowMs - createdAtMs >= maxAgeMs) return true
         if (bufferStuckSinceMs > 0L && nowMs - bufferStuckSinceMs >= stuckMs) return true
         if (halfClosedAtMs > 0L) {
             val idle = nowMs - lastActivityMs

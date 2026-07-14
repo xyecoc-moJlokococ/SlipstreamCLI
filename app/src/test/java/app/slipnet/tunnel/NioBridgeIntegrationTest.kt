@@ -194,5 +194,77 @@ class NioBridgeIntegrationTest {
         val drained = waitUntil(5_000) { MiniSlipstreamSocksBridge.stats().activeClients == 0 }
         assertTrue("active connections did not drain to 0: ${MiniSlipstreamSocksBridge.stats().activeClients}", drained)
         assertEquals(25, MiniSlipstreamSocksBridge.stats().connectOk)
+        assertEquals(0, MiniSlipstreamSocksBridge.stats().halfClosedClients)
+    }
+
+    /**
+     * Fake upstream that completes SOCKS handshake then NEVER closes and never sends data.
+     * Client half-closes after a short write -- bridge must mark half-closed and reap without
+     * waiting for the full 90s idle (the field CLOSE-WAIT pile-up scenario on the Java side).
+     */
+    private fun startBlackholeUpstream(): Int {
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        ss.bind(InetSocketAddress("127.0.0.1", 0))
+        upstream = ss
+        Thread {
+            while (!ss.isClosed) {
+                val s = try { ss.accept() } catch (e: Exception) { break }
+                Thread {
+                    try {
+                        val i = s.getInputStream(); val o = s.getOutputStream()
+                        i.read(); val n = i.read(); repeat(n) { i.read() }
+                        o.write(byteArrayOf(0x05, 0x00)); o.flush()
+                        i.read(); i.read(); i.read(); val atyp = i.read()
+                        val addrLen = when (atyp) { 1 -> 4; 4 -> 16; 3 -> i.read(); else -> 0 }
+                        repeat(addrLen) { i.read() }
+                        i.read(); i.read()
+                        o.write(byteArrayOf(0x05, 0, 0, 0x01, 0, 0, 0, 0, 0, 0)); o.flush()
+                        // Swallow uploads forever; never close, never reply.
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val r = i.read(buf)
+                            if (r <= 0) {
+                                // peer FIN -- keep the socket open (blackhole remote)
+                                Thread.sleep(120_000)
+                                break
+                            }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        // Intentionally do NOT close promptly -- simulates stuck slipstream.
+                    }
+                }.also { it.isDaemon = true }.start()
+            }
+        }.also { it.isDaemon = true }.start()
+        return ss.localPort
+    }
+
+    @Test
+    fun half_closed_client_is_reaped_without_remote_close() {
+        val up = startBlackholeUpstream()
+        val port = startBridge(up)
+
+        val s = Socket("127.0.0.1", port)
+        s.tcpNoDelay = true
+        val i = s.getInputStream(); val o = s.getOutputStream()
+        o.write(byteArrayOf(0x05, 0x01, 0x00)); o.flush()
+        readFully(i, ByteArray(2))
+        o.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 1, 2, 3, 4, 0x01, 0xBB.toByte())); o.flush()
+        readFully(i, ByteArray(10))
+        o.write("ping".toByteArray()); o.flush()
+        // Half-close client write (FIN) while leaving the socket object open for a moment.
+        s.shutdownOutput()
+        // Drop our end entirely so the bridge sees client gone; blackhole upstream stays open.
+        s.close()
+
+        // halfIdle=15s / halfMax=45s -- must drain well under full 90s idle.
+        val drained = waitUntil(50_000) { MiniSlipstreamSocksBridge.stats().activeClients == 0 }
+        assertTrue(
+            "half-closed conn not reaped in time: active=${MiniSlipstreamSocksBridge.stats().activeClients} " +
+                "halfClosed=${MiniSlipstreamSocksBridge.stats().halfClosedClients}",
+            drained
+        )
+        assertEquals(0, MiniSlipstreamSocksBridge.stats().halfClosedClients)
     }
 }

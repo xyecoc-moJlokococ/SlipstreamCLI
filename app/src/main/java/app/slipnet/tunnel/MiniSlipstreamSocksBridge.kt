@@ -44,6 +44,9 @@ object MiniSlipstreamSocksBridge {
     // carrier, or a departed client) isn't accepting -- force the connection closed. Also the only
     // way to reclaim a CLOSE-WAIT whose FIN we never read because write-backpressure stopped us.
     private const val STUCK_MS = 30_000L
+    // Hard ceiling on any single connection lifetime (fully open or half-closed). Prevents
+    // pathological linger when activity trickles and half-closed status was never armed.
+    private const val MAX_AGE_MS = 120_000L
     private const val SELECT_TIMEOUT_MS = 5_000L
 
     private enum class Phase {
@@ -68,6 +71,7 @@ object MiniSlipstreamSocksBridge {
         var portBytes: ByteArray = ByteArray(0)
         var earlyData: ByteArray? = null // client bytes received before relay began (rare pipelining)
         var lastActivityMs = 0L
+        var createdAtMs = 0L
         var halfClosedAtMs = 0L // set when the first side hits EOF; 0 while fully open
         var bufferStuckSinceMs = 0L // set while a relay buffer stays non-empty; 0 when both drain
     }
@@ -78,6 +82,7 @@ object MiniSlipstreamSocksBridge {
     private val connectOk = AtomicLong(0)
     private val connectFail = AtomicLong(0)
     private val activeClients = AtomicInteger(0)
+    private val halfClosedClients = AtomicInteger(0)
 
     @Volatile private var selector: Selector? = null
     @Volatile private var serverChannel: ServerSocketChannel? = null
@@ -115,7 +120,8 @@ object MiniSlipstreamSocksBridge {
         this.password = password?.takeIf { it.isNotBlank() }
         this.localUsername = localUsername?.takeIf { it.isNotBlank() }
         this.localPassword = localPassword?.takeIf { it.isNotBlank() }
-        txBytes.set(0); rxBytes.set(0); connectOk.set(0); connectFail.set(0); activeClients.set(0)
+        txBytes.set(0); rxBytes.set(0); connectOk.set(0); connectFail.set(0)
+        activeClients.set(0); halfClosedClients.set(0)
 
         return runCatching {
             val sel = Selector.open()
@@ -166,7 +172,8 @@ object MiniSlipstreamSocksBridge {
             txBytes.get(), rxBytes.get(), connectOk.get(), connectFail.get(),
             dnsOk = 0, dnsFail = 0,
             activeClients = active, clientSockets = active, remoteSockets = active,
-            threads = if (running.get()) 1 else 0
+            threads = if (running.get()) 1 else 0,
+            halfClosedClients = halfClosedClients.get()
         )
     }
 
@@ -219,7 +226,9 @@ object MiniSlipstreamSocksBridge {
                 configure(ch)
             }.onFailure { runCatching { ch.close() }; return@onAccept }
             val conn = Conn(ch)
-            conn.lastActivityMs = now()
+            val t = now()
+            conn.lastActivityMs = t
+            conn.createdAtMs = t
             conn.clientKey = ch.register(selector, SelectionKey.OP_READ, conn)
             conns.add(conn)
             activeClients.incrementAndGet()
@@ -428,7 +437,11 @@ object MiniSlipstreamSocksBridge {
     private fun relay(conn: Conn) {
         val remote = conn.remote ?: run { closeConn(conn, "relay without remote"); return }
         var progress = false
-        // client -> remote
+        // client -> remote. When toRemote is full, stop reading (TCP backpressure). Do NOT probe-read
+        // for FIN here: under upload the kernel still delivers more data while the app buffer is
+        // full, and a 1-byte probe that then "overflows" would kill the connection (speedtest
+        // upload regression). FIN is seen once space frees; stuck-buffer / half / max-age reapers
+        // cover the rare case where we never drain.
         if (!conn.clientEof && conn.toRemote.hasRemaining()) {
             val n = readInto(conn.client, conn.toRemote)
             if (n == -1) { conn.clientEof = true; markHalfClosed(conn) }
@@ -509,6 +522,8 @@ object MiniSlipstreamSocksBridge {
             when (conn.phase) {
                 Phase.CLIENT_GREETING, Phase.CLIENT_AUTH, Phase.CLIENT_REQUEST ->
                     if (conn.hs.hasRemaining() && !conn.closeAfterFlush) ops = ops or SelectionKey.OP_READ
+                // Only read when there is free buffer space -- otherwise TCP window applies
+                // backpressure. Keeping OP_READ + probing when full broke upload (speedtest).
                 Phase.RELAY -> if (!conn.clientEof && conn.toRemote.hasRemaining()) ops = ops or SelectionKey.OP_READ
                 else -> {}
             }
@@ -538,7 +553,10 @@ object MiniSlipstreamSocksBridge {
     }
 
     private fun markHalfClosed(conn: Conn) {
-        if (conn.halfClosedAtMs == 0L) conn.halfClosedAtMs = now()
+        if (conn.halfClosedAtMs == 0L) {
+            conn.halfClosedAtMs = now()
+            halfClosedClients.incrementAndGet()
+        }
     }
 
     private fun reapIdle() {
@@ -547,11 +565,16 @@ object MiniSlipstreamSocksBridge {
         val stale = conns.filter {
             ConnReaper.shouldReap(
                 now, it.lastActivityMs, it.halfClosedAtMs, it.bufferStuckSinceMs,
-                FULL_IDLE_MS, HALF_IDLE_MS, HALF_MAX_MS, STUCK_MS
+                FULL_IDLE_MS, HALF_IDLE_MS, HALF_MAX_MS, STUCK_MS,
+                it.createdAtMs, MAX_AGE_MS
             )
         }
         if (stale.isNotEmpty()) {
-            AppLog.w(TAG, "reaping ${stale.size} idle conn(s) active=${activeClients.get()}")
+            AppLog.w(
+                TAG,
+                "reaping ${stale.size} idle conn(s) active=${activeClients.get()} " +
+                    "halfClosed=${halfClosedClients.get()}"
+            )
             for (c in stale) closeConn(c, "idle reaped")
         }
     }
@@ -559,6 +582,7 @@ object MiniSlipstreamSocksBridge {
     private fun closeConn(conn: Conn, reason: String) {
         if (!conns.remove(conn)) return
         AppLog.d(TAG, "close conn: $reason")
+        if (conn.halfClosedAtMs > 0L) halfClosedClients.decrementAndGet()
         conn.clientKey?.cancel(); conn.remoteKey?.cancel()
         runCatching { conn.client.close() }
         runCatching { conn.remote?.close() }
@@ -597,6 +621,8 @@ object MiniSlipstreamSocksBridge {
         val activeClients: Int = 0,
         val clientSockets: Int = 0,
         val remoteSockets: Int = 0,
-        val threads: Int = 0
+        val threads: Int = 0,
+        /** Connections with at least one side EOF (half-closed), for CLOSE-WAIT diagnostics. */
+        val halfClosedClients: Int = 0
     )
 }
