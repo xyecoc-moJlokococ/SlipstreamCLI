@@ -256,14 +256,17 @@ class TinyVpnService : VpnService() {
     ): Pair<ResolverChoice, Int> {
         var port = startSlipstreamClientEscapingWedge(config, choice, slipstreamPort, "vpn_start")
         if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
-        if (waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
+        // config.dnsQueryType (not choice.qtype, which stays 0/unset in MANUAL mode -- see
+        // ResolverSelector.chooseFast) is the actual qtype SlipstreamBridge gets configured with.
+        val readyTimeout = readyTimeoutMs(START_READY_TIMEOUT_MS, config.dnsQueryType)
+        if (waitForSlipstreamReady(readyTimeout)) {
             if (config.resolverMode == Config.ResolverMode.AUTO && choice.selectedHost.isNotBlank()) {
                 ResolverSelector.rememberTransport(this, config, choice.selectedHost, choice.transport)
             }
             return choice to port
         }
         if (config.resolverMode != Config.ResolverMode.AUTO) {
-            error("slipstream not ready after ${START_READY_TIMEOUT_MS}ms resolver=${choice.selectedHost}:${choice.port}")
+            error("slipstream not ready after ${readyTimeout}ms resolver=${choice.selectedHost}:${choice.port}")
         }
         val altTransport = if (choice.transport == Config.ResolverTransport.UDP) {
             Config.ResolverTransport.TCP
@@ -280,7 +283,7 @@ class TinyVpnService : VpnService() {
         val altChoice = choice.copy(transport = altTransport)
         port = startSlipstreamClientEscapingWedge(config, altChoice, port, "vpn_start:fallback")
         if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
-        require(waitForSlipstreamReady(START_READY_TIMEOUT_MS)) {
+        require(waitForSlipstreamReady(readyTimeoutMs(START_READY_TIMEOUT_MS, config.dnsQueryType))) {
             "slipstream not ready after transport fallback resolver=${altChoice.selectedHost}:${altChoice.port} " +
                 "triedTransports=${choice.transport.name.lowercase()},${altTransport.name.lowercase()}"
         }
@@ -1015,7 +1018,8 @@ class TinyVpnService : VpnService() {
                 // on slipstreamPort (EADDRINUSE) — bridgePort (what tun2socks targets) is unchanged,
                 // only the internal bridge→native hop moves. Same helper the initial-start path uses.
                 slipstreamPort = startSlipstreamClientEscapingWedge(config, choice, slipstreamPort, "recovery#$recoveryId")
-                if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
+                val recoveryReadyTimeout = readyTimeoutMs(RECOVERY_READY_TIMEOUT_MS, config.dnsQueryType)
+                if (!waitForSlipstreamReady(recoveryReadyTimeout)) {
                     runCatching { SlipstreamBridge.stopClient() }
                     // A transport switch that fails to become ready is a transport problem, not a dead
                     // resolver -- don't condemn the resolver in that case.
@@ -1030,7 +1034,7 @@ class TinyVpnService : VpnService() {
                         )
                     }
                     throw IllegalStateException(
-                        "slipstream not ready after ${RECOVERY_READY_TIMEOUT_MS}ms " +
+                        "slipstream not ready after ${recoveryReadyTimeout}ms " +
                             "resolver=${choice.selectedHost}:${choice.port}"
                     )
                 }
@@ -1111,7 +1115,7 @@ class TinyVpnService : VpnService() {
                 choice.qnameMtu,
                 choice.transport.name.lowercase()
             ).getOrThrow()
-            if (!waitForSlipstreamReady(RECOVERY_READY_TIMEOUT_MS)) {
+            if (!waitForSlipstreamReady(readyTimeoutMs(RECOVERY_READY_TIMEOUT_MS, config.dnsQueryType))) {
                 throw IllegalStateException(
                     "previous resolver not ready after failed speed upgrade: " +
                         "${choice.selectedHost}:${choice.port}"
@@ -1418,6 +1422,20 @@ class TinyVpnService : VpnService() {
         private const val BACKGROUND_RESOLVER_SWITCH_COOLDOWN_MS = 2_000L
         private const val START_READY_TIMEOUT_MS = 8_000L
         private const val RECOVERY_READY_TIMEOUT_MS = 5_000L
+
+        // Answer-type payload density varies a lot (crates/slipstream-dns's codec): TXT/HTTPS/NULL carry
+        // the handshake near-losslessly in one record, but A/AAAA/CNAME/MX/SRV need multiple answer
+        // records per exchange (as little as ~25% of TXT's bytes/round-trip for A), so completing the
+        // same handshake takes proportionally more DNS round trips -- and therefore more wall-clock time,
+        // especially through a real recursive resolver hop (authoritative path mode) rather than a direct
+        // query. Scale the ready-timeout by qtype so picking a less-suspicious/less-dense type doesn't
+        // make an otherwise-healthy, just-slower connection look like a hard failure.
+        private fun readyTimeoutMs(baseMs: Long, qtype: Int): Long = when (qtype) {
+            1 -> baseMs * 3 // A: ~25% density
+            5, 28 -> baseMs * 2 // CNAME, AAAA: ~57% density
+            15, 33 -> baseMs * 2 // MX, SRV: ~53% density
+            else -> baseMs // TXT (16), HTTPS (65), NULL (10): near-100% density, baseline
+        }
         // Detached-native-thread spiral -> clean process restart. One or two EADDRINUSE incidents
         // are handled by the fresh-port escape; 3 within 2 minutes is a genuine spiral of leaked,
         // CPU-burning native threads, at which point a process restart (the only thing that reaps

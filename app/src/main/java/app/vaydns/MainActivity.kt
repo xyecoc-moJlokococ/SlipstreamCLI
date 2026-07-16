@@ -894,7 +894,7 @@ class MainActivity : android.app.Activity() {
             id = R.id.resolver_mode_spinner
         }
         resolverTransport = pillSelector(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
-        dnsQueryType = pillSelector(listOf("txt", "https")).apply { id = R.id.dns_query_type_spinner }
+        dnsQueryType = pillSelector(DNS_QUERY_TYPE_OPTIONS.map { it.first }).apply { id = R.id.dns_query_type_spinner }
         resolverPathMode = pillSelector(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
         auth = pillSelector(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
@@ -923,13 +923,13 @@ class MainActivity : android.app.Activity() {
             row(labeledField("Resolver port", resolverPort), resolverTransportContainer),
             fieldParams()
         )
+        // Full width of its own row: 8 pills need more room than the half-row this used to share
+        // with "DNS path mode" below.
         dnsQueryTypeContainer = labeledField("DNS query type", dnsQueryType)
-        root.addView(
-            row(dnsQueryTypeContainer, labeledField("DNS path mode", resolverPathMode)),
-            fieldParams()
-        )
-        dnsQueryTypeHint = hintText("https masks the tunnel as SVCB DNS traffic but not every resolver forwards it; falls back if it doesn't work. The server must accept the same type.")
+        root.addView(dnsQueryTypeContainer, fieldParams())
+        dnsQueryTypeHint = hintText("Some resolvers filter specific answer types (commonly txt/https); a/aaaa/cname/mx/srv/null are less likely to be blocked but carry less data per round trip. The server must accept the same type.")
         root.addView(dnsQueryTypeHint, fieldParams())
+        root.addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
 
         root.addView(sectionTitle("Authentication"), sectionParams())
         root.addView(labeledField("Auth mode", auth), fieldParams())
@@ -1537,7 +1537,9 @@ class MainActivity : android.app.Activity() {
         resolverPort.setText(c.resolverPort.toString())
         resolverMode.setPillSelectedIndex(if (c.resolverMode == Config.ResolverMode.AUTO) 1 else 0)
         resolverTransport.setPillSelectedIndex(if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0)
-        dnsQueryType.setPillSelectedIndex(if (c.dnsQueryType == 65) 1 else 0)
+        dnsQueryType.setPillSelectedIndex(
+            DNS_QUERY_TYPE_OPTIONS.indexOfFirst { it.second == c.dnsQueryType }.coerceAtLeast(0)
+        )
         resolverPathMode.setPillSelectedIndex(if (c.resolverPathMode == Config.ResolverPathMode.AUTHORITATIVE) 1 else 0)
         auth.setPillSelectedIndex(if (c.authMode == Config.AuthMode.LOGIN_PASSWORD) 1 else 0)
         username.setText(c.username)
@@ -1697,7 +1699,7 @@ class MainActivity : android.app.Activity() {
             // Auto mode: preserve whatever the profile already had -- validateTransport's own
             // probe-and-fallback picks the live qtype at connect time, same as before.
             dnsQueryType = if (resolverModeValue == Config.ResolverMode.MANUAL) {
-                if (dnsQueryType.pillSelectedIndex() == 1) 65 else 16
+                DNS_QUERY_TYPE_OPTIONS.getOrNull(dnsQueryType.pillSelectedIndex())?.second ?: 16
             } else {
                 editingBaseConfig?.dnsQueryType ?: 16
             },
@@ -2285,5 +2287,19 @@ class MainActivity : android.app.Activity() {
         private const val CRASH_PREFS = "crash_report"
         private const val KEY_CRASH_SEEN_SIZE = "seen_size"
         private val CONNECTED_BUTTON_COLOR = android.graphics.Color.rgb(72, 132, 82)
+
+        // DNS query/answer type picker: pill label -> RR type number, in the order shown to the
+        // user. Must match the record types the Rust engine's answer encoder actually supports
+        // (crates/slipstream-dns/src/codec.rs). Server must be configured to accept the same type.
+        private val DNS_QUERY_TYPE_OPTIONS: List<Pair<String, Int>> = listOf(
+            "txt" to 16,
+            "https" to 65,
+            "a" to 1,
+            "aaaa" to 28,
+            "cname" to 5,
+            "mx" to 15,
+            "srv" to 33,
+            "null" to 10,
+        )
     }
 }
