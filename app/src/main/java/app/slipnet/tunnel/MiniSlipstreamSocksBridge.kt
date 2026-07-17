@@ -44,9 +44,15 @@ object MiniSlipstreamSocksBridge {
     // carrier, or a departed client) isn't accepting -- force the connection closed. Also the only
     // way to reclaim a CLOSE-WAIT whose FIN we never read because write-backpressure stopped us.
     private const val STUCK_MS = 30_000L
-    // Hard ceiling on any single connection lifetime (fully open or half-closed). Prevents
-    // pathological linger when activity trickles and half-closed status was never armed.
-    private const val MAX_AGE_MS = 120_000L
+    // Hard ceiling on any single connection lifetime (fully open or half-closed). Backstop for
+    // pathological linger when activity trickles and half-closed status was never armed -- but it
+    // fires unconditionally (ConnReaper checks this before activity), so it also guillotines any
+    // legitimate long-lived stream. Confirmed live: with this at 120s, a real-time relayed session
+    // (Parsec game streaming, one persistent connection for the whole session) got killed at a
+    // reliable, activity-independent 2:00 mark while actively transferring data the whole time --
+    // the STUCK_MS/HALF_IDLE_MS/FULL_IDLE_MS reapers above already cover the genuinely-stuck cases
+    // this is meant to catch, so this only needs to be far above any real session length.
+    private const val MAX_AGE_MS = 3_600_000L
     private const val SELECT_TIMEOUT_MS = 5_000L
 
     private enum class Phase {
