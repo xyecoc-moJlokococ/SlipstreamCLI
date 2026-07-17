@@ -931,11 +931,9 @@ class MainActivity : android.app.Activity() {
             row(labeledField("Resolver port", resolverPort), resolverTransportContainer),
             fieldParams()
         )
-        // Full width of its own row: 8 pills need more room than the half-row this used to share
-        // with "DNS path mode" below.
         dnsQueryTypeContainer = labeledField("DNS query type", dnsQueryType)
         root.addView(dnsQueryTypeContainer, fieldParams())
-        dnsQueryTypeHint = hintText("Some resolvers filter specific answer types (commonly txt/https); a/aaaa/cname/mx/srv/null are less likely to be blocked but carry less data per round trip. The server must accept the same type.")
+        dnsQueryTypeHint = hintText("Some resolvers filter specific answer types; null is less likely to be blocked but carries less data per round trip. The server must accept the same type.")
         root.addView(dnsQueryTypeHint, fieldParams())
         root.addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
 
@@ -2313,14 +2311,15 @@ class MainActivity : android.app.Activity() {
         // DNS query/answer type picker: pill label -> RR type number, in the order shown to the
         // user. Must match the record types the Rust engine's answer encoder actually supports
         // (crates/slipstream-dns/src/codec.rs). Server must be configured to accept the same type.
+        // a/aaaa/cname/mx/srv were removed 2026-07-17: the server-side codec support for them
+        // exists and round-trips correctly at the wire level, but the connection's QUIC handshake
+        // needs far more round trips than TXT/HTTPS/NULL to complete (each answer record has a
+        // fixed RR-header cost, so the effective payload-per-round-trip is a fraction of TXT's),
+        // and under real network jitter it reliably doesn't finish before picoquic's internal
+        // timeout -- not usable as shipped.
         private val DNS_QUERY_TYPE_OPTIONS: List<Pair<String, Int>> = listOf(
             "txt" to 16,
             "https" to 65,
-            "a" to 1,
-            "aaaa" to 28,
-            "cname" to 5,
-            "mx" to 15,
-            "srv" to 33,
             "null" to 10,
         )
     }
