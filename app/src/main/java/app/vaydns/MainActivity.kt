@@ -73,6 +73,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var dnsLabelLengthField: EditText
     private lateinit var maxPollQpsField: EditText
     private lateinit var maxActiveClientsField: EditText
+    private lateinit var base64uEncodingCheckbox: CheckBox
     private lateinit var fileLogging: CheckBox
     private lateinit var trafficNotification: CheckBox
     private lateinit var localSocksAuth: CheckBox
@@ -910,6 +911,13 @@ class MainActivity : android.app.Activity() {
         maxActiveClientsField = edit("max active connections", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.max_active_clients_field
         }
+        base64uEncodingCheckbox = CheckBox(this).apply {
+            id = R.id.base64u_encoding_checkbox
+            text = "Use base64u encoding"
+            textSize = 14f
+            setTextColor(color(R.color.slipnet_text_secondary))
+            buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
+        }
 
         root.addView(labeledField("Profile name", profileName), fieldParams())
         root.addView(labeledField("Domain", domain), fieldParams())
@@ -954,6 +962,11 @@ class MainActivity : android.app.Activity() {
         root.addView(labeledField("Max active connections", maxActiveClientsField), fieldParams())
         root.addView(
             hintText("Default 48. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections."),
+            compactSectionParams()
+        )
+        root.addView(base64uEncodingCheckbox, fieldParams())
+        root.addView(
+            hintText("~20% denser than the default base32, so fewer round trips per byte -- but case-sensitive. Only enable once you've confirmed your resolver path preserves label case; a resolver that lowercases/uppercases names will silently corrupt the tunnel instead of just failing."),
             compactSectionParams()
         )
 
@@ -1547,6 +1560,7 @@ class MainActivity : android.app.Activity() {
         dnsLabelLengthField.setText(c.dnsLabelLength.toString())
         maxPollQpsField.setText(c.maxPollQps.toString())
         maxActiveClientsField.setText(c.maxActiveClients.toString())
+        base64uEncodingCheckbox.isChecked = c.base64uEncoding
         updateResolverUi()
     }
 
@@ -1554,7 +1568,10 @@ class MainActivity : android.app.Activity() {
         if (profile.id == ConfigStore.activeProfileId(this)) return
         val shouldReconnect = isTunnelRunning() || connecting || pendingStartVpn
         ConfigStore.setActiveProfile(this, profile.id)
-        activeConfig = profile.config
+        // mode (and listenPort) are effectively a single global setting shared by all profiles, not
+        // a per-profile choice -- route through effectiveConfig() so a stale mode value stored on
+        // this profile's own JSON blob never leaks into visible state (see ConfigStore.effectiveConfig).
+        activeConfig = ConfigStore.effectiveConfig(this, profile.config)
         profiles = ConfigStore.loadProfiles(this)
         navigateTo(buildMainUi(), ScreenTransition.NONE)
         updateStatus()
@@ -1705,7 +1722,8 @@ class MainActivity : android.app.Activity() {
             },
             dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
             maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0,
-            maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 48
+            maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 48,
+            base64uEncoding = base64uEncodingCheckbox.isChecked
         )
     }
 
@@ -1769,6 +1787,10 @@ class MainActivity : android.app.Activity() {
                 resetTrafficBase()
                 SlipstreamBridge.setVpnService(null)
                 SlipstreamBridge.proxyOnlyMode = true
+                SlipstreamBridge.dnsQueryType = c.dnsQueryType
+                SlipstreamBridge.dnsLabelLength = c.dnsLabelLength
+                SlipstreamBridge.maxPollQps = c.maxPollQps
+                SlipstreamBridge.base64uEncoding = c.base64uEncoding
                 val choice = ResolverSelector.choose(this, c, "proxy_start")
                 val bridgePort = c.listenPort
                 val slipstreamPort = c.listenPort + 1

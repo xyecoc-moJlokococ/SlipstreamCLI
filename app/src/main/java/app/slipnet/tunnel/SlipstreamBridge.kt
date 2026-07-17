@@ -37,6 +37,9 @@ object SlipstreamBridge {
     @Volatile var dnsLabelLength = DEFAULT_DNS_LABEL_LENGTH
     // Client-only pacing knob: cap on DNS poll queries/second (0 = unlimited). No server counterpart.
     @Volatile var maxPollQps = DEFAULT_MAX_POLL_QPS
+    // Encode the tunnel payload with base64u instead of base32 (~20% denser, case-sensitive -- see
+    // Config.base64uEncoding). Purely a client choice, server detects it per-query automatically.
+    @Volatile var base64uEncoding = false
 
     init {
         try {
@@ -129,6 +132,7 @@ object SlipstreamBridge {
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
+        runCatching { nativeSetBase64uEncoding(base64uEncoding) }
         currentPort = listenPort
         AppLog.i(
             TAG,
@@ -189,6 +193,7 @@ object SlipstreamBridge {
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
+        runCatching { nativeSetBase64uEncoding(base64uEncoding) }
         val code = nativeStartProbeClient(
             domain,
             hosts.toTypedArray(),
@@ -263,6 +268,7 @@ object SlipstreamBridge {
     private external fun nativeSetDnsQueryType(qtype: Int)
     private external fun nativeSetDnsLabelLength(labelLength: Int)
     private external fun nativeSetMaxPollQps(qps: Int)
+    private external fun nativeSetBase64uEncoding(enabled: Boolean)
     private external fun nativeStartProbeClient(
         domain: String,
         resolverHosts: Array<String>,

@@ -31,7 +31,11 @@ data class Config(
     // Max simultaneous SOCKS/tunnel connections the bridge admits (default 48). On operators that
     // hard rate-limit DNS queries per client (e.g. Megafon ~50 q/s), a much lower value (~4-6) keeps
     // the tiny query budget from fragmenting across many connections; pairs with maxPollQps.
-    val maxActiveClients: Int = 48
+    val maxActiveClients: Int = 48,
+    // Encode the tunnel payload with base64u instead of base32 (default false). ~20% denser, but
+    // case-sensitive -- only safe once the resolver path is confirmed to preserve label case end to
+    // end. Purely a client choice, no server config needed.
+    val base64uEncoding: Boolean = false
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
@@ -95,7 +99,8 @@ object ConfigStore {
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
             maxPollQps = p.getInt("maxPollQps", 0),
-            maxActiveClients = p.getInt("maxActiveClients", 48)
+            maxActiveClients = p.getInt("maxActiveClients", 48),
+            base64uEncoding = p.getBoolean("base64uEncoding", false)
         )
     }
 
@@ -197,8 +202,8 @@ object ConfigStore {
         return GlobalSettings(
             listenPort = p.getInt(KEY_GLOBAL_LISTEN_PORT, p.getInt("listenPort", 1080)),
             mode = enumValue(
-                p.getString(KEY_GLOBAL_MODE, p.getString("mode", Config.Mode.PROXY.name)),
-                Config.Mode.PROXY
+                p.getString(KEY_GLOBAL_MODE, p.getString("mode", Config.Mode.VPN.name)),
+                Config.Mode.VPN
             ),
             fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context)),
             trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false),
@@ -304,6 +309,7 @@ object ConfigStore {
             .putInt("dnsLabelLength", config.dnsLabelLength)
             .putInt("maxPollQps", config.maxPollQps)
             .putInt("maxActiveClients", config.maxActiveClients)
+            .putBoolean("base64uEncoding", config.base64uEncoding)
             .apply()
     }
 
@@ -346,6 +352,7 @@ object ConfigStore {
             .put("dnsLabelLength", config.dnsLabelLength)
             .put("maxPollQps", config.maxPollQps)
             .put("maxActiveClients", config.maxActiveClients)
+            .put("base64uEncoding", config.base64uEncoding)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -356,14 +363,15 @@ object ConfigStore {
             resolverTransport = enumValue(json.optString("resolverTransport"), Config.ResolverTransport.TCP),
             resolverPathMode = enumValue(json.optString("resolverPathMode"), Config.ResolverPathMode.AUTHORITATIVE),
             listenPort = json.optInt("listenPort", 1080),
-            mode = enumValue(json.optString("mode"), Config.Mode.PROXY),
+            mode = enumValue(json.optString("mode"), Config.Mode.VPN),
             authMode = enumValue(json.optString("authMode"), Config.AuthMode.NO_AUTH),
             username = json.optString("username", ""),
             password = json.optString("password", ""),
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
             maxPollQps = json.optInt("maxPollQps", 0),
-            maxActiveClients = json.optInt("maxActiveClients", 48)
+            maxActiveClients = json.optInt("maxActiveClients", 48),
+            base64uEncoding = json.optBoolean("base64uEncoding", false)
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
@@ -433,6 +441,9 @@ private object SlipstreamLinkParser {
         val maxPollQps = first(params, "maxpollqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxPollQps
         val maxActiveClients = first(params, "maxactiveclients")?.toIntOrNull()?.coerceAtLeast(1) ?: base.maxActiveClients
         val dnsQueryType = first(params, "dnsquerytype")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: base.dnsQueryType
+        val base64uEncoding = first(params, "base64uencoding", "base64u")?.let {
+            it == "true" || it == "1" || it == "on"
+        } ?: base.base64uEncoding
         val config = base.copy(
             domain = domain,
             resolverHost = resolver ?: base.resolverHost,
@@ -446,7 +457,8 @@ private object SlipstreamLinkParser {
             dnsLabelLength = dnsLabelLength,
             maxPollQps = maxPollQps,
             maxActiveClients = maxActiveClients,
-            dnsQueryType = dnsQueryType
+            dnsQueryType = dnsQueryType,
+            base64uEncoding = base64uEncoding
         )
         return ImportedProfile(first(params, "name", "profileName") ?: domain, config)
     }

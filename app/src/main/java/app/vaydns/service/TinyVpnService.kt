@@ -150,6 +150,7 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
             SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
             SlipstreamBridge.maxPollQps = config.maxPollQps
+            SlipstreamBridge.base64uEncoding = config.base64uEncoding
             resetTrafficBase()
             failedAutoResolvers.clear()
             var choice = ResolverSelector.chooseFast(this, config, "vpn_start")
@@ -945,6 +946,7 @@ class TinyVpnService : VpnService() {
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
                     SlipstreamBridge.maxPollQps = config.maxPollQps
+                    SlipstreamBridge.base64uEncoding = config.base64uEncoding
                     ResolverSelector.validateTransport(this, config, currentResolver!!, "recovery#$recoveryId:$reason")
                 } else if (networkChangedRecovery) {
                     // Fresh network: forget the previous network's failed resolvers, pick a resolver for
@@ -955,6 +957,7 @@ class TinyVpnService : VpnService() {
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
                     SlipstreamBridge.maxPollQps = config.maxPollQps
+                    SlipstreamBridge.base64uEncoding = config.base64uEncoding
                     ResolverSelector.validateTransport(this, config, fresh, "recovery#$recoveryId:$reason")
                 } else if (reuseCurrentResolver && currentResolver != null) {
                     AppLog.w(TAG, "recovery#$recoveryId reusing resolver ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")

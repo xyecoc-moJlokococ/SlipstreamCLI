@@ -26,6 +26,7 @@
     <item name="local_socks_username_field" type="id" />
     <item name="local_socks_password_field" type="id" />
     <item name="file_logging_checkbox" type="id" />
+    <item name="base64u_encoding_checkbox" type="id" />
     <item name="global_settings_button" type="id" />
     <item name="save_global_settings_button" type="id" />
     <item name="connect_progress" type="id" />
