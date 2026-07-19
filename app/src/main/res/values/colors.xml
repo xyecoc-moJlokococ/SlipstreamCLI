@@ -1,13 +1,16 @@
 <resources>
-    <color name="slipnet_bg">#130D09</color>
-    <color name="slipnet_card">#241A13</color>
-    <color name="slipnet_card_soft">#2E2118</color>
-    <color name="slipnet_input">#1A130E</color>
-    <color name="slipnet_stroke">#4A3426</color>
-    <color name="slipnet_accent">#FFB27C</color>
-    <color name="slipnet_accent_pressed">#F49B62</color>
-    <color name="slipnet_text_primary">#F5E8DF</color>
-    <color name="slipnet_text_secondary">#D6C5BA</color>
-    <color name="slipnet_text_muted">#9E8C81</color>
-    <color name="slipnet_button_text_primary">#2A160A</color>
+    <!-- Palette aligned with vpn-bot miniapp: dark red accent on near-black surfaces. -->
+    <color name="slipnet_bg">#111111</color>
+    <color name="slipnet_card">#1C1C1C</color>
+    <color name="slipnet_card_soft">#242424</color>
+    <color name="slipnet_input">#181818</color>
+    <color name="slipnet_stroke">#2E2E2E</color>
+    <!-- Brighter red for controls (miniapp accent2); pressed uses deeper accent. -->
+    <color name="slipnet_accent">#C0392B</color>
+    <color name="slipnet_accent_pressed">#9B1B1B</color>
+    <color name="slipnet_text_primary">#E0E0E0</color>
+    <color name="slipnet_text_secondary">#B0B0B0</color>
+    <color name="slipnet_text_muted">#7A7A7A</color>
+    <!-- On dark-red primary buttons. -->
+    <color name="slipnet_button_text_primary">#FFFFFF</color>
 </resources>

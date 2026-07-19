@@ -263,6 +263,52 @@ object ConfigStore {
         return addProfile(context, imported.name, imported.config)
     }
 
+    /**
+     * Import a profile from free-form text (clipboard paste or file contents). Accepts:
+     * - a slipstream:// link (or one embedded in surrounding text)
+     * - a JSON profile blob ({"name", "config": {...}}) or bare config JSON ({"domain": ...})
+     * - a base64 / query-string payload understood by SlipstreamLinkParser
+     */
+    fun importProfileFromText(context: Context, text: String): ConfigProfile? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        val base = effectiveConfig(context)
+
+        // 1) Explicit or embedded slipstream URI.
+        val uriText = SLIPSTREAM_URI_IN_TEXT.find(trimmed)?.value
+            ?: trimmed.takeIf { it.startsWith("slipstream:", ignoreCase = true) }?.lineSequence()?.firstOrNull()
+        if (uriText != null) {
+            importProfile(context, Uri.parse(uriText.trim()))?.let { return it }
+        }
+
+        // 2) JSON profile or config object exported from this app / hand-written.
+        if (trimmed.startsWith("{")) {
+            runCatching {
+                val json = JSONObject(trimmed)
+                when {
+                    json.has("config") -> {
+                        val parsed = profileFromJson(json)
+                        return addProfile(context, parsed.name, parsed.config)
+                    }
+                    json.has("domain") || json.has("resolverHost") -> {
+                        val config = configFromJson(json)
+                        return addProfile(context, defaultProfileName(config), config)
+                    }
+                }
+            }
+        }
+
+        // 3) Raw payload (base64 config=... or key=value query) via the import endpoint.
+        val payloadUri = Uri.parse("slipstream://import").buildUpon()
+            .appendQueryParameter("config", trimmed)
+            .build()
+        val fromPayload = SlipstreamLinkParser.parse(payloadUri, base) ?: return null
+        return addProfile(context, fromPayload.name, fromPayload.config)
+    }
+
+    private val SLIPSTREAM_URI_IN_TEXT =
+        Regex("slipstream:[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+
     fun saveProfile(context: Context, profile: ConfigProfile): ConfigProfile {
         val profiles = loadProfiles(context)
         val activeId = activeProfileId(context) ?: profiles.firstOrNull()?.id ?: profile.id

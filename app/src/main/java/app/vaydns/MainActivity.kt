@@ -37,6 +37,7 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -200,6 +201,11 @@ class MainActivity : android.app.Activity() {
             }
             REQ_VPN_STARTUP, REQ_BATTERY -> continueStartupPermissionFlow()
             REQ_BACKGROUND_SETTINGS -> markBackgroundSettingsPrompted()
+            REQ_IMPORT_FILE -> {
+                if (resultCode == RESULT_OK) {
+                    data?.data?.let { importProfileFromFileUri(it) }
+                }
+            }
         }
     }
 
@@ -343,12 +349,12 @@ class MainActivity : android.app.Activity() {
                 leftMargin = dp(6)
             })
             if (showAdd) {
-                addView(iconButton(R.drawable.ic_add, t(S.CD_NEW_PROFILE)).apply {
+                addView(iconButton(R.drawable.ic_add, t(S.CD_ADD_PROFILE_MENU)).apply {
                     id = R.id.add_profile_button
                     background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
                     stateListAnimator = null
                     isHapticFeedbackEnabled = false
-                    setOnClickListener { showProfileEditor(null) }
+                    setOnClickListener { showAddProfileMenu(it) }
                 }, LinearLayout.LayoutParams(dp(60), dp(60)))
             }
         }
@@ -2111,20 +2117,121 @@ class MainActivity : android.app.Activity() {
     private fun currentAutoResolverHost(): String =
         ResolverSelector.preferredLocalResolver(this).orEmpty()
 
-    private fun handleImportIntent(intent: Intent?) {
-        val uri = intent?.data ?: return
-        if (uri.scheme?.lowercase() != "slipstream") return
-        val imported = ConfigStore.importProfile(this, uri)
+    private fun showAddProfileMenu(anchor: View) {
+        // Content is transparent; the PopupWindow background is the flat card that casts shadow
+        // (no corner radius, no stroke — just a light elevation).
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        val popup = PopupWindow(
+            panel,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            elevation = dp(6).toFloat()
+            setBackgroundDrawable(ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_popup_menu))
+            isOutsideTouchable = true
+            isFocusable = true
+            // Draw over the plus button instead of dropping below it (API 23+).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                overlapAnchor = true
+            }
+        }
+        fun addItem(label: String, action: () -> Unit) {
+            panel.addView(
+                TextView(this).apply {
+                    text = label
+                    textSize = 15f
+                    setTextColor(color(R.color.slipnet_text_primary))
+                    setPadding(dp(16), dp(14), dp(20), dp(14))
+                    minWidth = dp(240)
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        popup.dismiss()
+                        action()
+                    }
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        addItem(t(S.MENU_NEW_PROFILE)) { showProfileEditor(null) }
+        addItem(t(S.MENU_IMPORT_CLIPBOARD)) { importProfileFromClipboard() }
+        addItem(t(S.MENU_IMPORT_FILE)) { pickProfileImportFile() }
+        // Right-align to the plus; top of menu aligns with top of plus (covers the icon).
+        // On pre-M, pull the popup up by the anchor height so it still overlaps the button.
+        val yOff = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) 0 else -anchor.height
+        popup.showAsDropDown(anchor, 0, yOff, Gravity.END)
+    }
+
+    private fun importProfileFromClipboard() {
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        val text = clipboard?.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(this)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        if (text.isEmpty()) {
+            toast(t(S.TOAST_CLIPBOARD_EMPTY))
+            return
+        }
+        applyImportedProfile(ConfigStore.importProfileFromText(this, text), source = "clipboard")
+    }
+
+    private fun pickProfileImportFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/*", "application/json", "application/octet-stream", "*/*"))
+        }
+        // Fallback for devices without a DocumentsUI OPEN_DOCUMENT handler.
+        val chooser = Intent.createChooser(intent, t(S.MENU_IMPORT_FILE))
+        val getContent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(getContent))
+        startActivityForResult(chooser, REQ_IMPORT_FILE)
+    }
+
+    private fun importProfileFromFileUri(uri: Uri) {
+        val text = runCatching {
+            contentResolver.openInputStream(uri)?.use { input ->
+                input.bufferedReader(Charsets.UTF_8).readText()
+            }
+        }.getOrNull()
+        if (text.isNullOrBlank()) {
+            toast(t(S.TOAST_IMPORT_FILE_FAILED))
+            AppLog.w(TAG, "profile import file empty or unreadable: $uri")
+            return
+        }
+        applyImportedProfile(ConfigStore.importProfileFromText(this, text), source = "file:$uri")
+    }
+
+    private fun applyImportedProfile(imported: ConfigProfile?, source: String) {
         if (imported == null) {
             toast(t(S.TOAST_INVALID_SLIPSTREAM_LINK))
-            AppLog.w(TAG, "invalid slipstream import link: $uri")
+            AppLog.w(TAG, "invalid slipstream import from $source")
             return
         }
         loadConfig()
         navigateTo(buildMainUi(), ScreenTransition.FORWARD)
         updateStatus()
         toast(t(S.TOAST_PROFILE_IMPORTED))
-        AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name}")
+        AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name} source=$source")
+    }
+
+    private fun handleImportIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme?.lowercase() != "slipstream") return
+        applyImportedProfile(ConfigStore.importProfile(this, uri), source = "intent:$uri")
     }
 
     private fun shareLogFile() {
@@ -2348,6 +2455,7 @@ class MainActivity : android.app.Activity() {
         private const val REQ_BATTERY = 102
         private const val REQ_BACKGROUND_SETTINGS = 103
         private const val REQ_NOTIFICATIONS = 104
+        private const val REQ_IMPORT_FILE = 105
         private const val PREFS = "permission_flow"
         private const val KEY_BACKGROUND_PROMPTED = "background_prompted"
         private const val KEY_BATTERY_PROMPTED = "battery_prompted"

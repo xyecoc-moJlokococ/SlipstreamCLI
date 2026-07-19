@@ -136,12 +136,18 @@ enum class S(val en: String, val ru: String) {
     // Content descriptions (accessibility)
     CD_MENU("Menu", "Меню"),
     CD_NEW_PROFILE("New profile", "Новый профиль"),
+    CD_ADD_PROFILE_MENU("Add profile", "Добавить профиль"),
     CD_BACK("Back", "Назад"),
     CD_EDIT_PROFILE("Edit profile", "Редактировать профиль"),
     CD_DELETE_PROFILE("Delete profile", "Удалить профиль"),
 
     // Profile list
     PROFILE_NAME_FALLBACK("Manual", "Ручной"),
+
+    // Add-profile overflow menu (plus button)
+    MENU_NEW_PROFILE("New profile", "Новый профиль"),
+    MENU_IMPORT_CLIPBOARD("Import from clipboard", "Импорт из буфера обмена"),
+    MENU_IMPORT_FILE("Import from file", "Импорт из файла"),
 
     // Dialogs
     DELETE_PROFILE_TITLE("Delete profile", "Удалить профиль"),
@@ -172,6 +178,8 @@ enum class S(val en: String, val ru: String) {
     TOAST_NO_LOCAL_DNS("no local DNS", "нет локального DNS"),
     TOAST_INVALID_SLIPSTREAM_LINK("invalid slipstream link", "неверная ссылка slipstream"),
     TOAST_PROFILE_IMPORTED("profile imported", "профиль импортирован"),
+    TOAST_CLIPBOARD_EMPTY("clipboard is empty", "буфер обмена пуст"),
+    TOAST_IMPORT_FILE_FAILED("could not read import file", "не удалось прочитать файл импорта"),
     TOAST_FILE_LOGGING_DISABLED("file logging is disabled", "логирование в файл отключено"),
     TOAST_CRASH_REPORT_COPIED("crash report copied", "отчёт о сбое скопирован"),
 
