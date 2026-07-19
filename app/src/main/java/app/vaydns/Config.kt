@@ -50,6 +50,17 @@ data class ConfigProfile(
     val config: Config
 )
 
+// AUTO-mode candidate resolvers, user-editable (Settings screen). One entry per line; LOCAL_SENTINEL
+// expands to the current connection's own operator/DHCP DNS servers at probe time (ResolverSelector).
+// Replaces the old hardcoded unshapedResolvers + AUTO_PUBLIC_RESOLVERS_ENABLED flag.
+object DnsResolverPool {
+    const val LOCAL_SENTINEL = "(local dns-resolvers)"
+    const val DEFAULT_RAW = "(local dns-resolvers)\n82.151.127.188\n188.0.190.47\n185.22.235.137\n46.254.19.23"
+
+    fun parse(raw: String): List<String> =
+        raw.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.distinct().toList()
+}
+
 data class GlobalSettings(
     val listenPort: Int,
     val mode: Config.Mode,
@@ -57,7 +68,9 @@ data class GlobalSettings(
     val trafficNotification: Boolean,
     val localSocksAuthEnabled: Boolean,
     val localSocksUsername: String,
-    val localSocksPassword: String
+    val localSocksPassword: String,
+    val language: AppLanguage = AppLanguage.SYSTEM,
+    val dnsResolverPool: String = DnsResolverPool.DEFAULT_RAW
 )
 
 object ConfigStore {
@@ -71,6 +84,8 @@ object ConfigStore {
     private const val KEY_GLOBAL_LOCAL_SOCKS_AUTH = "globalLocalSocksAuth"
     private const val KEY_GLOBAL_LOCAL_SOCKS_USERNAME = "globalLocalSocksUsername"
     private const val KEY_GLOBAL_LOCAL_SOCKS_PASSWORD = "globalLocalSocksPassword"
+    private const val KEY_GLOBAL_LANGUAGE = "globalLanguage"
+    private const val KEY_GLOBAL_DNS_RESOLVER_POOL = "globalDnsResolverPool"
 
     fun load(context: Context): Config {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -115,7 +130,9 @@ object ConfigStore {
                 global.trafficNotification,
                 global.localSocksAuthEnabled,
                 global.localSocksUsername,
-                global.localSocksPassword
+                global.localSocksPassword,
+                global.language,
+                global.dnsResolverPool
             )
         )
         saveLegacy(context, config)
@@ -209,7 +226,10 @@ object ConfigStore {
             trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false),
             localSocksAuthEnabled = p.getBoolean(KEY_GLOBAL_LOCAL_SOCKS_AUTH, true),
             localSocksUsername = username,
-            localSocksPassword = password
+            localSocksPassword = password,
+            language = enumValue(p.getString(KEY_GLOBAL_LANGUAGE, AppLanguage.SYSTEM.name), AppLanguage.SYSTEM),
+            dnsResolverPool = p.getString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.DEFAULT_RAW)
+                ?: DnsResolverPool.DEFAULT_RAW
         )
     }
 
@@ -222,6 +242,8 @@ object ConfigStore {
             .putBoolean(KEY_GLOBAL_LOCAL_SOCKS_AUTH, settings.localSocksAuthEnabled)
             .putString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, settings.localSocksUsername.ifBlank { "slipstream" })
             .putString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, settings.localSocksPassword.ifBlank { randomPassword() })
+            .putString(KEY_GLOBAL_LANGUAGE, settings.language.name)
+            .putString(KEY_GLOBAL_DNS_RESOLVER_POOL, settings.dnsResolverPool)
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()
@@ -331,7 +353,7 @@ object ConfigStore {
     private fun profileFromJson(json: JSONObject): ConfigProfile =
         ConfigProfile(
             id = json.optString("id").ifBlank { newProfileId() },
-            name = json.optString("name").ifBlank { "Profile" },
+            name = json.optString("name").ifBlank { t(S.PROFILE_NAME_DEFAULT_IMPORTED) },
             config = configFromJson(json.optJSONObject("config") ?: JSONObject())
         )
 
@@ -380,7 +402,7 @@ object ConfigStore {
     private fun newProfileId(): String = System.currentTimeMillis().toString(36)
 
     private fun defaultProfileName(config: Config): String =
-        config.domain.ifBlank { "Slipstream profile" }
+        config.domain.ifBlank { t(S.PROFILE_NAME_DEFAULT) }
 
     private fun uniqueName(base: String, existing: Set<String>): String {
         if (base !in existing) return base

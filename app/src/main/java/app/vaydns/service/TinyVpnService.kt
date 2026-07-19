@@ -29,6 +29,8 @@ import app.vaydns.MainActivity
 import app.vaydns.R
 import app.vaydns.ResolverChoice
 import app.vaydns.ResolverSelector
+import app.vaydns.S
+import app.vaydns.t
 
 class TinyVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
@@ -122,7 +124,7 @@ class TinyVpnService : VpnService() {
         stopping = false
         starting = true
         if (ConfigStore.loadGlobalSettings(this).trafficNotification) {
-            startForeground(1, notification("Starting", "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"))
+            startForeground(1, notification(t(S.STATUS_STARTING), "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"))
         }
         Thread({
             try {
@@ -263,6 +265,7 @@ class TinyVpnService : VpnService() {
         if (waitForSlipstreamReady(readyTimeout)) {
             if (config.resolverMode == Config.ResolverMode.AUTO && choice.selectedHost.isNotBlank()) {
                 ResolverSelector.rememberTransport(this, config, choice.selectedHost, choice.transport)
+                ResolverSelector.rememberNetworkTransportPreference(this, choice.transport)
             }
             return choice to port
         }
@@ -289,6 +292,7 @@ class TinyVpnService : VpnService() {
                 "triedTransports=${choice.transport.name.lowercase()},${altTransport.name.lowercase()}"
         }
         ResolverSelector.rememberTransport(this, config, altChoice.selectedHost, altTransport)
+        ResolverSelector.rememberNetworkTransportPreference(this, altTransport)
         return altChoice to port
     }
 
@@ -1290,7 +1294,7 @@ class TinyVpnService : VpnService() {
         notificationTxLast = tx
         notificationSampleAt = now
         val text = "↓ ${formatBytes(rx)} (${formatRate(downRate)})   ↑ ${formatBytes(tx)} (${formatRate(upRate)})"
-        startForeground(1, notification("Connected", text))
+        startForeground(1, notification(t(S.STATUS_CONNECTED), text))
     }
 
     private fun notification(title: String, text: String): Notification {

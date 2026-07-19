@@ -53,6 +53,11 @@ object ResolverSelector {
 
     private const val TAG = "ResolverSelector"
     private const val CACHE_PREFS = "resolver_cache_v1"
+    // Operator-level DNS transport preference (UDP vs TCP). Keyed by networkSignature only -- not by
+    // domain/resolver -- because carriers cut one transport wholesale (Tele2/T2: UDP dead or ~1 KB/s;
+    // Beeline: TCP filtered) independent of which recursive IP we point at.
+    private const val NETWORK_TRANSPORT_PREFS = "network_transport_v1"
+    private const val NETWORK_TRANSPORT_TTL_MS = 7L * 24L * 60L * 60L * 1000L
     private const val CONNECT_TIMEOUT_MS = 1200
     private const val CAPTIVE_CHECK_TIMEOUT_MS = 1500
     private const val CACHE_TTL_MS = 14L * 24L * 60L * 60L * 1000L
@@ -77,7 +82,8 @@ object ResolverSelector {
     private const val SPEED_PROBE_HOST = "speed.cloudflare.com"
     private const val SPEED_PROBE_PATH = "/__down?bytes=$SPEED_PROBE_BYTES"
     private val QNAME_MTU_PROBE_ORDER = intArrayOf(0)
-    private val TRANSPORT_PROBE_ORDER = listOf(Config.ResolverTransport.UDP, Config.ResolverTransport.TCP)
+    private val DEFAULT_TRANSPORT_PROBE_ORDER =
+        listOf(Config.ResolverTransport.UDP, Config.ResolverTransport.TCP)
 
     private fun parseTransport(value: String?): Config.ResolverTransport =
         runCatching { Config.ResolverTransport.valueOf(value.orEmpty()) }.getOrDefault(Config.ResolverTransport.UDP)
@@ -85,6 +91,12 @@ object ResolverSelector {
     @Volatile var lastProgress: Progress = Progress()
     @Volatile var lastConnectedTransport: Config.ResolverTransport? = null
     private val cancelGeneration = AtomicLong(0)
+
+    // In-memory mirror of NETWORK_TRANSPORT_PREFS for the current process. Cleared when the
+    // underlying network signature changes so a SIM swap / wifi handoff re-probes instead of
+    // reusing the previous carrier's transport for minutes.
+    @Volatile private var cachedNetworkTransportSig: String = ""
+    @Volatile private var cachedNetworkTransport: Config.ResolverTransport? = null
 
     data class Progress(
         val active: Boolean = false,
@@ -117,19 +129,15 @@ object ResolverSelector {
         if (cancelGeneration.get() != generation) error("resolver probe cancelled")
     }
 
-    // Auto-DNS is trimmed "до лучших времён": resolver auto-selection is restricted to the operator's
-    // own (local) DNS servers, and the throughput-ranking speed probe is off. Transport/qtype auto
-    // (validateTransport, UDP↔TCP + query-type) stays on. Flip these back to true to restore the full
-    // behaviour (public unshaped-resolver pool + speed-based ranking).
-    private const val AUTO_PUBLIC_RESOLVERS_ENABLED = false
-    private const val AUTO_SPEED_PROBE_ENABLED = false
-
-    private val unshapedResolvers = listOf(
-        "185.22.235.137",
-        "82.151.127.188",
-        "188.0.190.47",
-        "46.254.19.23"
-    )
+    // Resolver auto-selection candidates come from the user-editable DnsResolverPool setting (see
+    // resolverPoolCandidates()). Two independent concerns:
+    //
+    // 1) HOST: which recursive DNS IP carries the tunnel. Local (operator/DHCP) first; public pool
+    //    only if every local fails real-data delivery. chooseFast() is cache + TCP reachability.
+    // 2) TRANSPORT: UDP vs TCP is an operator/network property, not a per-resolver one. Tele2/T2
+    //    typically only delivers over TCP; Beeline typically only over UDP -- same for every
+    //    resolver IP on that network. We detect this once per networkSignature, cache it, and try
+    //    the preferred transport first everywhere (speed probe, validateTransport, soft fallback).
 
     private val blockedAutoResolvers = setOf(
         "1.1.1.1",
@@ -223,6 +231,92 @@ object ResolverSelector {
         return value.takeIf { it.isNotBlank() && !it.startsWith("fe80:", ignoreCase = true) }
     }
 
+    // -- Network-level transport preference (operator cuts UDP or TCP wholesale) --
+
+    /** Preferred DNS carrier transport for the current underlying network, if known. */
+    fun loadNetworkTransportPreference(context: Context): Config.ResolverTransport? {
+        val sig = networkSignature(context)
+        if (sig.isBlank()) return lastConnectedTransport
+        if (sig == cachedNetworkTransportSig) {
+            cachedNetworkTransport?.let { return it }
+        } else {
+            cachedNetworkTransportSig = sig
+            cachedNetworkTransport = null
+        }
+        val raw = context.getSharedPreferences(NETWORK_TRANSPORT_PREFS, Context.MODE_PRIVATE)
+            .getString(sig, null) ?: return lastConnectedTransport
+        return runCatching {
+            val json = JSONObject(raw)
+            val updatedAt = json.optLong("updatedAt", 0L)
+            if (updatedAt > 0L && System.currentTimeMillis() - updatedAt > NETWORK_TRANSPORT_TTL_MS) {
+                return lastConnectedTransport
+            }
+            parseTransport(json.optString("transport")).also {
+                cachedNetworkTransportSig = sig
+                cachedNetworkTransport = it
+                AppLog.i(TAG, "network transport cache hit sig=$sig transport=${it.name.lowercase()}")
+            }
+        }.getOrElse { lastConnectedTransport }
+    }
+
+    fun rememberNetworkTransportPreference(context: Context, transport: Config.ResolverTransport) {
+        val sig = networkSignature(context)
+        if (sig.isBlank()) {
+            lastConnectedTransport = transport
+            return
+        }
+        cachedNetworkTransportSig = sig
+        cachedNetworkTransport = transport
+        lastConnectedTransport = transport
+        val json = JSONObject()
+            .put("transport", transport.name)
+            .put("updatedAt", System.currentTimeMillis())
+        context.getSharedPreferences(NETWORK_TRANSPORT_PREFS, Context.MODE_PRIVATE).edit()
+            .putString(sig, json.toString())
+            .apply()
+        AppLog.i(TAG, "network transport remembered sig=$sig transport=${transport.name.lowercase()}")
+    }
+
+    /** Test-only: wipe in-memory + persisted operator transport preference. */
+    internal fun clearNetworkTransportPreferenceForTests(context: Context) {
+        cachedNetworkTransportSig = ""
+        cachedNetworkTransport = null
+        lastConnectedTransport = null
+        context.getSharedPreferences(NETWORK_TRANSPORT_PREFS, Context.MODE_PRIVATE)
+            .edit().clear().commit()
+    }
+
+    /**
+     * Probe order for UDP vs TCP on this network. Known preference first (Tele2 -> TCP first;
+     * Beeline -> UDP first); unknown falls back to lastConnected then the UDP-first default.
+     */
+    fun transportProbeOrder(context: Context): List<Config.ResolverTransport> {
+        val preferred = loadNetworkTransportPreference(context)
+            ?: lastConnectedTransport
+            ?: return DEFAULT_TRANSPORT_PROBE_ORDER
+        val other = if (preferred == Config.ResolverTransport.UDP) {
+            Config.ResolverTransport.TCP
+        } else {
+            Config.ResolverTransport.UDP
+        }
+        return listOf(preferred, other)
+    }
+
+    // Expands the user-configured DnsResolverPool setting into actual candidate hosts: the
+    // LOCAL_SENTINEL entry becomes the current connection's own operator/DHCP DNS servers (in place,
+    // so reordering the setting reorders the candidates), everything else is used verbatim. Shared by
+    // autoProbe() (building the TCP-probe candidate list) and chooseFast() (filtering a warm cache).
+    private fun resolverPoolCandidates(context: Context): List<String> {
+        val pool = ConfigStore.loadGlobalSettings(context).dnsResolverPool
+        val local = defaultNetworkResolvers(context).resolvers
+        return DnsResolverPool.parse(pool)
+            .flatMap { entry -> if (entry.equals(DnsResolverPool.LOCAL_SENTINEL, ignoreCase = true)) local else listOf(entry) }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filter { it !in blockedAutoResolvers }
+            .distinct()
+    }
+
     fun choose(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
         val generation = beginProbe(reason)
         checkNotCancelled(generation)
@@ -238,58 +332,104 @@ object ResolverSelector {
         checkNotCancelled(generation)
         val candidates = probe.candidates
         val alive = probe.alive
+        val localSet = probe.local.toSet()
+        val user = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null
+        val pass = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null
+        // Carrier transport first: on Tele2 a UDP-first sweep of every resolver just burns timeouts
+        // before TCP ever gets a chance. Prefer the network-cached transport (or lastConnected).
+        val transportOrder = transportProbeOrder(context)
+        AppLog.i(
+            TAG,
+            "auto resolver transport order reason=$reason " +
+                "order=${transportOrder.joinToString { it.name.lowercase() }} " +
+                "networkPref=${loadNetworkTransportPreference(context)?.name?.lowercase() ?: "-"} " +
+                "lastConnected=${lastConnectedTransport?.name?.lowercase() ?: "-"}"
+        )
 
-        val speedCandidates = (if (alive.isNotEmpty()) alive else candidates)
+        // Tier 1: local (operator/DHCP) resolvers. Prefer TCP-alive ones, but if the reachability
+        // probe found none, still try the raw local candidates directly (a resolver can carry the
+        // tunnel over DNS even when a generic TCP:53 connect probe is filtered). Any one that
+        // actually delivers real slipstream data wins outright -- no comparison against the public
+        // pool at all (stopAfterFirstOk defaults to true).
+        val localCandidates = candidates.filter { it in localSet }
+        val localAliveOrRaw = (alive.filter { it in localSet }.ifEmpty { localCandidates })
             .filter { it !in skipHosts }
-        if (alive.isEmpty()) {
-            AppLog.w(TAG, "auto resolver tcp probe found no alive hosts; trying direct slipstream speed probe candidates=${speedCandidates.take(SPEED_PROBE_BATCH_SIZE).joinToString()} reason=$reason")
-        }
-        val speedResults = if (AUTO_SPEED_PROBE_ENABLED && speedCandidates.isNotEmpty()) {
+        val localResults = if (localAliveOrRaw.isNotEmpty()) {
             speedProbeAlive(
-                domain = config.domain,
-                alive = speedCandidates,
-                port = port,
-                reason = reason,
-                preferred = emptyList(),
-                username = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.username else null,
-                password = if (config.authMode == Config.AuthMode.LOGIN_PASSWORD) config.password else null,
-                generation = generation
+                domain = config.domain, alive = localAliveOrRaw, port = port, reason = "$reason:local",
+                preferred = emptyList(), username = user, password = pass, generation = generation,
+                transportOrder = transportOrder
             )
         } else {
-            // Speed probe disabled: select purely by TCP reachability (the fallback logic below picks
-            // the first alive resolver). Transport/qtype is still refined by validateTransport.
             emptyList()
         }
         checkNotCancelled(generation)
-        val speedOk = speedResults.filter { it.ok }
-        val speedEligible = speedOk.filter { it.host !in skipHosts }
-        val speedBest = speedEligible.minByOrNull { it.totalMs }
-        val fallback = speedCandidates.firstOrNull { it !in skipHosts }
-            ?: speedCandidates.firstOrNull()
-            ?: candidates.firstOrNull { it !in skipHosts }
-            ?: candidates.firstOrNull()
+        val localBest = localResults.firstOrNull { it.ok }
 
-        val selected = when {
-            speedBest != null -> speedBest.host
-            fallback != null -> fallback
-            alive.any { it !in skipHosts } -> alive.first { it !in skipHosts }
-            alive.isNotEmpty() -> alive.first()
-            candidates.any { it !in skipHosts } -> candidates.first { it !in skipHosts }
-            candidates.isNotEmpty() -> candidates.first()
-            else -> ""
+        // Tier 2: only reached when every local resolver failed the real data probe. Compare the
+        // rest of the configured pool (same alive-or-raw fallback as tier 1) and take the one with
+        // the best measured latency/stability -- stopAfterFirstOk=false so all of them get ranked.
+        val othersCandidates = candidates.filter { it !in localSet }
+        val othersAliveOrRaw = (alive.filter { it !in localSet }.ifEmpty { othersCandidates })
+            .filter { it !in skipHosts }
+        val othersResults = if (localBest == null && othersAliveOrRaw.isNotEmpty()) {
+            speedProbeAlive(
+                domain = config.domain, alive = othersAliveOrRaw, port = port, reason = "$reason:others",
+                preferred = emptyList(), username = user, password = pass,
+                batchSize = SPEED_PROBE_BATCH_SIZE, stopAfterFirstOk = false, generation = generation,
+                transportOrder = transportOrder
+            )
+        } else {
+            emptyList()
         }
-        val hosts = speedBest?.hosts ?: when {
+        checkNotCancelled(generation)
+        val othersBest = othersResults.filter { it.ok }.minByOrNull { it.totalMs }
+
+        val best = localBest ?: othersBest
+        if (best != null) {
+            // Persist the operator-level transport so the next connect (VPN chooseFast path, recovery)
+            // tries the working carrier first instead of defaulting to UDP again on Tele2.
+            rememberNetworkTransportPreference(context, best.transport)
+        }
+        // Absolute last resort (e.g. every candidate is already in skipHosts from prior rotation, or
+        // the real-data probe failed for everyone because qtype/server is wedged): still return a
+        // TCP-alive host with the network-preferred transport so start/validateTransport can try.
+        // Hard-failing here was the regression that broke Proxy on a temporarily-bad probe matrix.
+        val preferredTransport = best?.transport
+            ?: loadNetworkTransportPreference(context)
+            ?: transportOrder.first()
+        val fallback = (alive.firstOrNull { it !in skipHosts }
+            ?: alive.firstOrNull()
+            ?: candidates.firstOrNull { it !in skipHosts }
+            ?: candidates.firstOrNull())
+        val selected = best?.host ?: fallback ?: ""
+        val hosts = best?.hosts ?: when {
             selected.isNotBlank() -> listOf(selected)
             else -> emptyList()
+        }
+        val source = when {
+            best != null -> "auto"
+            selected.isNotBlank() -> "auto-tcp-fallback"
+            else -> "auto"
         }
         AppLog.i(
             TAG,
             "auto resolver summary reason=$reason tested=${candidates.size} alive=${alive.size} " +
                 "failed=${candidates.size - alive.size} skipped=${skipHosts.size} selected=$selected:$port " +
+                "source=$source transport=${preferredTransport.name.lowercase()} " +
                 "local=${probe.local.joinToString()} aliveList=${alive.joinToString()} " +
-                "speedTested=${speedResults.size} speedOk=${speedOk.size} speedBest=${speedBest?.host}:${speedBest?.totalMs}ms " +
+                "localTested=${localResults.size} localBest=${localBest?.host}:${localBest?.totalMs}ms " +
+                "othersTested=${othersResults.size} othersBest=${othersBest?.host}:${othersBest?.totalMs}ms " +
                 "fallback=${fallback ?: ""}"
         )
+        if (best == null && selected.isNotBlank()) {
+            AppLog.w(
+                TAG,
+                "auto resolver speed probe found no data-ok host; soft-fallback selected=$selected " +
+                    "transport=${preferredTransport.name.lowercase()} " +
+                    "local=${localAliveOrRaw.size} others=${othersAliveOrRaw.size} reason=$reason"
+            )
+        }
         lastProgress = Progress(
             active = false,
             reason = reason,
@@ -297,34 +437,25 @@ object ResolverSelector {
             tested = candidates.size,
             total = candidates.size,
             alive = alive.size,
-            speedTested = speedResults.size,
-            speedTotal = speedResults.size,
-            speedOk = speedOk.size,
+            speedTested = localResults.size + othersResults.size,
+            speedTotal = localResults.size + othersResults.size,
+            speedOk = localResults.count { it.ok } + othersResults.count { it.ok },
             selected = selected
         )
-        if (speedResults.isNotEmpty() && speedOk.isEmpty() && selected.isNotBlank()) {
-            error("no auto DNS passed slipstream speed probe: tested=${speedResults.size} ok=0")
-        }
         if (selected.isBlank()) {
-            error(
-                if (speedResults.isNotEmpty()) {
-                    "no auto DNS passed slipstream speed probe: tested=${speedResults.size} ok=${speedOk.size}"
-                } else {
-                    "no auto DNS passed tcp probe: tested=${candidates.size} alive=${alive.size}"
-                }
-            )
+            error("no auto DNS passed tcp probe: tested=${candidates.size} alive=${alive.size}")
         }
         return ResolverChoice(
             hosts = hosts,
             port = port,
             selectedHost = selected,
-            source = "auto",
-            qnameMtu = speedBest?.qnameMtu ?: 0,
+            source = source,
+            qnameMtu = best?.qnameMtu ?: 0,
             testedCount = candidates.size,
             aliveCount = alive.size,
             skippedCount = skipHosts.size,
-            latencyMs = speedBest?.totalMs ?: -1,
-            transport = speedBest?.transport ?: config.resolverTransport
+            latencyMs = best?.totalMs ?: -1,
+            transport = preferredTransport
         )
     }
 
@@ -617,14 +748,19 @@ object ResolverSelector {
         }
         val cached = loadResolverCache(context, config)
         if (cached != null) {
-            // With the public resolver pool disabled, a stale cache may still list public resolvers
-            // from before the trim — keep only the current operator (local) resolvers so "operator-only"
-            // holds even on a warm cache.
-            val localSet = if (AUTO_PUBLIC_RESOLVERS_ENABLED) emptySet() else defaultNetworkResolvers(context).resolvers.toSet()
+            // A stale cache may list hosts the user has since removed from their resolver pool (or
+            // that were probed under a previously configured pool) -- keep only hosts still in the
+            // currently configured pool so an edited-down setting takes effect on a warm cache too.
+            val allowedHosts = resolverPoolCandidates(context).toSet()
+            val localSet = defaultNetworkResolvers(context).resolvers.toSet()
             val cachedHosts = cached.resolvers.map { it.host }
                 .filter { it !in skipHosts }
-                .filter { AUTO_PUBLIC_RESOLVERS_ENABLED || it in localSet }
+                .filter { it in allowedHosts }
                 .distinct()
+                // Local (operator/DHCP) resolvers take priority over the rest of the pool even on a
+                // warm cache; sortedByDescending is stable, so within each group the existing
+                // totalMs-ascending cache order is preserved.
+                .sortedByDescending { it in localSet }
             val aliveCached = probeParallel(cachedHosts, port, "$reason:cache", generation)
             checkNotCancelled(generation)
             val selected = aliveCached.firstOrNull()
@@ -644,6 +780,11 @@ object ResolverSelector {
                     alive = aliveCached.size,
                     selected = selected
                 )
+                // Host cache may predate network transport learning -- prefer the host's remembered
+                // transport, else the operator-level preference (Tele2 TCP / Beeline UDP).
+                val transport = cachedResolver?.transport
+                    ?: loadNetworkTransportPreference(context)
+                    ?: Config.ResolverTransport.UDP
                 return ResolverChoice(
                     hosts = listOf(selected),
                     port = port,
@@ -654,7 +795,7 @@ object ResolverSelector {
                     aliveCount = aliveCached.size,
                     skippedCount = skipHosts.size,
                     latencyMs = cachedResolver?.totalMs ?: -1,
-                    transport = cachedResolver?.transport ?: Config.ResolverTransport.UDP,
+                    transport = transport,
                     qtype = cachedResolver?.qtype ?: 0
                 )
             }
@@ -674,11 +815,15 @@ object ResolverSelector {
         if (selected.isBlank()) {
             error("no auto DNS passed tcp probe: tested=${probe.candidates.size} alive=${probe.alive.size}")
         }
+        // No host-level cache: seed transport from the operator preference so validateTransport
+        // (and start's ready fallback) try TCP first on Tele2 instead of always UDP-first.
+        val transport = loadNetworkTransportPreference(context) ?: Config.ResolverTransport.UDP
         AppLog.i(
             TAG,
             "auto resolver fast summary reason=$reason tested=${probe.candidates.size} alive=${probe.alive.size} " +
                 "failed=${probe.candidates.size - probe.alive.size} skipped=${skipHosts.size} selected=$selected:$port " +
-                "local=${probe.local.joinToString()} aliveList=${probe.alive.joinToString()}"
+                "transport=${transport.name.lowercase()} local=${probe.local.joinToString()} " +
+                "aliveList=${probe.alive.joinToString()}"
         )
         lastProgress = Progress(
             active = false,
@@ -698,18 +843,18 @@ object ResolverSelector {
             testedCount = probe.candidates.size,
             aliveCount = probe.alive.size,
             skippedCount = skipHosts.size,
-            transport = Config.ResolverTransport.UDP
+            transport = transport
         )
     }
 
     // Validate the DNS carrier transport (UDP vs TCP) for an already-chosen resolver with a real-data
-    // probe, mirroring light-dns's "auto" connect: UDP-first, but kept only if actual data flows.
-    // A recursive/authoritative resolver's UDP path can pass the QUIC HELLO handshake and then
-    // throttle or silently drop data queries under load (e.g. Tele2 hard-throttles UDP-53), so the
-    // QUIC ready check alone -- and any cached/guessed transport -- cannot be trusted. speedProbeBatch
-    // already tries TRANSPORT_PROBE_ORDER = [UDP, TCP] and validates each with a genuine 5 KB download
-    // through the tunnel, so UDP is kept only when it truly delivers, otherwise it falls back to TCP.
-    // On probe failure the original (guessed) transport is left untouched so start never regresses.
+    // probe. Transport is an operator property: we try the network-preferred transport first
+    // (Tele2/T2 -> TCP, Beeline -> UDP once learned), then the other. Within each transport a
+    // genuine 5 KB download must succeed -- QUIC ready alone is not enough (Tele2 can handshake
+    // UDP and then throttle data to ~1 KB/s). Concurrent UDP+TCP was abandoned: two probe clients
+    // racing on the same carrier path both fail more often than sequential preferred-first, and
+    // with a warm network preference Tele2 only pays one TCP probe.
+    // On total probe failure the original (guessed) transport is left untouched so start never regresses.
     fun validateTransport(context: Context, config: Config, choice: ResolverChoice, reason: String): ResolverChoice {
         if (config.resolverMode != Config.ResolverMode.AUTO) return choice
         val host = choice.selectedHost.takeIf { it.isNotBlank() } ?: return choice
@@ -726,28 +871,60 @@ object ResolverSelector {
         } else {
             listOf(TXT_QUERY_TYPE)
         }
+        // Seed order: network preference, then the choice's guess, then the UDP/TCP default. Deduped.
+        val transportOrder = buildList {
+            transportProbeOrder(context).forEach { if (it !in this) add(it) }
+            if (choice.transport !in this) add(choice.transport)
+        }
         // Probe one (transport, qtype) with a genuine 5 KB download. The probe client picks up the
         // qtype via SlipstreamBridge.dnsQueryType (applied by startProbeClient).
         fun probe(transport: Config.ResolverTransport, qtype: Int): SpeedProbeResult {
             SlipstreamBridge.dnsQueryType = qtype
             return speedProbeBatch(config.domain, hosts, choice.port, user, pass, QNAME_MTU_PROBE_ORDER, generation, listOf(transport))
         }
-        // Best transport for one qtype: UDP-first (kept only if genuinely fast), else compare TCP.
+        // Sequential preferred-first: if the operator-preferred transport is already fast enough we
+        // never pay for the other. When both must be tried (unknown network, or preferred fails),
+        // compare and keep the better -- still prefer UDP when both pass within the margin so Beeline
+        // stays on the lower-latency path.
         fun probeBestTransport(qtype: Int): SpeedProbeResult? {
-            val udp = probe(Config.ResolverTransport.UDP, qtype)
-            if (udp.ok && udp.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) return udp
-            val tcp = probe(Config.ResolverTransport.TCP, qtype)
-            return when {
-                udp.ok && tcp.ok ->
-                    if (udp.totalMs <= tcp.totalMs + TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS) udp else tcp
-                tcp.ok -> tcp
-                udp.ok -> udp
-                else -> null
+            var firstOk: SpeedProbeResult? = null
+            for (transport in transportOrder) {
+                checkNotCancelled(generation)
+                val result = probe(transport, qtype)
+                if (!result.ok) continue
+                // Fast UDP on a healthy network: stop, don't bother with TCP.
+                if (transport == Config.ResolverTransport.UDP && result.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) {
+                    return result
+                }
+                // Fast hit on the operator-preferred (non-UDP) transport: same early exit. On Tele2
+                // this is the common path -- TCP works, UDP would only timeout.
+                if (transport == transportOrder.first() && result.totalMs <= TRANSPORT_VALIDATE_UDP_FAST_MS) {
+                    return result
+                }
+                if (firstOk == null) {
+                    firstOk = result
+                } else {
+                    val a = firstOk
+                    val b = result
+                    return when {
+                        a.transport == Config.ResolverTransport.UDP && b.transport == Config.ResolverTransport.TCP ->
+                            if (a.totalMs <= b.totalMs + TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS) a else b
+                        b.transport == Config.ResolverTransport.UDP && a.transport == Config.ResolverTransport.TCP ->
+                            if (b.totalMs <= a.totalMs + TRANSPORT_VALIDATE_UDP_PREFER_MARGIN_MS) b else a
+                        else -> if (a.totalMs <= b.totalMs) a else b
+                    }
+                }
             }
+            return firstOk
         }
         return try {
             checkNotCancelled(generation)
-            AppLog.i(TAG, "transport/qtype validation start host=$host preferredQtype=${config.dnsQueryType} guess=${choice.transport.name.lowercase()} reason=$reason")
+            AppLog.i(
+                TAG,
+                "transport/qtype validation start host=$host preferredQtype=${config.dnsQueryType} " +
+                    "guess=${choice.transport.name.lowercase()} " +
+                    "order=${transportOrder.joinToString { it.name.lowercase() }} reason=$reason"
+            )
             for (qtype in qtypeCandidates) {
                 checkNotCancelled(generation)
                 val best = probeBestTransport(qtype)
@@ -762,6 +939,7 @@ object ResolverSelector {
                         // is reused across same-network recoveries (which do not re-run this validation).
                         SlipstreamBridge.dnsQueryType = qtype
                         rememberTransport(context, config, host, best.transport, qtype)
+                        rememberNetworkTransportPreference(context, best.transport)
                         AppLog.i(
                             TAG,
                             "transport auto: validated host=$host qtype=$qtype transport=${best.transport.name.lowercase()} " +
@@ -771,7 +949,7 @@ object ResolverSelector {
                     }
                     AppLog.w(TAG, "transport auto: qtype=$qtype works but slow (totalMs=${best.totalMs}>$QTYPE_PREFER_FAST_MS) for host=$host; falling back to TXT reason=$reason")
                 } else {
-                    AppLog.w(TAG, "transport auto: qtype=$qtype failed on udp and tcp for host=$host; trying next candidate reason=$reason")
+                    AppLog.w(TAG, "transport auto: qtype=$qtype failed on ${transportOrder.joinToString { it.name.lowercase() }} for host=$host; trying next candidate reason=$reason")
                 }
             }
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
@@ -939,13 +1117,7 @@ object ResolverSelector {
         checkNotCancelled(generation)
         val defaultNetwork = defaultNetworkResolvers(context)
         val local = defaultNetwork.resolvers
-        val candidates = buildList {
-            addAll(local)
-            if (AUTO_PUBLIC_RESOLVERS_ENABLED) addAll(unshapedResolvers)
-        }.map { it.trim() }
-            .filter { it.isNotBlank() }
-            .filter { it !in blockedAutoResolvers }
-            .distinct()
+        val candidates = resolverPoolCandidates(context)
 
         AppLog.i(
             TAG,
@@ -1040,7 +1212,8 @@ object ResolverSelector {
         qnameMtuOrder: IntArray = QNAME_MTU_PROBE_ORDER,
         batchSize: Int = SPEED_PROBE_BATCH_SIZE,
         stopAfterFirstOk: Boolean = true,
-        generation: Long
+        generation: Long,
+        transportOrder: List<Config.ResolverTransport> = DEFAULT_TRANSPORT_PROBE_ORDER
     ): List<SpeedProbeResult> {
         checkNotCancelled(generation)
         val allOrdered = buildList {
@@ -1051,7 +1224,9 @@ object ResolverSelector {
         AppLog.i(
             TAG,
             "speed probe start reason=$reason total=${allOrdered.size} batchSize=$batchSize " +
-                "bytes=$SPEED_PROBE_BYTES minBytes=$SPEED_PROBE_MIN_BYTES candidates=${allOrdered.joinToString()}"
+                "bytes=$SPEED_PROBE_BYTES minBytes=$SPEED_PROBE_MIN_BYTES " +
+                "transportOrder=${transportOrder.joinToString { it.name.lowercase() }} " +
+                "candidates=${allOrdered.joinToString()}"
         )
         lastProgress = lastProgress.copy(
             active = true,
@@ -1073,7 +1248,9 @@ object ResolverSelector {
                     "candidates=${batch.joinToString()} reason=$reason"
             )
             lastProgress = lastProgress.copy(active = true, phase = "speed", currentHost = batch.joinToString(","))
-            val batchResults = speedProbeBatchParallel(domain, batch, port, username, password, qnameMtuOrder, generation)
+            val batchResults = speedProbeBatchParallel(
+                domain, batch, port, username, password, qnameMtuOrder, generation, transportOrder
+            )
             checkNotCancelled(generation)
             results += batchResults
             val ok = batchResults.filter { it.ok }
@@ -1126,7 +1303,8 @@ object ResolverSelector {
         username: String?,
         password: String?,
         qnameMtuOrder: IntArray,
-        generation: Long
+        generation: Long,
+        transportOrder: List<Config.ResolverTransport> = DEFAULT_TRANSPORT_PROBE_ORDER
     ): List<SpeedProbeResult> {
         checkNotCancelled(generation)
         if (resolverHosts.isEmpty()) return emptyList()
@@ -1136,7 +1314,10 @@ object ResolverSelector {
             resolverHosts.forEach { host ->
                 completion.submit(Callable {
                     checkNotCancelled(generation)
-                    speedProbeBatch(domain, listOf(host), resolverPort, username, password, qnameMtuOrder, generation)
+                    speedProbeBatch(
+                        domain, listOf(host), resolverPort, username, password, qnameMtuOrder,
+                        generation, transportOrder
+                    )
                 })
             }
             val results = ArrayList<SpeedProbeResult>(resolverHosts.size)
@@ -1168,7 +1349,7 @@ object ResolverSelector {
         password: String?,
         qnameMtuOrder: IntArray,
         generation: Long,
-        transportOrder: List<Config.ResolverTransport> = TRANSPORT_PROBE_ORDER
+        transportOrder: List<Config.ResolverTransport> = DEFAULT_TRANSPORT_PROBE_ORDER
     ): SpeedProbeResult {
         checkNotCancelled(generation)
         val primaryHost = resolverHosts.firstOrNull().orEmpty()

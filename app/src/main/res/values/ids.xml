@@ -17,6 +17,7 @@
     <item name="dns_query_type_spinner" type="id" />
     <item name="listen_port_field" type="id" />
     <item name="mode_spinner" type="id" />
+    <item name="language_spinner" type="id" />
     <item name="auth_spinner" type="id" />
     <item name="username_field" type="id" />
     <item name="password_field" type="id" />
@@ -25,6 +26,7 @@
     <item name="max_active_clients_field" type="id" />
     <item name="local_socks_username_field" type="id" />
     <item name="local_socks_password_field" type="id" />
+    <item name="dns_resolver_pool_field" type="id" />
     <item name="file_logging_checkbox" type="id" />
     <item name="base64u_encoding_checkbox" type="id" />
     <item name="global_settings_button" type="id" />

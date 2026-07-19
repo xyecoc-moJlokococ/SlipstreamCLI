@@ -69,6 +69,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var username: EditText
     private lateinit var password: EditText
     private lateinit var mode: Spinner
+    private lateinit var language: Spinner
     private lateinit var auth: LinearLayout
     private lateinit var dnsLabelLengthField: EditText
     private lateinit var maxPollQpsField: EditText
@@ -79,6 +80,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var localSocksAuth: CheckBox
     private lateinit var localSocksUsername: EditText
     private lateinit var localSocksPassword: EditText
+    private lateinit var dnsResolverPool: EditText
     private lateinit var profileName: EditText
     // The config the editor was opened with (profile's own config, or active/default for a new
     // profile). Used to preserve fields that have no editor UI (e.g. dnsQueryType) across saves,
@@ -193,7 +195,7 @@ class MainActivity : android.app.Activity() {
                     pendingStartVpn = false
                     connecting = false
                     updateStatus()
-                    toast("VPN permission is required")
+                    toast(t(S.TOAST_VPN_PERMISSION_REQUIRED))
                 }
             }
             REQ_VPN_STARTUP, REQ_BATTERY -> continueStartupPermissionFlow()
@@ -292,7 +294,7 @@ class MainActivity : android.app.Activity() {
         val root = screenRoot().apply {
             setPadding(dp(10), 0, dp(10), dp(82))
         }
-        root.addView(topBar("Home", showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
+        root.addView(topBar(t(S.HOME), showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         root.addView(profileList(), compactSectionParams())
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
@@ -323,7 +325,7 @@ class MainActivity : android.app.Activity() {
             // 60dp (up from 52dp) for a bigger tap target; iconButton uses ScaleType.CENTER so the
             // drawn icon stays the same visual size, only the invisible touch area grows.
             // Static background (like the back button in topBarBack): no press-color block fill.
-            addView(iconButton(R.drawable.ic_menu, "Menu").apply {
+            addView(iconButton(R.drawable.ic_menu, t(S.CD_MENU)).apply {
                 id = R.id.global_settings_button
                 background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
                 stateListAnimator = null
@@ -341,7 +343,7 @@ class MainActivity : android.app.Activity() {
                 leftMargin = dp(6)
             })
             if (showAdd) {
-                addView(iconButton(R.drawable.ic_add, "New profile").apply {
+                addView(iconButton(R.drawable.ic_add, t(S.CD_NEW_PROFILE)).apply {
                     id = R.id.add_profile_button
                     background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
                     stateListAnimator = null
@@ -355,7 +357,7 @@ class MainActivity : android.app.Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(iconButton(R.drawable.ic_arrow_back, "Back").apply {
+            addView(iconButton(R.drawable.ic_arrow_back, t(S.CD_BACK)).apply {
                 background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
                 stateListAnimator = null
                 isHapticFeedbackEnabled = false
@@ -412,11 +414,11 @@ class MainActivity : android.app.Activity() {
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(color(R.color.slipnet_text_primary))
             }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            addView(drawerItem("Home", selected == "Home") { showMainScreen() }, drawerItemParams(first = true))
+            addView(drawerItem(t(S.HOME), selected == "Home") { showMainScreen() }, drawerItemParams(first = true))
             if (diagnosticsEnabled) {
-                addView(drawerItem("Diagnostics", selected == "Diagnostics") { showDiagnostics() }, drawerItemParams())
+                addView(drawerItem(t(S.DIAGNOSTICS), selected == "Diagnostics") { showDiagnostics() }, drawerItemParams())
             }
-            addView(drawerItem("Settings", selected == "Settings") { showGlobalSettings() }, drawerItemParams())
+            addView(drawerItem(t(S.SETTINGS), selected == "Settings") { showGlobalSettings() }, drawerItemParams())
         }
         drawerScrim = scrim
         drawerPanel = panel
@@ -811,7 +813,7 @@ class MainActivity : android.app.Activity() {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(this@MainActivity).apply {
-                    text = profile.name.ifBlank { "Manual" }
+                    text = profile.name.ifBlank { t(S.PROFILE_NAME_FALLBACK) }
                     textSize = 16f
                     typeface = Typeface.DEFAULT_BOLD
                     setTextColor(color(R.color.slipnet_text_primary))
@@ -824,11 +826,11 @@ class MainActivity : android.app.Activity() {
                     setSingleLine(true)
                 }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             }
-            val edit = iconButton(R.drawable.ic_edit_profile, "Edit profile").apply {
+            val edit = iconButton(R.drawable.ic_edit_profile, t(S.CD_EDIT_PROFILE)).apply {
                 id = R.id.edit_profile_button
                 setOnClickListener { showProfileEditor(profile) }
             }
-            val delete = iconButton(R.drawable.ic_delete_profile, "Delete profile").apply {
+            val delete = iconButton(R.drawable.ic_delete_profile, t(S.CD_DELETE_PROFILE)).apply {
                 id = R.id.delete_profile_button
                 setOnClickListener { confirmDeleteProfile(profile) }
             }
@@ -862,19 +864,19 @@ class MainActivity : android.app.Activity() {
         val root = screenRoot()
         root.setPadding(dp(10), 0, dp(10), dp(82))
         root.addView(
-            topBarBack(if (profile == null) "New Profile" else "Edit Profile"),
+            topBarBack(if (profile == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE)),
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60))
         )
 
         profileName = edit("profile name").apply {
             id = R.id.profile_name
-            setText(profile?.name ?: config.domain.ifBlank { "New profile" })
+            setText(profile?.name ?: config.domain.ifBlank { t(S.CD_NEW_PROFILE) })
         }
         domain = edit("domain").apply { id = R.id.domain_field }
         resolverHost = edit("resolver host").apply { id = R.id.resolver_host_field }
         // Ghost/link style (transparent, accent-colored text) instead of a full secondary button --
         // a compact inline "quick-fill" action next to the resolver field.
-        useLocalDns = button("LOCAL").apply {
+        useLocalDns = button(t(S.LOCAL_BTN)).apply {
             id = R.id.use_local_dns_button
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_icon_button_static)
             setTextColor(color(R.color.slipnet_accent))
@@ -891,13 +893,13 @@ class MainActivity : android.app.Activity() {
             })
         }
         resolverPort = edit("resolver port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.resolver_port_field }
-        resolverMode = pillSelector(listOf("manual dns", "auto dns")) { updateResolverUi() }.apply {
+        resolverMode = pillSelector(listOf(t(S.DNS_MODE_MANUAL), t(S.DNS_MODE_AUTO))) { updateResolverUi() }.apply {
             id = R.id.resolver_mode_spinner
         }
-        resolverTransport = pillSelector(listOf("udp", "tcp")).apply { id = R.id.resolver_transport_spinner }
+        resolverTransport = pillSelector(listOf("UDP", "TCP")).apply { id = R.id.resolver_transport_spinner }
         dnsQueryType = pillSelector(DNS_QUERY_TYPE_OPTIONS.map { it.first }).apply { id = R.id.dns_query_type_spinner }
-        resolverPathMode = pillSelector(listOf("recursive", "authoritative")).apply { id = R.id.resolver_path_mode_spinner }
-        auth = pillSelector(listOf("no-auth", "login/password")).apply { id = R.id.auth_spinner }
+        resolverPathMode = pillSelector(listOf(t(S.PATH_MODE_RECURSIVE), t(S.PATH_MODE_AUTHORITATIVE))).apply { id = R.id.resolver_path_mode_spinner }
+        auth = pillSelector(listOf(t(S.AUTH_NO_AUTH), t(S.AUTH_LOGIN_PASSWORD))).apply { id = R.id.auth_spinner }
         username = edit("username").apply { id = R.id.username_field }
         password = edit("password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
             id = R.id.password_field
@@ -913,63 +915,63 @@ class MainActivity : android.app.Activity() {
         }
         base64uEncodingCheckbox = CheckBox(this).apply {
             id = R.id.base64u_encoding_checkbox
-            text = "Use base64u encoding"
+            text = t(S.USE_BASE64U_ENCODING)
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
         }
 
-        root.addView(labeledField("Profile name", profileName), fieldParams())
-        root.addView(labeledField("Domain", domain), fieldParams())
+        root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
+        root.addView(labeledField(t(S.DOMAIN), domain), fieldParams())
 
-        root.addView(sectionTitle("DNS Resolver"), sectionParams())
-        root.addView(labeledField("DNS mode", resolverMode), fieldParams())
-        resolverHostContainer = labeledField("Resolver host", resolverRow)
+        root.addView(sectionTitle(t(S.DNS_RESOLVER)), sectionParams())
+        root.addView(labeledField(t(S.DNS_MODE), resolverMode), fieldParams())
+        resolverHostContainer = labeledField(t(S.RESOLVER_HOST), resolverRow)
         root.addView(resolverHostContainer, fieldParams())
-        resolverTransportContainer = labeledField("Transport", resolverTransport)
+        resolverTransportContainer = labeledField(t(S.TRANSPORT), resolverTransport)
         root.addView(
-            row(labeledField("Resolver port", resolverPort), resolverTransportContainer),
+            row(labeledField(t(S.RESOLVER_PORT), resolverPort), resolverTransportContainer),
             fieldParams()
         )
-        dnsQueryTypeContainer = labeledField("DNS query type", dnsQueryType)
+        dnsQueryTypeContainer = labeledField(t(S.DNS_QUERY_TYPE), dnsQueryType)
         root.addView(dnsQueryTypeContainer, fieldParams())
-        dnsQueryTypeHint = hintText("Some resolvers filter specific answer types; null is less likely to be blocked but carries less data per round trip. The server must accept the same type.")
+        dnsQueryTypeHint = hintText(t(S.HINT_DNS_QUERY_TYPE))
         root.addView(dnsQueryTypeHint, fieldParams())
-        root.addView(labeledField("DNS path mode", resolverPathMode), fieldParams())
+        root.addView(labeledField(t(S.DNS_PATH_MODE), resolverPathMode), fieldParams())
 
-        root.addView(sectionTitle("Authentication"), sectionParams())
-        root.addView(labeledField("Auth mode", auth), fieldParams())
-        root.addView(labeledField("Username", username), fieldParams())
-        root.addView(labeledField("Password", password), fieldParams())
+        root.addView(sectionTitle(t(S.AUTHENTICATION)), sectionParams())
+        root.addView(labeledField(t(S.AUTH_MODE), auth), fieldParams())
+        root.addView(labeledField(t(S.USERNAME), username), fieldParams())
+        root.addView(labeledField(t(S.PASSWORD), password), fieldParams())
 
-        root.addView(sectionTitle("Advanced (client-only)"), sectionParams())
+        root.addView(sectionTitle(t(S.ADVANCED_CLIENT_ONLY)), sectionParams())
         root.addView(
-            hintText("These only shape this device's own traffic; the server does not need to match them."),
+            hintText(t(S.HINT_ADVANCED_CLIENT_ONLY)),
             fieldParams()
         )
-        root.addView(labeledField("DNS label length", dnsLabelLengthField), fieldParams())
+        root.addView(labeledField(t(S.DNS_LABEL_LENGTH), dnsLabelLengthField), fieldParams())
         root.addView(
-            hintText("1-63, default 57. Length of each DNS label in the encoded query."),
+            hintText(t(S.HINT_DNS_LABEL_LENGTH)),
             compactSectionParams()
         )
-        root.addView(labeledField("Max poll rate (queries/sec)", maxPollQpsField), fieldParams())
+        root.addView(labeledField(t(S.MAX_POLL_RATE), maxPollQpsField), fieldParams())
         root.addView(
-            hintText("0 = unlimited (default). Caps how many DNS queries/sec this device sends."),
+            hintText(t(S.HINT_MAX_POLL_QPS)),
             compactSectionParams()
         )
-        root.addView(labeledField("Max active connections", maxActiveClientsField), fieldParams())
+        root.addView(labeledField(t(S.MAX_ACTIVE_CONNECTIONS), maxActiveClientsField), fieldParams())
         root.addView(
-            hintText("Default 48. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections."),
+            hintText(t(S.HINT_MAX_ACTIVE_CLIENTS)),
             compactSectionParams()
         )
         root.addView(base64uEncodingCheckbox, fieldParams())
         root.addView(
-            hintText("~20% denser than the default base32, so fewer round trips per byte -- but case-sensitive. Only enable once you've confirmed your resolver path preserves label case; a resolver that lowercases/uppercases names will silently corrupt the tunnel instead of just failing."),
+            hintText(t(S.HINT_BASE64U)),
             compactSectionParams()
         )
 
         if (profile != null) {
-            root.addView(button("DELETE PROFILE").apply {
+            root.addView(button(t(S.DELETE_PROFILE_BTN)).apply {
                 id = R.id.delete_profile_button
                 setOnClickListener { confirmDeleteProfile(profile) }
             }, sectionParams())
@@ -1008,7 +1010,7 @@ class MainActivity : android.app.Activity() {
                 }
                 insets
             }
-            addView(button(if (profile == null) "CREATE PROFILE" else "SAVE PROFILE", primary = true).apply {
+            addView(button(if (profile == null) t(S.CREATE_PROFILE_BTN) else t(S.SAVE_PROFILE_BTN), primary = true).apply {
                 id = R.id.save_config_button
                 background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_button_primary_static)
                 stateListAnimator = null
@@ -1100,7 +1102,7 @@ class MainActivity : android.app.Activity() {
         }
         val root = screenRoot()
         root.setPadding(dp(10), 0, dp(10), dp(24))
-        root.addView(topBar("Diagnostics", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
+        root.addView(topBar(t(S.DIAGNOSTICS), showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         status = TextView(this).apply {
             id = R.id.status_text
             textSize = 12f
@@ -1111,11 +1113,11 @@ class MainActivity : android.app.Activity() {
         root.addView(card().apply {
             addView(status, fieldParams())
             addView(row(
-                button("SHARE LOG").apply {
+                button(t(S.SHARE_LOG_BTN)).apply {
                     id = R.id.share_log_button
                     setOnClickListener { shareLogFile() }
                 },
-                button("CRASH REPORT").apply {
+                button(t(S.CRASH_REPORT_BTN)).apply {
                     id = R.id.crash_report_button
                     setOnClickListener { showCrashReport() }
                 }
@@ -1148,7 +1150,7 @@ class MainActivity : android.app.Activity() {
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(color(R.color.slipnet_accent))
-                text = "Not connected"
+                text = t(S.STATUS_NOT_CONNECTED)
                 setSingleLine(true)
             }
             trafficStatus = TextView(this@MainActivity).apply {
@@ -1212,11 +1214,13 @@ class MainActivity : android.app.Activity() {
         val global = ConfigStore.loadGlobalSettings(this)
         listenPort.setText(global.listenPort.toString())
         mode.setSelection(if (global.mode == Config.Mode.VPN) 1 else 0)
+        language.setSelection(languageOptions().indexOfFirst { it.second == global.language }.coerceAtLeast(0))
         fileLogging.isChecked = global.fileLogging
         trafficNotification.isChecked = global.trafficNotification
         localSocksAuth.isChecked = global.localSocksAuthEnabled
         localSocksUsername.setText(global.localSocksUsername)
         localSocksPassword.setText(global.localSocksPassword)
+        dnsResolverPool.setText(global.dnsResolverPool)
         updateLocalSocksAuthUi()
         suppressGlobalSettingsSave = false
         installGlobalSettingsAutoSave()
@@ -1228,18 +1232,19 @@ class MainActivity : android.app.Activity() {
         }
         val root = screenRoot()
         root.setPadding(dp(10), 0, dp(10), dp(24))
-        root.addView(topBar("Settings", showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
+        root.addView(topBar(t(S.SETTINGS), showAdd = false), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         listenPort = edit("local port", InputType.TYPE_CLASS_NUMBER).apply { id = R.id.listen_port_field }
-        mode = spinner(listOf("proxy", "vpn")).apply { id = R.id.mode_spinner }
+        mode = spinner(listOf(t(S.CONNECTION_MODE_PROXY), t(S.CONNECTION_MODE_VPN))).apply { id = R.id.mode_spinner }
+        language = spinner(languageOptions().map { it.first }).apply { id = R.id.language_spinner }
         fileLogging = debugLogCheckbox()
         trafficNotification = CheckBox(this).apply {
-            text = "Show traffic notification"
+            text = t(S.SHOW_TRAFFIC_NOTIFICATION)
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
         }
         localSocksAuth = CheckBox(this).apply {
-            text = "Protect local SOCKS"
+            text = t(S.PROTECT_LOCAL_SOCKS)
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
@@ -1248,14 +1253,18 @@ class MainActivity : android.app.Activity() {
         localSocksPassword = edit("socks password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD).apply {
             id = R.id.local_socks_password_field
         }
+        dnsResolverPool = multilineEdit().apply { id = R.id.dns_resolver_pool_field }
         root.addView(card().apply {
-            addView(labeledField("Local port", listenPort), fieldParams())
-            addView(labeledField("Connection mode", mode), fieldParams())
+            addView(labeledField(t(S.LOCAL_PORT), listenPort), fieldParams())
+            addView(labeledField(t(S.CONNECTION_MODE), mode), fieldParams())
+            addView(labeledField(t(S.LANGUAGE), language), fieldParams())
             addView(fileLogging, fieldParams())
             addView(trafficNotification, fieldParams())
             addView(localSocksAuth, fieldParams())
-            addView(labeledField("SOCKS username", localSocksUsername), fieldParams())
-            addView(labeledField("SOCKS password", localSocksPassword), fieldParams())
+            addView(labeledField(t(S.SOCKS_USERNAME), localSocksUsername), fieldParams())
+            addView(labeledField(t(S.SOCKS_PASSWORD), localSocksPassword), fieldParams())
+            addView(labeledField(t(S.DNS_RESOLVER_POOL), dnsResolverPool), fieldParams())
+            addView(hintText(t(S.HINT_DNS_RESOLVER_POOL)), fieldParams())
         }, sectionParams())
         root.requestFocus()
         frame.addView(compactScrollScreen(root, dp(24)), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -1320,7 +1329,7 @@ class MainActivity : android.app.Activity() {
     private fun debugLogCheckbox(): CheckBox =
         CheckBox(this).apply {
             id = R.id.file_logging_checkbox
-            text = "Enable debug mode"
+            text = t(S.ENABLE_DEBUG_MODE)
             textSize = 14f
             setTextColor(color(R.color.slipnet_text_secondary))
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
@@ -1349,6 +1358,20 @@ class MainActivity : android.app.Activity() {
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
             setPadding(dp(14), 0, dp(14), 0)
             minHeight = dp(48)
+        }
+
+    private fun multilineEdit(minLinesVisible: Int = 5): EditText =
+        EditText(this).apply {
+            hint = ""
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setSingleLine(false)
+            minLines = minLinesVisible
+            gravity = Gravity.TOP or Gravity.START
+            textSize = 15f
+            setTextColor(color(R.color.slipnet_text_primary))
+            setHintTextColor(color(R.color.slipnet_text_muted))
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
         }
 
     private fun spinner(items: List<String>): Spinner =
@@ -1574,27 +1597,27 @@ class MainActivity : android.app.Activity() {
         navigateTo(buildMainUi(), ScreenTransition.NONE)
         updateStatus()
         if (shouldReconnect) {
-            toast("switching profile…")
+            toast(t(S.TOAST_SWITCHING_PROFILE))
             stopAll { toggle() }
         }
     }
 
     private fun confirmDeleteProfile(profile: ConfigProfile) {
         if (profiles.size <= 1) {
-            toast("cannot delete last profile")
+            toast(t(S.TOAST_CANNOT_DELETE_LAST_PROFILE))
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("Delete profile")
+            .setTitle(t(S.DELETE_PROFILE_TITLE))
             .setMessage(profile.config.domain.ifBlank { profile.name })
-            .setPositiveButton("Delete") { _, _ -> deleteProfile(profile) }
-            .setNegativeButton("Cancel", null)
+            .setPositiveButton(t(S.DELETE_BTN)) { _, _ -> deleteProfile(profile) }
+            .setNegativeButton(t(S.CANCEL_BTN), null)
             .show()
     }
 
     private fun deleteProfile(profile: ConfigProfile) {
         ConfigStore.deleteProfile(this, profile.id)
-        toast("profile deleted")
+        toast(t(S.TOAST_PROFILE_DELETED))
         showMainScreen(ScreenTransition.NONE)
     }
 
@@ -1602,10 +1625,10 @@ class MainActivity : android.app.Activity() {
         val config = readConfig()
         if (profile == null) {
             ConfigStore.addProfile(this, profileName.text.toString(), config)
-            toast("profile created")
+            toast(t(S.TOAST_PROFILE_CREATED))
         } else {
             ConfigStore.saveProfile(this, profile.copy(name = profileName.text.toString(), config = config))
-            toast("profile saved")
+            toast(t(S.TOAST_PROFILE_SAVED))
         }
         showMainScreen(ScreenTransition.BACK)
     }
@@ -1621,7 +1644,15 @@ class MainActivity : android.app.Activity() {
         listenPort.addTextChangedListener(watcher)
         localSocksUsername.addTextChangedListener(watcher)
         localSocksPassword.addTextChangedListener(watcher)
+        dnsResolverPool.addTextChangedListener(watcher)
         mode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                persistGlobalSettingsFromEditor()
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+        language.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 persistGlobalSettingsFromEditor()
             }
@@ -1646,6 +1677,8 @@ class MainActivity : android.app.Activity() {
 
     private fun persistGlobalSettingsFromEditor() {
         if (suppressGlobalSettingsSave) return
+        val selectedLanguage = languageOptions().getOrNull(language.selectedItemPosition)?.second ?: AppLanguage.SYSTEM
+        val languageChanged = selectedLanguage != ConfigStore.loadGlobalSettings(this).language
         val settings = GlobalSettings(
             listenPort = listenPort.text.toString().toIntOrNull() ?: 1080,
             mode = if (mode.selectedItemPosition == 1) Config.Mode.VPN else Config.Mode.PROXY,
@@ -1653,9 +1686,15 @@ class MainActivity : android.app.Activity() {
             trafficNotification = trafficNotification.isChecked,
             localSocksAuthEnabled = localSocksAuth.isChecked,
             localSocksUsername = localSocksUsername.text.toString().trim().ifBlank { "slipstream" },
-            localSocksPassword = localSocksPassword.text.toString().trim()
+            localSocksPassword = localSocksPassword.text.toString().trim(),
+            language = selectedLanguage,
+            dnsResolverPool = dnsResolverPool.text.toString()
         )
         ConfigStore.saveGlobalSettings(this, settings)
+        if (languageChanged) {
+            Strings.set(selectedLanguage)
+            showGlobalSettings(ScreenTransition.NONE)
+        }
         configureNativeLogging()
         activeConfig = ConfigStore.effectiveConfig(this)
     }
@@ -1789,7 +1828,16 @@ class MainActivity : android.app.Activity() {
                 SlipstreamBridge.dnsLabelLength = c.dnsLabelLength
                 SlipstreamBridge.maxPollQps = c.maxPollQps
                 SlipstreamBridge.base64uEncoding = c.base64uEncoding
-                val choice = ResolverSelector.choose(this, c, "proxy_start")
+                var choice = ResolverSelector.choose(this, c, "proxy_start")
+                // choose() may soft-fallback to a TCP-alive host when the real-data matrix fails
+                // (wrong preferred qtype, transient server issue). validateTransport then detects
+                // operator UDP-vs-TCP cuts and walks qtype candidates (e.g. SRV/HTTPS -> TXT) --
+                // the same path VPN uses after chooseFast. Skip when choose already proved data.
+                if (c.resolverMode == Config.ResolverMode.AUTO &&
+                    (choice.source == "auto-tcp-fallback" || choice.latencyMs < 0)
+                ) {
+                    choice = ResolverSelector.validateTransport(this, c, choice, "proxy_start")
+                }
                 val bridgePort = c.listenPort
                 val slipstreamPort = c.listenPort + 1
                 val localSocks = localSocksCredentials()
@@ -1801,6 +1849,9 @@ class MainActivity : android.app.Activity() {
                     choice.transport.name.lowercase()
                 ).getOrThrow()
                 ResolverSelector.lastConnectedTransport = choice.transport
+                if (c.resolverMode == Config.ResolverMode.AUTO) {
+                    ResolverSelector.rememberNetworkTransportPreference(this, choice.transport)
+                }
                 MiniSlipstreamSocksBridge.start(
                     listenHost = "127.0.0.1",
                     listenPort = bridgePort,
@@ -1822,7 +1873,7 @@ class MainActivity : android.app.Activity() {
                 )
             } catch (e: Throwable) {
                 AppLog.e(TAG, "proxy start failed", e)
-                handler.post { toast(e.message ?: "start failed") }
+                handler.post { toast(e.message ?: t(S.TOAST_START_FAILED)) }
             } finally {
                 handler.post {
                     connecting = false
@@ -1847,7 +1898,7 @@ class MainActivity : android.app.Activity() {
             connecting = false
             connectStartedAt = 0L
             AppLog.e(TAG, "failed to start vpn service", e)
-            toast(e.message ?: "vpn start failed")
+            toast(e.message ?: t(S.TOAST_VPN_START_FAILED))
         }
     }
 
@@ -2010,18 +2061,18 @@ class MainActivity : android.app.Activity() {
         rateSampleAt = now
 
         bottomStatus.text = when {
-            stopping -> "Disconnecting"
+            stopping -> t(S.STATUS_DISCONNECTING)
             progress.active -> {
                 if (progress.phase == "speed") {
                     val total = progress.speedTotal.takeIf { it > 0 } ?: progress.total
-                    if (total > 0) "Speed probing ${progress.speedTested}/$total" else "Speed probing"
+                    if (total > 0) speedProbingText(progress.speedTested, total) else t(S.STATUS_SPEED_PROBING)
                 } else {
-                    if (progress.total > 0) "DNS probing ${progress.tested}/${progress.total}" else "DNS probing"
+                    if (progress.total > 0) dnsProbingText(progress.tested, progress.total) else t(S.STATUS_DNS_PROBING)
                 }
             }
-            connecting -> "Connecting"
-            running -> "Connected"
-            else -> "Not connected"
+            connecting -> t(S.STATUS_CONNECTING)
+            running -> t(S.STATUS_CONNECTED)
+            else -> t(S.STATUS_NOT_CONNECTED)
         }
         trafficStatus.text = "↓ ${formatBytes(rx)} (${formatRate(downRate)})   ↑ ${formatBytes(tx)} (${formatRate(upRate)})"
     }
@@ -2031,7 +2082,7 @@ class MainActivity : android.app.Activity() {
             .ifEmpty { ResolverSelector.localDefaultResolvers(this) }
         val host = hosts.firstOrNull()
         if (host == null) {
-            toast("no local DNS")
+            toast(t(S.TOAST_NO_LOCAL_DNS))
             AppLog.w(TAG, "local DNS fill failed: no local DNS")
             return
         }
@@ -2065,20 +2116,20 @@ class MainActivity : android.app.Activity() {
         if (uri.scheme?.lowercase() != "slipstream") return
         val imported = ConfigStore.importProfile(this, uri)
         if (imported == null) {
-            toast("invalid slipstream link")
+            toast(t(S.TOAST_INVALID_SLIPSTREAM_LINK))
             AppLog.w(TAG, "invalid slipstream import link: $uri")
             return
         }
         loadConfig()
         navigateTo(buildMainUi(), ScreenTransition.FORWARD)
         updateStatus()
-        toast("profile imported")
+        toast(t(S.TOAST_PROFILE_IMPORTED))
         AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name}")
     }
 
     private fun shareLogFile() {
         if (!AppLog.isFileLoggingEnabled(this)) {
-            toast("file logging is disabled")
+            toast(t(S.TOAST_FILE_LOGGING_DISABLED))
             return
         }
         val file = AppLog.file(this)
@@ -2088,7 +2139,7 @@ class MainActivity : android.app.Activity() {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }, "Share log"))
+        }, t(S.SHARE_LOG_CHOOSER)))
     }
 
     private fun showCrashReport() {
@@ -2097,7 +2148,7 @@ class MainActivity : android.app.Activity() {
         val reportText = if (file.exists() && file.length() > 0) {
             file.readText().takeLast(MAX_CRASH_DIALOG_CHARS)
         } else {
-            "No crash report saved yet."
+            t(S.NO_CRASH_REPORT)
         }
         val reportView = TextView(this).apply {
             setTextIsSelectable(true)
@@ -2110,15 +2161,15 @@ class MainActivity : android.app.Activity() {
             addView(reportView)
         }
         AlertDialog.Builder(this)
-            .setTitle("Crash report")
+            .setTitle(t(S.CRASH_REPORT_TITLE))
             .setView(scroll)
-            .setPositiveButton("Copy") { _, _ ->
+            .setPositiveButton(t(S.COPY_BTN)) { _, _ ->
                 val clipboard = getSystemService(ClipboardManager::class.java)
                 clipboard.setPrimaryClip(ClipData.newPlainText("Slipstream crash report", reportText))
-                toast("crash report copied")
+                toast(t(S.TOAST_CRASH_REPORT_COPIED))
             }
-            .setNeutralButton("Share") { _, _ -> shareCrashReport() }
-            .setNegativeButton("Close", null)
+            .setNeutralButton(t(S.SHARE_BTN)) { _, _ -> shareCrashReport() }
+            .setNegativeButton(t(S.CLOSE_BTN), null)
             .show()
     }
 
@@ -2140,13 +2191,13 @@ class MainActivity : android.app.Activity() {
 
     private fun shareCrashReport() {
         val file = AppLog.crashFile(this)
-        if (!file.exists() || file.length() == 0L) file.writeText("No crash report saved yet.\n")
+        if (!file.exists() || file.length() == 0L) file.writeText(t(S.NO_CRASH_REPORT) + "\n")
         val uri: Uri = FileProvider.getUriForFile(this, "$packageName.files", file)
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }, "Share crash report"))
+        }, t(S.SHARE_CRASH_REPORT_CHOOSER)))
     }
 
     private fun configureNativeLogging() {
@@ -2222,13 +2273,13 @@ class MainActivity : android.app.Activity() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         if (prefs.getBoolean(KEY_BACKGROUND_PROMPTED, false)) return
         AlertDialog.Builder(this)
-            .setTitle("Background work")
-            .setMessage("Allow Slipstream CLI to keep working in the background if your Android skin shows such an option.")
-            .setPositiveButton("Open settings") { _, _ ->
+            .setTitle(t(S.BACKGROUND_WORK_TITLE))
+            .setMessage(t(S.BACKGROUND_WORK_MESSAGE))
+            .setPositiveButton(t(S.OPEN_SETTINGS_BTN)) { _, _ ->
                 markBackgroundSettingsPrompted()
                 openAppBatterySettings()
             }
-            .setNegativeButton("Later") { _, _ -> markBackgroundSettingsPrompted() }
+            .setNegativeButton(t(S.LATER_BTN)) { _, _ -> markBackgroundSettingsPrompted() }
             .setOnCancelListener { markBackgroundSettingsPrompted() }
             .show()
     }
@@ -2321,6 +2372,14 @@ class MainActivity : android.app.Activity() {
             "txt" to 16,
             "https" to 65,
             "null" to 10,
+        )
+
+        // Language names are shown in their own language (not translated) so a user can find
+        // their language regardless of what's currently selected; only "System" follows t().
+        fun languageOptions(): List<Pair<String, AppLanguage>> = listOf(
+            t(S.LANGUAGE_SYSTEM) to AppLanguage.SYSTEM,
+            "English" to AppLanguage.EN,
+            "Русский" to AppLanguage.RU,
         )
     }
 }

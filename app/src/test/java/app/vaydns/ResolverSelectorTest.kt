@@ -131,4 +131,113 @@ class ResolverSelectorTest {
             ResolverSelector.shouldSkipTransportValidation(Config.ResolverMode.MANUAL, cacheHit(qtype = 65))
         )
     }
+
+    // -- DnsResolverPool.parse: the user-editable resolver pool setting --
+
+    @Test
+    fun parse_trims_and_drops_blank_lines() {
+        assertEquals(
+            listOf("82.151.127.188", "188.0.190.47"),
+            DnsResolverPool.parse("  82.151.127.188 \n\n  188.0.190.47  \n")
+        )
+    }
+
+    @Test
+    fun parse_dedupes_while_keeping_first_occurrence_order() {
+        assertEquals(
+            listOf("a", "b"),
+            DnsResolverPool.parse("a\nb\na")
+        )
+    }
+
+    @Test
+    fun parse_keeps_the_local_sentinel_verbatim_for_later_expansion() {
+        assertEquals(
+            listOf(DnsResolverPool.LOCAL_SENTINEL, "46.254.19.23"),
+            DnsResolverPool.parse("${DnsResolverPool.LOCAL_SENTINEL}\n46.254.19.23")
+        )
+    }
+
+    // -- GlobalSettings.dnsResolverPool: default + the positional-arg regression in ConfigStore.save --
+
+    @Test
+    fun fresh_install_defaults_the_resolver_pool_to_local_plus_the_four_public_resolvers() {
+        assertEquals(
+            DnsResolverPool.DEFAULT_RAW,
+            ConfigStore.loadGlobalSettings(context).dnsResolverPool
+        )
+    }
+
+    @Test
+    fun saving_an_unrelated_profile_does_not_reset_a_customized_resolver_pool() {
+        // ConfigStore.save() rebuilds GlobalSettings(...) positionally from the current global
+        // settings; a field added to that constructor without threading it through here would
+        // silently fall back to its default on every unrelated profile save.
+        val customPool = "${DnsResolverPool.LOCAL_SENTINEL}\n9.9.9.9"
+        val before = ConfigStore.loadGlobalSettings(context)
+        ConfigStore.saveGlobalSettings(
+            context,
+            GlobalSettings(
+                listenPort = before.listenPort,
+                mode = before.mode,
+                fileLogging = before.fileLogging,
+                trafficNotification = before.trafficNotification,
+                localSocksAuthEnabled = before.localSocksAuthEnabled,
+                localSocksUsername = before.localSocksUsername,
+                localSocksPassword = before.localSocksPassword,
+                language = before.language,
+                dnsResolverPool = customPool
+            )
+        )
+
+        ConfigStore.save(context, testConfig(domain = "unrelated-profile-edit.example.com"))
+
+        assertEquals(customPool, ConfigStore.loadGlobalSettings(context).dnsResolverPool)
+    }
+
+    // -- Network-level transport preference (operator cuts UDP or TCP, not per-resolver) --
+
+    @Test
+    fun transportProbeOrder_defaults_to_udp_then_tcp_when_nothing_is_known() {
+        ResolverSelector.clearNetworkTransportPreferenceForTests(context)
+        assertEquals(
+            listOf(Config.ResolverTransport.UDP, Config.ResolverTransport.TCP),
+            ResolverSelector.transportProbeOrder(context)
+        )
+    }
+
+    @Test
+    fun transportProbeOrder_puts_lastConnected_first_when_no_network_cache() {
+        ResolverSelector.clearNetworkTransportPreferenceForTests(context)
+        ResolverSelector.lastConnectedTransport = Config.ResolverTransport.TCP
+        try {
+            assertEquals(
+                listOf(Config.ResolverTransport.TCP, Config.ResolverTransport.UDP),
+                ResolverSelector.transportProbeOrder(context)
+            )
+        } finally {
+            ResolverSelector.clearNetworkTransportPreferenceForTests(context)
+        }
+    }
+
+    @Test
+    fun rememberNetworkTransportPreference_drives_probe_order() {
+        ResolverSelector.clearNetworkTransportPreferenceForTests(context)
+        try {
+            ResolverSelector.rememberNetworkTransportPreference(context, Config.ResolverTransport.TCP)
+            assertEquals(Config.ResolverTransport.TCP, ResolverSelector.lastConnectedTransport)
+            assertEquals(
+                listOf(Config.ResolverTransport.TCP, Config.ResolverTransport.UDP),
+                ResolverSelector.transportProbeOrder(context)
+            )
+
+            ResolverSelector.rememberNetworkTransportPreference(context, Config.ResolverTransport.UDP)
+            assertEquals(
+                listOf(Config.ResolverTransport.UDP, Config.ResolverTransport.TCP),
+                ResolverSelector.transportProbeOrder(context)
+            )
+        } finally {
+            ResolverSelector.clearNetworkTransportPreferenceForTests(context)
+        }
+    }
 }
