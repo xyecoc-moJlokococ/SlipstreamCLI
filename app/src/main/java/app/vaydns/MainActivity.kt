@@ -1,6 +1,5 @@
 package app.vaydns
 
-import android.animation.ValueAnimator
 import android.Manifest
 import android.app.AlertDialog
 import android.content.ClipData
@@ -24,11 +23,15 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewParent
 import android.view.inputmethod.InputMethodManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import kotlin.math.abs
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -300,13 +303,23 @@ class MainActivity : android.app.Activity() {
         val root = screenRoot().apply {
             setPadding(dp(10), 0, dp(10), dp(82))
         }
-        root.addView(topBar(t(S.HOME), showAdd = true), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
-        root.addView(profileList(), compactSectionParams())
+        // Top bar height matches the 60dp icon hit-targets.
+        root.addView(
+            topBar(t(S.HOME), showAdd = true),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60))
+        )
+        root.addView(
+            profileList(),
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
         val scroll = scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
                 root.setPadding(
                     dp(10),
-                    dp(4) + insets.systemWindowInsetTop,
+                    insets.systemWindowInsetTop,
                     dp(10),
                     dp(82) + insets.systemWindowInsetBottom
                 )
@@ -328,8 +341,8 @@ class MainActivity : android.app.Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            // 60dp (up from 52dp) for a bigger tap target; iconButton uses ScaleType.CENTER so the
-            // drawn icon stays the same visual size, only the invisible touch area grows.
+            // 60dp hit target. iconButton uses ScaleType.CENTER so the drawn glyph stays the same
+            // size; only the invisible tap area scales.
             // Static background (like the back button in topBarBack): no press-color block fill.
             addView(iconButton(R.drawable.ic_menu, t(S.CD_MENU)).apply {
                 id = R.id.global_settings_button
@@ -346,7 +359,7 @@ class MainActivity : android.app.Activity() {
                 setSingleLine(true)
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                leftMargin = dp(6)
+                leftMargin = dp(4)
             })
             if (showAdd) {
                 addView(iconButton(R.drawable.ic_add, t(S.CD_ADD_PROFILE_MENU)).apply {
@@ -377,18 +390,303 @@ class MainActivity : android.app.Activity() {
                 setSingleLine(true)
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                leftMargin = dp(6)
+                leftMargin = dp(4)
             })
         }
 
     private fun profileList(): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             val activeId = ConfigStore.activeProfileId(this@MainActivity)
-            profiles.forEach { profile ->
-                addView(profileRow(profile, profile.id == activeId), fieldParams())
+            profiles.forEachIndexed { index, profile ->
+                // No top gap before the first card — that was the "chasm" under the nav bar.
+                val row = profileRow(profile, profile.id == activeId)
+                row.tag = profile.id
+                installProfileReorderTouch(this, row)
+                addView(
+                    row,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = if (index == 0) 0 else dp(8)
+                    }
+                )
             }
         }
+
+    /**
+     * Drag state for profile reorder. Views stay in the LinearLayout during the gesture —
+     * removeView/addView mid-gesture would fire ACTION_CANCEL and abort the drag after one slot.
+     * Instead the dragged row follows the finger via translationY, and siblings animate to open
+     * a gap; the real child order is committed only on finger-up.
+     */
+    private data class ProfileDragSession(
+        val list: LinearLayout,
+        val row: View,
+        val startIndex: Int,
+        var targetIndex: Int,
+        val grabOffsetY: Float,
+        /** Layout-space top of each child at drag start (before any translation). */
+        val baseTops: FloatArray,
+        /** Height of each child including its top margin (slot pitch). */
+        val slotPitches: FloatArray
+    )
+
+    private var profileDrag: ProfileDragSession? = null
+
+    /**
+     * Long-press a profile card, then drag up/down to reorder. Order is persisted via
+     * [ConfigStore.reorderProfiles]. Short tap still selects the profile (via performClick).
+     * Edit/delete buttons keep their own touch targets (they are children of the row).
+     */
+    private fun installProfileReorderTouch(list: LinearLayout, row: View) {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
+        var dragging = false
+        var movedPastSlop = false
+        var downRawY = 0f
+        var downRawX = 0f
+
+        val armDrag = Runnable {
+            if (movedPastSlop || profileDrag != null) return@Runnable
+            // Keep ScrollView from stealing the gesture once we start reordering.
+            var p: ViewParent? = row.parent
+            while (p is ViewGroup) {
+                p.requestDisallowInterceptTouchEvent(true)
+                p = p.parent
+            }
+            val startIndex = list.indexOfChild(row)
+            if (startIndex < 0 || list.childCount < 2) return@Runnable
+            val n = list.childCount
+            val baseTops = FloatArray(n)
+            val slotPitches = FloatArray(n)
+            for (i in 0 until n) {
+                val child = list.getChildAt(i)
+                val topMargin = (child.layoutParams as? LinearLayout.LayoutParams)?.topMargin ?: 0
+                baseTops[i] = child.top.toFloat()
+                // Pitch = this row's height + the gap that sits above the *next* row (or 0 after last).
+                val nextTopMargin = if (i + 1 < n) {
+                    (list.getChildAt(i + 1).layoutParams as? LinearLayout.LayoutParams)?.topMargin ?: 0
+                } else {
+                    0
+                }
+                slotPitches[i] = child.height.toFloat() + nextTopMargin
+                // Ignore residual translation from a previous aborted drag.
+                child.animate().cancel()
+                child.translationY = 0f
+            }
+            // grabOffset: where on the row the finger sits, so the card doesn't jump under the finger.
+            val rowLoc = IntArray(2)
+            row.getLocationOnScreen(rowLoc)
+            val grabOffsetY = downRawY - rowLoc[1]
+            profileDrag = ProfileDragSession(
+                list = list,
+                row = row,
+                startIndex = startIndex,
+                targetIndex = startIndex,
+                grabOffsetY = grabOffsetY,
+                baseTops = baseTops,
+                slotPitches = slotPitches
+            )
+            // Abort any half-started drawer swipe so the side menu can't open mid-reorder.
+            drawerGlobalSwipeCandidate = false
+            drawerGlobalSwipeActive = false
+            drawerDragging = false
+            if (drawerOpen.not() && drawerPanel != null) {
+                drawerPanel?.animate()?.cancel()
+                drawerScrim?.animate()?.cancel()
+                drawerPanel?.translationX = -(drawerWidth.takeIf { it > 0 } ?: dp(320)).toFloat()
+                drawerScrim?.alpha = 0f
+                drawerScrim?.visibility = View.GONE
+                setDrawerContentShift(0f)
+            }
+            dragging = true
+            row.animate().cancel()
+            row.animate().scaleX(1.03f).scaleY(1.03f).alpha(0.94f).setDuration(120L).start()
+            row.elevation = dp(12).toFloat()
+            row.translationZ = dp(12).toFloat()
+            row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            // Seed position with the last known finger Y.
+            updateProfileDrag(downRawY)
+        }
+
+        row.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragging = false
+                    movedPastSlop = false
+                    downRawY = event.rawY
+                    downRawX = event.rawX
+                    v.postDelayed(armDrag, longPressMs)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dyFromDown = event.rawY - downRawY
+                    if (profileDrag == null &&
+                        (abs(dx) > touchSlop || abs(dyFromDown) > touchSlop)
+                    ) {
+                        movedPastSlop = true
+                        v.removeCallbacks(armDrag)
+                    }
+                    if (profileDrag != null) {
+                        // Keep latest finger Y so armDrag (if still firing) and follow-finger stay in sync.
+                        downRawY = event.rawY
+                        updateProfileDrag(event.rawY)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.removeCallbacks(armDrag)
+                    if (profileDrag != null) {
+                        finishProfileDrag()
+                        dragging = false
+                        true
+                    } else if (!movedPastSlop) {
+                        v.performClick()
+                        true
+                    } else {
+                        true
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.removeCallbacks(armDrag)
+                    // Only finish if we still own a session — removeView is no longer done mid-drag,
+                    // so CANCEL should be rare (ScrollView / parent intercept).
+                    if (profileDrag != null && profileDrag?.row === v) {
+                        finishProfileDrag()
+                        dragging = false
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun updateProfileDrag(rawY: Float) {
+        val session = profileDrag ?: return
+        val list = session.list
+        val row = session.row
+        val n = list.childCount
+        if (n == 0) return
+
+        val listLoc = IntArray(2)
+        list.getLocationOnScreen(listLoc)
+        // Desired top of the dragged row in list coordinates.
+        val desiredTop = (rawY - listLoc[1] - session.grabOffsetY).coerceIn(
+            session.baseTops.first(),
+            session.baseTops.last()
+        )
+        // Follow the finger (no animation on the dragged item — feels glued to the thumb).
+        row.translationY = desiredTop - session.baseTops[session.startIndex]
+
+        // Which slot is the finger over? Use midpoints of original slots.
+        var target = n - 1
+        val fingerCenter = desiredTop + row.height / 2f
+        for (i in 0 until n) {
+            val mid = session.baseTops[i] + session.slotPitches[i] / 2f
+            if (fingerCenter < mid) {
+                target = i
+                break
+            }
+        }
+        target = target.coerceIn(0, n - 1)
+        // Only re-drive sibling animations when the insertion slot actually changes.
+        // Restarting them on every MOVE cancels mid-flight tweens and freezes other cards.
+        if (target != session.targetIndex) {
+            session.targetIndex = target
+            row.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            animateProfileSiblingsForGap(session)
+        }
+    }
+
+    /** Animate non-dragged rows to open/close the gap at [ProfileDragSession.targetIndex]. */
+    private fun animateProfileSiblingsForGap(session: ProfileDragSession) {
+        val list = session.list
+        val row = session.row
+        val start = session.startIndex
+        val target = session.targetIndex
+        val n = list.childCount
+        for (i in 0 until n) {
+            val child = list.getChildAt(i)
+            if (child === row) continue
+            val shift = when {
+                // Dragging down: items between start and target move up into the vacated slot.
+                target > start && i in (start + 1)..target -> -session.slotPitches[start]
+                // Dragging up: items between target and start move down.
+                target < start && i in target until start -> session.slotPitches[start]
+                else -> 0f
+            }
+            // Tag stores the shift we're already animating/settled to — skip if unchanged so we
+            // never cancel an in-progress 140ms tween on every finger MOVE.
+            val pending = child.getTag(PROFILE_SHIFT_TAG) as? Float
+            if (pending != null && abs(pending - shift) < 0.5f) continue
+            child.setTag(PROFILE_SHIFT_TAG, shift)
+            child.animate().cancel()
+            child.animate()
+                .translationY(shift)
+                .setDuration(160L)
+                .setInterpolator(AccelerateDecelerateInterpolator())
+                .start()
+        }
+    }
+
+    private fun finishProfileDrag() {
+        val session = profileDrag ?: return
+        profileDrag = null
+        val list = session.list
+        val row = session.row
+        val start = session.startIndex
+        val target = session.targetIndex
+
+        // Snap visuals back before we rewrite the child order (avoids a double-jump).
+        for (i in 0 until list.childCount) {
+            val child = list.getChildAt(i)
+            child.animate().cancel()
+            child.setTag(PROFILE_SHIFT_TAG, null)
+            child.translationY = 0f
+            child.scaleX = 1f
+            child.scaleY = 1f
+            child.alpha = 1f
+            child.elevation = 0f
+            child.translationZ = 0f
+        }
+
+        if (target != start && target in 0 until list.childCount) {
+            list.removeView(row)
+            list.addView(row, target.coerceIn(0, list.childCount))
+            refreshProfileRowMargins(list)
+            val orderedIds = buildList {
+                for (i in 0 until list.childCount) {
+                    val id = list.getChildAt(i).tag as? String ?: continue
+                    add(id)
+                }
+            }
+            if (orderedIds.size >= 2) {
+                ConfigStore.reorderProfiles(this, orderedIds)
+                profiles = ConfigStore.loadProfiles(this)
+                AppLog.i(TAG, "profiles reordered: ${orderedIds.joinToString()}")
+            }
+        } else {
+            refreshProfileRowMargins(list)
+        }
+    }
+
+    private fun refreshProfileRowMargins(list: LinearLayout) {
+        for (i in 0 until list.childCount) {
+            val child = list.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+            val want = if (i == 0) 0 else dp(8)
+            if (lp.topMargin != want) {
+                lp.topMargin = want
+                child.layoutParams = lp
+            }
+        }
+    }
 
     private fun addDrawer(frame: FrameLayout, selected: String) {
         drawerOpen = false
@@ -408,7 +706,7 @@ class MainActivity : android.app.Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setBackgroundColor(color(R.color.slipnet_card))
-            // dp(58) top padding used to compensate for content drawing under a transparent
+            // dp(60) top padding used to compensate for content drawing under a transparent
             // status bar in forced edge-to-edge mode; now that the window fits system windows
             // again (see AppTheme's windowOptOutEdgeToEdgeEnforcement), the status bar area is
             // already excluded from this layout, so that offset would double-count.
@@ -665,6 +963,14 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun handleGlobalDrawerSwipe(event: MotionEvent): Boolean {
+        // Profile reorder owns the gesture — don't open the side drawer while dragging a card
+        // (vertical long-press can still produce enough horizontal noise to trip the swipe).
+        if (profileDrag != null) {
+            drawerGlobalSwipeCandidate = false
+            drawerGlobalSwipeActive = false
+            drawerDragging = false
+            return false
+        }
         if (!isDrawerAllowedOnCurrentScreen() || drawerOpen || drawerPanel == null || drawerScrim == null || screenAnimating) {
             drawerGlobalSwipeCandidate = false
             drawerGlobalSwipeActive = false
@@ -727,6 +1033,7 @@ class MainActivity : android.app.Activity() {
 
     private fun installDrawerEdgeSwipe(edge: View) {
         edge.setOnTouchListener { _, event ->
+            if (profileDrag != null) return@setOnTouchListener false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     if (drawerOpen) return@setOnTouchListener false
@@ -1068,9 +1375,10 @@ class MainActivity : android.app.Activity() {
     private fun compactScrollScreen(root: LinearLayout, bottomPadding: Int): ScrollView =
         scrollScreen(root).apply {
             setOnApplyWindowInsetsListener { _, insets ->
+                // No extra top gap under the nav bar (main screen uses the same rule).
                 root.setPadding(
                     dp(10),
-                    dp(4) + insets.systemWindowInsetTop,
+                    insets.systemWindowInsetTop,
                     dp(10),
                     bottomPadding + insets.systemWindowInsetBottom
                 )
@@ -1079,6 +1387,7 @@ class MainActivity : android.app.Activity() {
         }
 
     private fun showMainScreen(transition: ScreenTransition = ScreenTransition.FORWARD) {
+        hideKeyboard()
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = false
@@ -1093,6 +1402,7 @@ class MainActivity : android.app.Activity() {
             showMainScreen(ScreenTransition.NONE)
             return
         }
+        hideKeyboard()
         editorVisible = false
         settingsVisible = false
         diagnosticsVisible = true
@@ -1116,19 +1426,18 @@ class MainActivity : android.app.Activity() {
             setTextIsSelectable(true)
             setTextColor(color(R.color.slipnet_text_secondary))
         }
-        root.addView(card().apply {
-            addView(status, fieldParams())
-            addView(row(
-                button(t(S.SHARE_LOG_BTN)).apply {
-                    id = R.id.share_log_button
-                    setOnClickListener { shareLogFile() }
-                },
-                button(t(S.CRASH_REPORT_BTN)).apply {
-                    id = R.id.crash_report_button
-                    setOnClickListener { showCrashReport() }
-                }
-            ), fieldParams())
-        }, sectionParams())
+        // No card wrapper — fields sit on the same bg as the rest of the screen.
+        root.addView(status, contentUnderTopBarParams())
+        root.addView(row(
+            button(t(S.SHARE_LOG_BTN)).apply {
+                id = R.id.share_log_button
+                setOnClickListener { shareLogFile() }
+            },
+            button(t(S.CRASH_REPORT_BTN)).apply {
+                id = R.id.crash_report_button
+                setOnClickListener { showCrashReport() }
+            }
+        ), fieldParams())
         frame.addView(compactScrollScreen(root, dp(24)), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addDrawer(frame, "Diagnostics")
         return frame
@@ -1187,7 +1496,7 @@ class MainActivity : android.app.Activity() {
                 textSize = 18f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(color(R.color.slipnet_button_text_primary))
-                connectButtonColor = if (initialRunning && !initialLoading) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
+                connectButtonColor = color(R.color.slipnet_accent)
                 connectButtonRunning = initialRunning && !initialLoading
                 connectButtonBackground = connectButtonDrawable(connectButtonColor)
                 background = connectButtonBackground
@@ -1210,6 +1519,7 @@ class MainActivity : android.app.Activity() {
         }
 
     private fun showGlobalSettings(transition: ScreenTransition = ScreenTransition.FORWARD) {
+        hideKeyboard()
         editorVisible = false
         settingsVisible = true
         diagnosticsVisible = false
@@ -1260,18 +1570,17 @@ class MainActivity : android.app.Activity() {
             id = R.id.local_socks_password_field
         }
         dnsResolverPool = multilineEdit().apply { id = R.id.dns_resolver_pool_field }
-        root.addView(card().apply {
-            addView(labeledField(t(S.LOCAL_PORT), listenPort), fieldParams())
-            addView(labeledField(t(S.CONNECTION_MODE), mode), fieldParams())
-            addView(labeledField(t(S.LANGUAGE), language), fieldParams())
-            addView(fileLogging, fieldParams())
-            addView(trafficNotification, fieldParams())
-            addView(localSocksAuth, fieldParams())
-            addView(labeledField(t(S.SOCKS_USERNAME), localSocksUsername), fieldParams())
-            addView(labeledField(t(S.SOCKS_PASSWORD), localSocksPassword), fieldParams())
-            addView(labeledField(t(S.DNS_RESOLVER_POOL), dnsResolverPool), fieldParams())
-            addView(hintText(t(S.HINT_DNS_RESOLVER_POOL)), fieldParams())
-        }, sectionParams())
+        // No card wrapper — same flat surface as Home / Diagnostics.
+        root.addView(labeledField(t(S.LOCAL_PORT), listenPort), contentUnderTopBarParams())
+        root.addView(labeledField(t(S.CONNECTION_MODE), mode), fieldParams())
+        root.addView(labeledField(t(S.LANGUAGE), language), fieldParams())
+        root.addView(fileLogging, fieldParams())
+        root.addView(trafficNotification, fieldParams())
+        root.addView(localSocksAuth, fieldParams())
+        root.addView(labeledField(t(S.SOCKS_USERNAME), localSocksUsername), fieldParams())
+        root.addView(labeledField(t(S.SOCKS_PASSWORD), localSocksPassword), fieldParams())
+        root.addView(labeledField(t(S.DNS_RESOLVER_POOL), dnsResolverPool), fieldParams())
+        root.addView(hintText(t(S.HINT_DNS_RESOLVER_POOL)), fieldParams())
         root.requestFocus()
         frame.addView(compactScrollScreen(root, dp(24)), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addDrawer(frame, "Settings")
@@ -1445,17 +1754,13 @@ class MainActivity : android.app.Activity() {
 
     private fun updateConnectButtonColor(running: Boolean) {
         if (!::connectButtonBackground.isInitialized) return
-        if (connectButtonRunning == running) return
         connectButtonRunning = running
-        val target = if (running) CONNECTED_BUTTON_COLOR else color(R.color.slipnet_accent)
-        ValueAnimator.ofArgb(connectButtonColor, target).apply {
-            duration = 220L
-            addUpdateListener { animator ->
-                val value = animator.animatedValue as Int
-                connectButtonColor = value
-                connectButtonBackground.setColor(value)
-            }
-            start()
+        // Stay on the dark-red accent for both idle and connected — a green "on" fill clashes
+        // with the miniapp palette. Connection state is already shown via icon/label/status text.
+        val accent = color(R.color.slipnet_accent)
+        if (connectButtonColor != accent) {
+            connectButtonColor = accent
+            connectButtonBackground.setColor(accent)
         }
     }
 
@@ -1560,6 +1865,13 @@ class MainActivity : android.app.Activity() {
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(8)
         }
+
+    /** First block under a top bar — no top margin (avoids the gap under nav on Settings/Diagnostics). */
+    private fun contentUnderTopBarParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
 
     private fun color(id: Int): Int = ContextCompat.getColor(this, id)
 
@@ -2421,11 +2733,20 @@ class MainActivity : android.app.Activity() {
         }
     }
 
+    /** Hide IME if an EditText holds focus. Used by back-press (first press dismisses keyboard). */
     private fun hideKeyboardIfEditing(): Boolean {
         val focused = currentFocus as? EditText ?: return false
-        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(focused.windowToken, 0)
-        focused.clearFocus()
+        hideKeyboard()
         return true
+    }
+
+    /** Always dismiss the soft keyboard when leaving a screen that may have focused text fields. */
+    private fun hideKeyboard() {
+        val imm = getSystemService(InputMethodManager::class.java) ?: return
+        val focused = currentFocus
+        val token = focused?.windowToken ?: window?.decorView?.windowToken ?: return
+        imm.hideSoftInputFromWindow(token, 0)
+        focused?.clearFocus()
     }
 
     private fun formatRate(value: Long): String {
@@ -2456,6 +2777,8 @@ class MainActivity : android.app.Activity() {
         private const val REQ_BACKGROUND_SETTINGS = 103
         private const val REQ_NOTIFICATIONS = 104
         private const val REQ_IMPORT_FILE = 105
+        /** View tag key: intended translationY shift while a profile is being reordered. */
+        private val PROFILE_SHIFT_TAG = "profile_shift".hashCode()
         private const val PREFS = "permission_flow"
         private const val KEY_BACKGROUND_PROMPTED = "background_prompted"
         private const val KEY_BATTERY_PROMPTED = "battery_prompted"
@@ -2465,8 +2788,6 @@ class MainActivity : android.app.Activity() {
         private const val START_CONNECTING_GRACE_MS = 2500L
         private const val CRASH_PREFS = "crash_report"
         private const val KEY_CRASH_SEEN_SIZE = "seen_size"
-        private val CONNECTED_BUTTON_COLOR = android.graphics.Color.rgb(72, 132, 82)
-
         // DNS query/answer type picker: pill label -> RR type number, in the order shown to the
         // user. Must match the record types the Rust engine's answer encoder actually supports
         // (crates/slipstream-dns/src/codec.rs). Server must be configured to accept the same type.

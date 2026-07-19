@@ -54,11 +54,26 @@ data class ConfigProfile(
 // expands to the current connection's own operator/DHCP DNS servers at probe time (ResolverSelector).
 // Replaces the old hardcoded unshapedResolvers + AUTO_PUBLIC_RESOLVERS_ENABLED flag.
 object DnsResolverPool {
-    const val LOCAL_SENTINEL = "(local dns-resolvers)"
-    const val DEFAULT_RAW = "(local dns-resolvers)\n82.151.127.188\n188.0.190.47\n185.22.235.137\n46.254.19.23"
+    const val LOCAL_SENTINEL = "(local)"
+    // Older builds wrote "(local dns-resolvers)" — still expand that so existing settings keep working.
+    private const val LOCAL_SENTINEL_LEGACY = "(local dns-resolvers)"
+    const val DEFAULT_RAW = "(local)\n82.151.127.188\n188.0.190.47\n185.22.235.137\n46.254.19.23"
 
     fun parse(raw: String): List<String> =
         raw.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.distinct().toList()
+
+    fun isLocalSentinel(entry: String): Boolean =
+        entry.equals(LOCAL_SENTINEL, ignoreCase = true) ||
+            entry.equals(LOCAL_SENTINEL_LEGACY, ignoreCase = true)
+
+    /** Rewrite legacy "(local dns-resolvers)" lines to "(local)" for display/storage. */
+    fun normalize(raw: String): String =
+        raw.lineSequence()
+            .map { line ->
+                val trimmed = line.trim()
+                if (trimmed.equals(LOCAL_SENTINEL_LEGACY, ignoreCase = true)) LOCAL_SENTINEL else line
+            }
+            .joinToString("\n")
 }
 
 data class GlobalSettings(
@@ -203,6 +218,33 @@ object ConfigStore {
         return profile
     }
 
+    /**
+     * Persist a new display order for profiles. [orderedIds] is the full list of profile ids
+     * top-to-bottom; any id missing from the current store is ignored, and any profile not
+     * mentioned is appended at the end (safety net).
+     */
+    fun reorderProfiles(context: Context, orderedIds: List<String>) {
+        val profiles = loadProfiles(context)
+        if (profiles.size <= 1) return
+        val byId = profiles.associateBy { it.id }
+        val seen = LinkedHashSet<String>()
+        val reordered = ArrayList<ConfigProfile>(profiles.size)
+        for (id in orderedIds) {
+            val p = byId[id] ?: continue
+            if (seen.add(id)) reordered.add(p)
+        }
+        for (p in profiles) {
+            if (seen.add(p.id)) reordered.add(p)
+        }
+        if (reordered.map { it.id } == profiles.map { it.id }) return
+        val activeId = activeProfileId(context) ?: reordered.first().id
+        writeProfiles(
+            context,
+            reordered,
+            if (reordered.any { it.id == activeId }) activeId else reordered.first().id
+        )
+    }
+
     fun loadGlobalSettings(context: Context): GlobalSettings {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val username = p.getString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, null)
@@ -222,14 +264,22 @@ object ConfigStore {
                 p.getString(KEY_GLOBAL_MODE, p.getString("mode", Config.Mode.VPN.name)),
                 Config.Mode.VPN
             ),
-            fileLogging = p.getBoolean(KEY_GLOBAL_FILE_LOGGING, app.slipnet.util.AppLog.isFileLoggingEnabled(context)),
+            // Default off: debug/file logging is opt-in. Fall back to AppLog only when the global
+            // key was never written (older installs may have the AppLog flag alone).
+            fileLogging = if (p.contains(KEY_GLOBAL_FILE_LOGGING)) {
+                p.getBoolean(KEY_GLOBAL_FILE_LOGGING, false)
+            } else {
+                false
+            },
             trafficNotification = p.getBoolean(KEY_GLOBAL_TRAFFIC_NOTIFICATION, false),
             localSocksAuthEnabled = p.getBoolean(KEY_GLOBAL_LOCAL_SOCKS_AUTH, true),
             localSocksUsername = username,
             localSocksPassword = password,
             language = enumValue(p.getString(KEY_GLOBAL_LANGUAGE, AppLanguage.SYSTEM.name), AppLanguage.SYSTEM),
-            dnsResolverPool = p.getString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.DEFAULT_RAW)
-                ?: DnsResolverPool.DEFAULT_RAW
+            dnsResolverPool = DnsResolverPool.normalize(
+                p.getString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.DEFAULT_RAW)
+                    ?: DnsResolverPool.DEFAULT_RAW
+            )
         )
     }
 
@@ -243,7 +293,7 @@ object ConfigStore {
             .putString(KEY_GLOBAL_LOCAL_SOCKS_USERNAME, settings.localSocksUsername.ifBlank { "slipstream" })
             .putString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, settings.localSocksPassword.ifBlank { randomPassword() })
             .putString(KEY_GLOBAL_LANGUAGE, settings.language.name)
-            .putString(KEY_GLOBAL_DNS_RESOLVER_POOL, settings.dnsResolverPool)
+            .putString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.normalize(settings.dnsResolverPool))
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()

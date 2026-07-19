@@ -77,8 +77,8 @@ enum class S(val en: String, val ru: String) {
     SOCKS_PASSWORD("SOCKS password", "Пароль SOCKS"),
     DNS_RESOLVER_POOL("DNS resolver pool", "Пул DNS-резолверов"),
     HINT_DNS_RESOLVER_POOL(
-        "One per line. \"(local dns-resolvers)\" = the current connection's own operator/DHCP DNS servers.",
-        "По одному на строку. «(local dns-resolvers)» = операторские/DHCP DNS-серверы текущего подключения."
+        "One per line. \"(local)\" = the current connection's own operator/DHCP DNS servers.",
+        "По одному на строку. «(local)» = операторские/DHCP DNS-серверы текущего подключения."
     ),
 
     // Pill / spinner option labels

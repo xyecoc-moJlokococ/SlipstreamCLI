@@ -310,7 +310,7 @@ object ResolverSelector {
         val pool = ConfigStore.loadGlobalSettings(context).dnsResolverPool
         val local = defaultNetworkResolvers(context).resolvers
         return DnsResolverPool.parse(pool)
-            .flatMap { entry -> if (entry.equals(DnsResolverPool.LOCAL_SENTINEL, ignoreCase = true)) local else listOf(entry) }
+            .flatMap { entry -> if (DnsResolverPool.isLocalSentinel(entry)) local else listOf(entry) }
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .filter { it !in blockedAutoResolvers }

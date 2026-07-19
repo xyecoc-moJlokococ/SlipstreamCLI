@@ -24,13 +24,13 @@ object AppLog {
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_FILE_LOGGING_ENABLED, true)
-            .apply()
-        fileLoggingEnabled = true
-        startFlusher()
-        i("AppLog", "log initialized")
+        // Respect the saved preference (default off). Do NOT force-enable on every start —
+        // that used to re-check "Enable debug mode" after the user turned it off.
+        fileLoggingEnabled = isFileLoggingEnabled(context)
+        if (fileLoggingEnabled) {
+            startFlusher()
+            i("AppLog", "log initialized (file logging on)")
+        }
     }
 
     fun file(context: Context): File = File(context.filesDir, FILE_NAME)
@@ -38,7 +38,7 @@ object AppLog {
 
     fun isFileLoggingEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_FILE_LOGGING_ENABLED, true)
+            .getBoolean(KEY_FILE_LOGGING_ENABLED, false)
 
     fun setFileLoggingEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
