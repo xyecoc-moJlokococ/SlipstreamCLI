@@ -505,7 +505,14 @@ class MainActivity : android.app.Activity() {
             }
             dragging = true
             row.animate().cancel()
-            row.animate().scaleX(1.03f).scaleY(1.03f).alpha(0.94f).setDuration(120L).start()
+            // Shrink on hold (not grow) — lighter footprint while dragging.
+            row.animate()
+                .scaleX(PROFILE_DRAG_SCALE)
+                .scaleY(PROFILE_DRAG_SCALE)
+                .alpha(0.92f)
+                .setDuration(140L)
+                .setInterpolator(AccelerateDecelerateInterpolator())
+                .start()
             row.elevation = dp(12).toFloat()
             row.translationZ = dp(12).toFloat()
             row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -643,19 +650,25 @@ class MainActivity : android.app.Activity() {
         val start = session.startIndex
         val target = session.targetIndex
 
-        // Snap visuals back before we rewrite the child order (avoids a double-jump).
+        // Clear drag transforms on everyone first (no sibling release animation — that fights the
+        // real layout reorder and looks like a double-move glitch).
         for (i in 0 until list.childCount) {
             val child = list.getChildAt(i)
             child.animate().cancel()
             child.setTag(PROFILE_SHIFT_TAG, null)
             child.translationY = 0f
-            child.scaleX = 1f
-            child.scaleY = 1f
-            child.alpha = 1f
-            child.elevation = 0f
-            child.translationZ = 0f
+            if (child !== row) {
+                child.scaleX = 1f
+                child.scaleY = 1f
+                child.alpha = 1f
+                child.elevation = 0f
+                child.translationZ = 0f
+            }
         }
 
+        // Commit list order while the dragged card is still at the hold-shrink scale, then
+        // animate only that card's scale/alpha back (smooth release, no snap).
+        row.animate().cancel()
         if (target != start && target in 0 until list.childCount) {
             list.removeView(row)
             list.addView(row, target.coerceIn(0, list.childCount))
@@ -674,6 +687,19 @@ class MainActivity : android.app.Activity() {
         } else {
             refreshProfileRowMargins(list)
         }
+
+        row.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .alpha(1f)
+            .translationZ(0f)
+            .setDuration(160L)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .withEndAction {
+                row.elevation = 0f
+                row.translationZ = 0f
+            }
+            .start()
     }
 
     private fun refreshProfileRowMargins(list: LinearLayout) {
@@ -2777,6 +2803,8 @@ class MainActivity : android.app.Activity() {
         private const val REQ_BACKGROUND_SETTINGS = 103
         private const val REQ_NOTIFICATIONS = 104
         private const val REQ_IMPORT_FILE = 105
+        /** Hold/drag scale — slightly smaller than rest so the card feels “picked up”. */
+        private const val PROFILE_DRAG_SCALE = 0.96f
         /** View tag key: intended translationY shift while a profile is being reordered. */
         private val PROFILE_SHIFT_TAG = "profile_shift".hashCode()
         private const val PREFS = "permission_flow"
