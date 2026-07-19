@@ -77,6 +77,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var auth: LinearLayout
     private lateinit var dnsLabelLengthField: EditText
     private lateinit var maxPollQpsField: EditText
+    private lateinit var maxDataQpsField: EditText
     private lateinit var maxActiveClientsField: EditText
     private lateinit var base64uEncodingCheckbox: CheckBox
     private lateinit var fileLogging: CheckBox
@@ -1249,6 +1250,9 @@ class MainActivity : android.app.Activity() {
         maxPollQpsField = edit("max poll qps", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.max_poll_qps_field
         }
+        maxDataQpsField = edit("max data qps", InputType.TYPE_CLASS_NUMBER).apply {
+            id = R.id.max_data_qps_field
+        }
         maxActiveClientsField = edit("max active connections", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.max_active_clients_field
         }
@@ -1296,6 +1300,11 @@ class MainActivity : android.app.Activity() {
         root.addView(labeledField(t(S.MAX_POLL_RATE), maxPollQpsField), fieldParams())
         root.addView(
             hintText(t(S.HINT_MAX_POLL_QPS)),
+            compactSectionParams()
+        )
+        root.addView(labeledField(t(S.MAX_DATA_RATE), maxDataQpsField), fieldParams())
+        root.addView(
+            hintText(t(S.HINT_MAX_DATA_QPS)),
             compactSectionParams()
         )
         root.addView(labeledField(t(S.MAX_ACTIVE_CONNECTIONS), maxActiveClientsField), fieldParams())
@@ -1924,6 +1933,7 @@ class MainActivity : android.app.Activity() {
         password.setText(c.password)
         dnsLabelLengthField.setText(c.dnsLabelLength.toString())
         maxPollQpsField.setText(c.maxPollQps.toString())
+        maxDataQpsField.setText(c.maxDataQps.toString())
         maxActiveClientsField.setText(c.maxActiveClients.toString())
         base64uEncodingCheckbox.isChecked = c.base64uEncoding
         updateResolverUi()
@@ -2103,6 +2113,7 @@ class MainActivity : android.app.Activity() {
             },
             dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
             maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+            maxDataQps = maxDataQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 1000,
             maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 48,
             base64uEncoding = base64uEncodingCheckbox.isChecked
         )
@@ -2171,6 +2182,7 @@ class MainActivity : android.app.Activity() {
                 SlipstreamBridge.dnsQueryType = c.dnsQueryType
                 SlipstreamBridge.dnsLabelLength = c.dnsLabelLength
                 SlipstreamBridge.maxPollQps = c.maxPollQps
+                SlipstreamBridge.maxDataQps = c.maxDataQps
                 SlipstreamBridge.base64uEncoding = c.base64uEncoding
                 var choice = ResolverSelector.choose(this, c, "proxy_start")
                 // choose() may soft-fallback to a TCP-alive host when the real-data matrix fails

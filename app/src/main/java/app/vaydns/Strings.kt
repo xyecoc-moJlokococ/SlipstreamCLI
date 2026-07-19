@@ -72,6 +72,7 @@ enum class S(val en: String, val ru: String) {
     PASSWORD("Password", "Пароль"),
     DNS_LABEL_LENGTH("DNS label length", "Длина DNS-метки"),
     MAX_POLL_RATE("Max poll rate (queries/sec)", "Макс. частота опроса (запросов/сек)"),
+    MAX_DATA_RATE("Max data rate (queries/sec)", "Макс. data rate (запросов/сек)"),
     MAX_ACTIVE_CONNECTIONS("Max active connections", "Макс. активных соединений"),
     SOCKS_USERNAME("SOCKS username", "Логин SOCKS"),
     SOCKS_PASSWORD("SOCKS password", "Пароль SOCKS"),
@@ -121,8 +122,12 @@ enum class S(val en: String, val ru: String) {
         "1-63, по умолчанию 57. Длина каждой DNS-метки в закодированном запросе."
     ),
     HINT_MAX_POLL_QPS(
-        "0 = unlimited (default). Caps how many DNS queries/sec this device sends.",
-        "0 = без ограничений (по умолчанию). Ограничивает число DNS-запросов в секунду с этого устройства."
+        "0 = unlimited (default). Caps empty DNS poll queries/sec (not upload data).",
+        "0 = без ограничений (по умолчанию). Лимит пустых DNS-опросов/сек (не data-аплоада)."
+    ),
+    HINT_MAX_DATA_QPS(
+        "0 = unlimited. Caps data-bearing DNS queries/sec (upload). Default 1000: lower if chat dies under load, higher for faster file upload.",
+        "0 = без лимита. Лимит data-DNS запросов/сек (аплоад). По умолчанию 1000: меньше — если чат падает под нагрузкой, больше — быстрее файлы."
     ),
     HINT_MAX_ACTIVE_CLIENTS(
         "Default 48. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections.",

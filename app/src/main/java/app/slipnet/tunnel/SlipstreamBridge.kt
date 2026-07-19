@@ -24,6 +24,8 @@ object SlipstreamBridge {
     const val DEFAULT_DNS_TCP_PACKET_LOOP_BURST = 32
     const val DEFAULT_DNS_LABEL_LENGTH = 57
     const val DEFAULT_MAX_POLL_QPS = 0
+    /** Default data-bearing DNS QPS; matches Config.maxDataQps. */
+    const val DEFAULT_MAX_DATA_QPS = 1000
 
     @Volatile private var vpnService: VpnService? = null
     @Volatile private var loaded = false
@@ -37,6 +39,9 @@ object SlipstreamBridge {
     @Volatile var dnsLabelLength = DEFAULT_DNS_LABEL_LENGTH
     // Client-only pacing knob: cap on DNS poll queries/second (0 = unlimited). No server counterpart.
     @Volatile var maxPollQps = DEFAULT_MAX_POLL_QPS
+    // Cap data-bearing DNS queries/sec (0 = unlimited). Configurable in profile advanced settings.
+    // Live override without rebuild: run-as app.vaydns sh -c 'echo N > files/max_data_qps'
+    @Volatile var maxDataQps = DEFAULT_MAX_DATA_QPS
     // Encode the tunnel payload with base64u instead of base32 (~20% denser, case-sensitive -- see
     // Config.base64uEncoding). Purely a client choice, server detects it per-query automatically.
     @Volatile var base64uEncoding = false
@@ -132,6 +137,7 @@ object SlipstreamBridge {
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
+        runCatching { nativeSetMaxDataQps(maxDataQps) }
         runCatching { nativeSetBase64uEncoding(base64uEncoding) }
         currentPort = listenPort
         AppLog.i(
@@ -139,7 +145,7 @@ object SlipstreamBridge {
             "start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
                 "mode=$pathMode transport=$transport cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
-                "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
+                "maxDataQps=$maxDataQps upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
         val code = nativeStartSlipstreamClient(
             domain,
@@ -193,6 +199,7 @@ object SlipstreamBridge {
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
+        runCatching { nativeSetMaxDataQps(maxDataQps) }
         runCatching { nativeSetBase64uEncoding(base64uEncoding) }
         val code = nativeStartProbeClient(
             domain,
@@ -268,6 +275,7 @@ object SlipstreamBridge {
     private external fun nativeSetDnsQueryType(qtype: Int)
     private external fun nativeSetDnsLabelLength(labelLength: Int)
     private external fun nativeSetMaxPollQps(qps: Int)
+    private external fun nativeSetMaxDataQps(qps: Int)
     private external fun nativeSetBase64uEncoding(enabled: Boolean)
     private external fun nativeStartProbeClient(
         domain: String,

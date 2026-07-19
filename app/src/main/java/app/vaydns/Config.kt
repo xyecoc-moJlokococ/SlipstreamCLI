@@ -28,6 +28,10 @@ data class Config(
     val dnsLabelLength: Int = 57,
     // Cap on DNS poll queries/second (0 = unlimited, default). Purely a client-side pacing choice.
     val maxPollQps: Int = 0,
+    // Cap on data-bearing DNS queries/sec from the QUIC send loop (0 = unlimited). Default 1000 keeps
+    // the reverse path alive on Beeline UDP so multi-MB uploads can finish; raise for more speed,
+    // lower if chat/"Connecting..." dies under load. Client-only.
+    val maxDataQps: Int = 1000,
     // Max simultaneous SOCKS/tunnel connections the bridge admits (default 48). On operators that
     // hard rate-limit DNS queries per client (e.g. Megafon ~50 q/s), a much lower value (~4-6) keeps
     // the tiny query budget from fragmenting across many connections; pairs with maxPollQps.
@@ -129,6 +133,7 @@ object ConfigStore {
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
             maxPollQps = p.getInt("maxPollQps", 0),
+            maxDataQps = p.getInt("maxDataQps", 1000),
             maxActiveClients = p.getInt("maxActiveClients", 48),
             base64uEncoding = p.getBoolean("base64uEncoding", false)
         )
@@ -426,6 +431,7 @@ object ConfigStore {
             .putInt("dnsQueryType", config.dnsQueryType)
             .putInt("dnsLabelLength", config.dnsLabelLength)
             .putInt("maxPollQps", config.maxPollQps)
+            .putInt("maxDataQps", config.maxDataQps)
             .putInt("maxActiveClients", config.maxActiveClients)
             .putBoolean("base64uEncoding", config.base64uEncoding)
             .apply()
@@ -469,6 +475,7 @@ object ConfigStore {
             .put("dnsQueryType", config.dnsQueryType)
             .put("dnsLabelLength", config.dnsLabelLength)
             .put("maxPollQps", config.maxPollQps)
+            .put("maxDataQps", config.maxDataQps)
             .put("maxActiveClients", config.maxActiveClients)
             .put("base64uEncoding", config.base64uEncoding)
 
@@ -488,6 +495,7 @@ object ConfigStore {
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
             maxPollQps = json.optInt("maxPollQps", 0),
+            maxDataQps = json.optInt("maxDataQps", 1000),
             maxActiveClients = json.optInt("maxActiveClients", 48),
             base64uEncoding = json.optBoolean("base64uEncoding", false)
         )
@@ -557,6 +565,7 @@ private object SlipstreamLinkParser {
         }
         val dnsLabelLength = first(params, "dnslabellength")?.toIntOrNull()?.coerceIn(1, 63) ?: base.dnsLabelLength
         val maxPollQps = first(params, "maxpollqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxPollQps
+        val maxDataQps = first(params, "maxdataqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxDataQps
         val maxActiveClients = first(params, "maxactiveclients")?.toIntOrNull()?.coerceAtLeast(1) ?: base.maxActiveClients
         val dnsQueryType = first(params, "dnsquerytype")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: base.dnsQueryType
         val base64uEncoding = first(params, "base64uencoding", "base64u")?.let {
@@ -574,6 +583,7 @@ private object SlipstreamLinkParser {
             password = first(params, "password", "pass") ?: base.password,
             dnsLabelLength = dnsLabelLength,
             maxPollQps = maxPollQps,
+            maxDataQps = maxDataQps,
             maxActiveClients = maxActiveClients,
             dnsQueryType = dnsQueryType,
             base64uEncoding = base64uEncoding

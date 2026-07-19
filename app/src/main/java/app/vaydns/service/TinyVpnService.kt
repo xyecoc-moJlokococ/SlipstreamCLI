@@ -152,6 +152,7 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
             SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
             SlipstreamBridge.maxPollQps = config.maxPollQps
+            SlipstreamBridge.maxDataQps = config.maxDataQps
             SlipstreamBridge.base64uEncoding = config.base64uEncoding
             resetTrafficBase()
             failedAutoResolvers.clear()
@@ -950,6 +951,7 @@ class TinyVpnService : VpnService() {
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
                     SlipstreamBridge.maxPollQps = config.maxPollQps
+                    SlipstreamBridge.maxDataQps = config.maxDataQps
                     SlipstreamBridge.base64uEncoding = config.base64uEncoding
                     ResolverSelector.validateTransport(this, config, currentResolver!!, "recovery#$recoveryId:$reason")
                 } else if (networkChangedRecovery) {
@@ -961,6 +963,7 @@ class TinyVpnService : VpnService() {
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
                     SlipstreamBridge.maxPollQps = config.maxPollQps
+                    SlipstreamBridge.maxDataQps = config.maxDataQps
                     SlipstreamBridge.base64uEncoding = config.base64uEncoding
                     ResolverSelector.validateTransport(this, config, fresh, "recovery#$recoveryId:$reason")
                 } else if (reuseCurrentResolver && currentResolver != null) {

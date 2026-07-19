@@ -23,6 +23,7 @@
     <item name="password_field" type="id" />
     <item name="dns_label_length_field" type="id" />
     <item name="max_poll_qps_field" type="id" />
+    <item name="max_data_qps_field" type="id" />
     <item name="max_active_clients_field" type="id" />
     <item name="local_socks_username_field" type="id" />
     <item name="local_socks_password_field" type="id" />
