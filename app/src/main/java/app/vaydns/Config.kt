@@ -27,11 +27,14 @@ data class Config(
     // decoding, so this never needs to match anything server-side.
     val dnsLabelLength: Int = 57,
     // Cap on empty DNS poll queries/sec (0 = unlimited). These pull DOWNLOAD + window updates.
-    // Separate from maxDataQps (upload). Default 1400; during bulk upload a reserve is still kept.
+    // Separate from maxDataQps (upload). Default 1400; during bulk upload a reserve (≥400) is kept
+    // so download / MAX_STREAM_DATA / DC responses are not starved (stability > peak upload).
     val maxPollQps: Int = 1400,
     // Cap on data-bearing DNS queries/sec = UPLOAD only (0 = unlimited). Default 1000.
     // Does not throttle download polls. Client-only.
-    val maxDataQps: Int = 1000,
+    // Upload data-query ceiling. Default 800 (was 1000): slightly lower firehose reduces server
+    // RcvbufErrors and TG stream_reset thrash on multi-kQPS UDP tunnels. Raise in UI if needed.
+    val maxDataQps: Int = 800,
     // Max simultaneous SOCKS/tunnel connections the bridge admits (default 40). On operators that
     // hard rate-limit DNS queries per client (e.g. Megafon ~50 q/s), a much lower value (~4-6) keeps
     // the tiny query budget from fragmenting across many connections; pairs with maxPollQps.
@@ -133,7 +136,7 @@ object ConfigStore {
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
             maxPollQps = p.getInt("maxPollQps", 1400),
-            maxDataQps = p.getInt("maxDataQps", 1000),
+            maxDataQps = p.getInt("maxDataQps", 800),
             maxActiveClients = p.getInt("maxActiveClients", 40),
             base64uEncoding = p.getBoolean("base64uEncoding", false)
         )
@@ -495,7 +498,7 @@ object ConfigStore {
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
             maxPollQps = json.optInt("maxPollQps", 1400),
-            maxDataQps = json.optInt("maxDataQps", 1000),
+            maxDataQps = json.optInt("maxDataQps", 800),
             maxActiveClients = json.optInt("maxActiveClients", 40),
             base64uEncoding = json.optBoolean("base64uEncoding", false)
         )

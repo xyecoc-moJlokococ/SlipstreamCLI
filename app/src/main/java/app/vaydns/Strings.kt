@@ -122,12 +122,12 @@ enum class S(val en: String, val ru: String) {
         "1-63, по умолчанию 57. Длина каждой DNS-метки в закодированном запросе."
     ),
     HINT_MAX_POLL_QPS(
-        "0 = unlimited. Empty DNS polls that pull DOWNLOAD (and MAX_STREAM_DATA). Separate from upload. Default 1400; ~250+ kept during upload so download is not starved.",
-        "0 = без лимита. Пустые DNS-опросы, которые тянут DOWNLOAD (и MAX_STREAM_DATA). Отдельно от upload. По умолчанию 1400; во время аплоада оставляем ≥~250, чтобы download не умирал."
+        "0 = unlimited. Empty DNS polls that pull DOWNLOAD (and MAX_STREAM_DATA). Separate from upload. Default 1400; ~400+ kept during upload so download is not starved.",
+        "0 = без лимита. Пустые DNS-опросы, которые тянут DOWNLOAD (и MAX_STREAM_DATA). Отдельно от upload. По умолчанию 1400; во время аплоада оставляем ≥~400, чтобы download не умирал."
     ),
     HINT_MAX_DATA_QPS(
-        "0 = unlimited. Data-bearing DNS queries = UPLOAD only. Default 1000. Lower if chat dies under load; higher for faster files. Does not limit download polls.",
-        "0 = без лимита. Data-DNS = только UPLOAD. По умолчанию 1000. Меньше — если чат падает; больше — быстрее файлы. Download-опросы не ограничивает."
+        "0 = unlimited. Data-bearing DNS queries = UPLOAD only. Default 800. Lower if chat dies under load; higher for faster files. Does not limit download polls.",
+        "0 = без лимита. Data-DNS = только UPLOAD. По умолчанию 800. Меньше — если чат падает; больше — быстрее файлы. Download-опросы не ограничивает."
     ),
     HINT_MAX_ACTIVE_CLIENTS(
         "Default 40. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections.",
