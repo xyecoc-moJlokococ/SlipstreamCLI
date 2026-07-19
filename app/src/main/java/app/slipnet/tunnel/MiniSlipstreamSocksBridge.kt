@@ -32,7 +32,7 @@ object MiniSlipstreamSocksBridge {
     private const val TAG = "MiniSlipstreamSocksBridge"
     private const val RELAY_BUF = 64 * 1024
     private const val HS_BUF = 1024 // SOCKS handshake messages are tiny (<~520 bytes)
-    const val DEFAULT_MAX_ACTIVE_CLIENTS = 48
+    const val DEFAULT_MAX_ACTIVE_CLIENTS = 40
     // Idle reaper timeouts. A fully-open connection is reaped only after a long quiet stretch; a
     // HALF-closed one (one side already EOF) is reaped much sooner -- otherwise a byte-trickle
     // download over a degraded carrier keeps refreshing activity forever and the half-open socket

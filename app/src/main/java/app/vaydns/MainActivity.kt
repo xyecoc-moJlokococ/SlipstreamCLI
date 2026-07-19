@@ -2112,9 +2112,9 @@ class MainActivity : android.app.Activity() {
                 editingBaseConfig?.dnsQueryType ?: 16
             },
             dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
-            maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+            maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 1400,
             maxDataQps = maxDataQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 1000,
-            maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 48,
+            maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 40,
             base64uEncoding = base64uEncodingCheckbox.isChecked
         )
     }

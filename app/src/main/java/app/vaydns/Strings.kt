@@ -71,8 +71,8 @@ enum class S(val en: String, val ru: String) {
     USERNAME("Username", "Логин"),
     PASSWORD("Password", "Пароль"),
     DNS_LABEL_LENGTH("DNS label length", "Длина DNS-метки"),
-    MAX_POLL_RATE("Max poll rate (queries/sec)", "Макс. частота опроса (запросов/сек)"),
-    MAX_DATA_RATE("Max data rate (queries/sec)", "Макс. data rate (запросов/сек)"),
+    MAX_POLL_RATE("Max download polls (queries/sec)", "Макс. download-опросы (запросов/сек)"),
+    MAX_DATA_RATE("Max upload data (queries/sec)", "Макс. upload data (запросов/сек)"),
     MAX_ACTIVE_CONNECTIONS("Max active connections", "Макс. активных соединений"),
     SOCKS_USERNAME("SOCKS username", "Логин SOCKS"),
     SOCKS_PASSWORD("SOCKS password", "Пароль SOCKS"),
@@ -122,16 +122,16 @@ enum class S(val en: String, val ru: String) {
         "1-63, по умолчанию 57. Длина каждой DNS-метки в закодированном запросе."
     ),
     HINT_MAX_POLL_QPS(
-        "0 = unlimited (default). Caps empty DNS poll queries/sec (not upload data).",
-        "0 = без ограничений (по умолчанию). Лимит пустых DNS-опросов/сек (не data-аплоада)."
+        "0 = unlimited. Empty DNS polls that pull DOWNLOAD (and MAX_STREAM_DATA). Separate from upload. Default 1400; ~250+ kept during upload so download is not starved.",
+        "0 = без лимита. Пустые DNS-опросы, которые тянут DOWNLOAD (и MAX_STREAM_DATA). Отдельно от upload. По умолчанию 1400; во время аплоада оставляем ≥~250, чтобы download не умирал."
     ),
     HINT_MAX_DATA_QPS(
-        "0 = unlimited. Caps data-bearing DNS queries/sec (upload). Default 1000: lower if chat dies under load, higher for faster file upload.",
-        "0 = без лимита. Лимит data-DNS запросов/сек (аплоад). По умолчанию 1000: меньше — если чат падает под нагрузкой, больше — быстрее файлы."
+        "0 = unlimited. Data-bearing DNS queries = UPLOAD only. Default 1000. Lower if chat dies under load; higher for faster files. Does not limit download polls.",
+        "0 = без лимита. Data-DNS = только UPLOAD. По умолчанию 1000. Меньше — если чат падает; больше — быстрее файлы. Download-опросы не ограничивает."
     ),
     HINT_MAX_ACTIVE_CLIENTS(
-        "Default 48. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections.",
-        "По умолчанию 48. Уменьшите (например, до 4-6) у операторов с жёстким лимитом на частоту DNS-запросов, чтобы бюджет запросов не дробился между слишком многими соединениями."
+        "Default 40. Lower it (e.g. 4-6) on operators that hard-limit DNS query rate, so the query budget isn't split across too many connections.",
+        "По умолчанию 40. Уменьшите (например, до 4-6) у операторов с жёстким лимитом на частоту DNS-запросов, чтобы бюджет запросов не дробился между слишком многими соединениями."
     ),
     HINT_BASE64U(
         "~20% denser than the default base32, so fewer round trips per byte -- but case-sensitive. Only enable once you've confirmed your resolver path preserves label case; a resolver that lowercases/uppercases names will silently corrupt the tunnel instead of just failing.",

@@ -26,16 +26,16 @@ data class Config(
     // DNS label length (1-63, default 57) for the encoded subdomain; the server strips dots before
     // decoding, so this never needs to match anything server-side.
     val dnsLabelLength: Int = 57,
-    // Cap on DNS poll queries/second (0 = unlimited, default). Purely a client-side pacing choice.
-    val maxPollQps: Int = 0,
-    // Cap on data-bearing DNS queries/sec from the QUIC send loop (0 = unlimited). Default 1000 keeps
-    // the reverse path alive on Beeline UDP so multi-MB uploads can finish; raise for more speed,
-    // lower if chat/"Connecting..." dies under load. Client-only.
+    // Cap on empty DNS poll queries/sec (0 = unlimited). These pull DOWNLOAD + window updates.
+    // Separate from maxDataQps (upload). Default 1400; during bulk upload a reserve is still kept.
+    val maxPollQps: Int = 1400,
+    // Cap on data-bearing DNS queries/sec = UPLOAD only (0 = unlimited). Default 1000.
+    // Does not throttle download polls. Client-only.
     val maxDataQps: Int = 1000,
-    // Max simultaneous SOCKS/tunnel connections the bridge admits (default 48). On operators that
+    // Max simultaneous SOCKS/tunnel connections the bridge admits (default 40). On operators that
     // hard rate-limit DNS queries per client (e.g. Megafon ~50 q/s), a much lower value (~4-6) keeps
     // the tiny query budget from fragmenting across many connections; pairs with maxPollQps.
-    val maxActiveClients: Int = 48,
+    val maxActiveClients: Int = 40,
     // Encode the tunnel payload with base64u instead of base32 (default false). ~20% denser, but
     // case-sensitive -- only safe once the resolver path is confirmed to preserve label case end to
     // end. Purely a client choice, no server config needed.
@@ -132,9 +132,9 @@ object ConfigStore {
             password = p.getString("password", "") ?: "",
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
-            maxPollQps = p.getInt("maxPollQps", 0),
+            maxPollQps = p.getInt("maxPollQps", 1400),
             maxDataQps = p.getInt("maxDataQps", 1000),
-            maxActiveClients = p.getInt("maxActiveClients", 48),
+            maxActiveClients = p.getInt("maxActiveClients", 40),
             base64uEncoding = p.getBoolean("base64uEncoding", false)
         )
     }
@@ -494,9 +494,9 @@ object ConfigStore {
             password = json.optString("password", ""),
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
-            maxPollQps = json.optInt("maxPollQps", 0),
+            maxPollQps = json.optInt("maxPollQps", 1400),
             maxDataQps = json.optInt("maxDataQps", 1000),
-            maxActiveClients = json.optInt("maxActiveClients", 48),
+            maxActiveClients = json.optInt("maxActiveClients", 40),
             base64uEncoding = json.optBoolean("base64uEncoding", false)
         )
 

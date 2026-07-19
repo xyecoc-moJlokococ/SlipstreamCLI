@@ -23,7 +23,7 @@ object SlipstreamBridge {
     const val DEFAULT_PACING_GAIN_PROBE = 1.4
     const val DEFAULT_DNS_TCP_PACKET_LOOP_BURST = 32
     const val DEFAULT_DNS_LABEL_LENGTH = 57
-    const val DEFAULT_MAX_POLL_QPS = 0
+    const val DEFAULT_MAX_POLL_QPS = 1400
     /** Default data-bearing DNS QPS; matches Config.maxDataQps. */
     const val DEFAULT_MAX_DATA_QPS = 1000
 
