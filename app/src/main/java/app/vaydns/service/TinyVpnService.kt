@@ -151,6 +151,7 @@ class TinyVpnService : VpnService() {
             SlipstreamBridge.proxyOnlyMode = false
             SlipstreamBridge.dnsQueryType = config.dnsQueryType
             SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+            SlipstreamBridge.dnsLabelLengthJitter = config.dnsLabelLengthJitter
             SlipstreamBridge.maxPollQps = config.maxPollQps
             SlipstreamBridge.maxDataQps = config.maxDataQps
             SlipstreamBridge.base64uEncoding = config.base64uEncoding
@@ -950,6 +951,7 @@ class TinyVpnService : VpnService() {
                     AppLog.w(TAG, "recovery#$recoveryId re-validating transport/qtype for ${currentResolver!!.selectedHost}:${currentResolver!!.port} reason=$reason")
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+                    SlipstreamBridge.dnsLabelLengthJitter = config.dnsLabelLengthJitter
                     SlipstreamBridge.maxPollQps = config.maxPollQps
                     SlipstreamBridge.maxDataQps = config.maxDataQps
                     SlipstreamBridge.base64uEncoding = config.base64uEncoding
@@ -962,6 +964,7 @@ class TinyVpnService : VpnService() {
                     AppLog.w(TAG, "recovery#$recoveryId network changed; fresh resolver ${fresh.selectedHost}:${fresh.port}; re-validating transport/qtype")
                     SlipstreamBridge.dnsQueryType = config.dnsQueryType
                     SlipstreamBridge.dnsLabelLength = config.dnsLabelLength
+                    SlipstreamBridge.dnsLabelLengthJitter = config.dnsLabelLengthJitter
                     SlipstreamBridge.maxPollQps = config.maxPollQps
                     SlipstreamBridge.maxDataQps = config.maxDataQps
                     SlipstreamBridge.base64uEncoding = config.base64uEncoding

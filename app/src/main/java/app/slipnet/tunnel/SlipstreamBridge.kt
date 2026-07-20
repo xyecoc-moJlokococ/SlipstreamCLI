@@ -23,6 +23,10 @@ object SlipstreamBridge {
     const val DEFAULT_PACING_GAIN_PROBE = 1.4
     const val DEFAULT_DNS_TCP_PACKET_LOOP_BURST = 32
     const val DEFAULT_DNS_LABEL_LENGTH = 57
+    // Small default so the "every label is exactly 57 chars" fingerprint is broken out of the box.
+    // Kept tiny (labels vary in 53..57) so the transport MTU is effectively unchanged -- see
+    // Config.dnsLabelLengthJitter for the speed/masking trade-off.
+    const val DEFAULT_DNS_LABEL_LENGTH_JITTER = 4
     const val DEFAULT_MAX_POLL_QPS = 1400
     /** Default data-bearing DNS QPS; matches Config.maxDataQps. */
     const val DEFAULT_MAX_DATA_QPS = 1000
@@ -37,6 +41,9 @@ object SlipstreamBridge {
     // Client-only fingerprint knob: DNS label length for the encoded subdomain (1-63, default 57).
     // Server strips dots before decoding, so this never needs to match a server setting.
     @Volatile var dnsLabelLength = DEFAULT_DNS_LABEL_LENGTH
+    // Client-only fingerprint knob: per-query label-length jitter (chars below dnsLabelLength, 0 = off).
+    // Randomizes each query's label length so they aren't all identical; small values barely touch MTU.
+    @Volatile var dnsLabelLengthJitter = DEFAULT_DNS_LABEL_LENGTH_JITTER
     // Client-only pacing knob: cap on DNS poll queries/second (0 = unlimited). No server counterpart.
     @Volatile var maxPollQps = DEFAULT_MAX_POLL_QPS
     // Cap data-bearing DNS queries/sec (0 = unlimited). Configurable in profile advanced settings.
@@ -136,6 +143,7 @@ object SlipstreamBridge {
         if (nativeIsClientRunning()) stopClient()
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
+        runCatching { nativeSetDnsLabelLengthJitter(dnsLabelLengthJitter) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
         runCatching { nativeSetMaxDataQps(maxDataQps) }
         runCatching { nativeSetBase64uEncoding(base64uEncoding) }
@@ -198,6 +206,7 @@ object SlipstreamBridge {
         )
         runCatching { nativeSetDnsQueryType(dnsQueryType) }
         runCatching { nativeSetDnsLabelLength(dnsLabelLength) }
+        runCatching { nativeSetDnsLabelLengthJitter(dnsLabelLengthJitter) }
         runCatching { nativeSetMaxPollQps(maxPollQps) }
         runCatching { nativeSetMaxDataQps(maxDataQps) }
         runCatching { nativeSetBase64uEncoding(base64uEncoding) }
@@ -274,6 +283,7 @@ object SlipstreamBridge {
     private external fun nativeStopSlipstreamClient()
     private external fun nativeSetDnsQueryType(qtype: Int)
     private external fun nativeSetDnsLabelLength(labelLength: Int)
+    private external fun nativeSetDnsLabelLengthJitter(jitter: Int)
     private external fun nativeSetMaxPollQps(qps: Int)
     private external fun nativeSetMaxDataQps(qps: Int)
     private external fun nativeSetBase64uEncoding(enabled: Boolean)

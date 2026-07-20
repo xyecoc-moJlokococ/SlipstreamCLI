@@ -26,6 +26,11 @@ data class Config(
     // DNS label length (1-63, default 57) for the encoded subdomain; the server strips dots before
     // decoding, so this never needs to match anything server-side.
     val dnsLabelLength: Int = 57,
+    // Per-query jitter (chars below dnsLabelLength, 0 = off) so the encoded labels aren't all the
+    // exact same length -- breaks the constant-label-length DNS-tunnel fingerprint. Small default
+    // (4 -> labels vary in 53..57) keeps the transport MTU effectively unchanged; larger values mask
+    // more but slightly lower the MTU. Client-only (server strips dots before decoding).
+    val dnsLabelLengthJitter: Int = 4,
     // Cap on empty DNS poll queries/sec (0 = unlimited). These pull DOWNLOAD + window updates.
     // Separate from maxDataQps (upload). Default 1400; during bulk upload a reserve (≥400) is kept
     // so download / MAX_STREAM_DATA / DC responses are not starved (stability > peak upload).
@@ -135,6 +140,7 @@ object ConfigStore {
             password = p.getString("password", "") ?: "",
             dnsQueryType = p.getInt("dnsQueryType", 16),
             dnsLabelLength = p.getInt("dnsLabelLength", 57),
+            dnsLabelLengthJitter = p.getInt("dnsLabelLengthJitter", 4),
             maxPollQps = p.getInt("maxPollQps", 1400),
             maxDataQps = p.getInt("maxDataQps", 800),
             maxActiveClients = p.getInt("maxActiveClients", 40),
@@ -433,6 +439,7 @@ object ConfigStore {
             .putString("password", config.password)
             .putInt("dnsQueryType", config.dnsQueryType)
             .putInt("dnsLabelLength", config.dnsLabelLength)
+            .putInt("dnsLabelLengthJitter", config.dnsLabelLengthJitter)
             .putInt("maxPollQps", config.maxPollQps)
             .putInt("maxDataQps", config.maxDataQps)
             .putInt("maxActiveClients", config.maxActiveClients)
@@ -477,6 +484,7 @@ object ConfigStore {
             .put("password", config.password)
             .put("dnsQueryType", config.dnsQueryType)
             .put("dnsLabelLength", config.dnsLabelLength)
+            .put("dnsLabelLengthJitter", config.dnsLabelLengthJitter)
             .put("maxPollQps", config.maxPollQps)
             .put("maxDataQps", config.maxDataQps)
             .put("maxActiveClients", config.maxActiveClients)
@@ -497,6 +505,7 @@ object ConfigStore {
             password = json.optString("password", ""),
             dnsQueryType = json.optInt("dnsQueryType", 16),
             dnsLabelLength = json.optInt("dnsLabelLength", 57),
+            dnsLabelLengthJitter = json.optInt("dnsLabelLengthJitter", 4),
             maxPollQps = json.optInt("maxPollQps", 1400),
             maxDataQps = json.optInt("maxDataQps", 800),
             maxActiveClients = json.optInt("maxActiveClients", 40),
@@ -567,6 +576,7 @@ private object SlipstreamLinkParser {
             base.authMode
         }
         val dnsLabelLength = first(params, "dnslabellength")?.toIntOrNull()?.coerceIn(1, 63) ?: base.dnsLabelLength
+        val dnsLabelLengthJitter = first(params, "dnslabellengthjitter")?.toIntOrNull()?.coerceIn(0, 56) ?: base.dnsLabelLengthJitter
         val maxPollQps = first(params, "maxpollqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxPollQps
         val maxDataQps = first(params, "maxdataqps")?.toIntOrNull()?.coerceAtLeast(0) ?: base.maxDataQps
         val maxActiveClients = first(params, "maxactiveclients")?.toIntOrNull()?.coerceAtLeast(1) ?: base.maxActiveClients
@@ -585,6 +595,7 @@ private object SlipstreamLinkParser {
             username = first(params, "username", "user") ?: base.username,
             password = first(params, "password", "pass") ?: base.password,
             dnsLabelLength = dnsLabelLength,
+            dnsLabelLengthJitter = dnsLabelLengthJitter,
             maxPollQps = maxPollQps,
             maxDataQps = maxDataQps,
             maxActiveClients = maxActiveClients,

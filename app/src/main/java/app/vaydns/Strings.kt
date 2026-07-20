@@ -71,6 +71,7 @@ enum class S(val en: String, val ru: String) {
     USERNAME("Username", "Логин"),
     PASSWORD("Password", "Пароль"),
     DNS_LABEL_LENGTH("DNS label length", "Длина DNS-метки"),
+    DNS_LABEL_LENGTH_JITTER("DNS label length jitter", "Джиттер длины DNS-метки"),
     MAX_POLL_RATE("Max download polls (queries/sec)", "Макс. download-опросы (запросов/сек)"),
     MAX_DATA_RATE("Max upload data (queries/sec)", "Макс. upload data (запросов/сек)"),
     MAX_ACTIVE_CONNECTIONS("Max active connections", "Макс. активных соединений"),
@@ -120,6 +121,10 @@ enum class S(val en: String, val ru: String) {
     HINT_DNS_LABEL_LENGTH(
         "1-63, default 57. Length of each DNS label in the encoded query.",
         "1-63, по умолчанию 57. Длина каждой DNS-метки в закодированном запросе."
+    ),
+    HINT_DNS_LABEL_LENGTH_JITTER(
+        "0 = off. Default 4: randomizes each query's label length (within [len-jitter, len]) so labels aren't all identical -- harder to fingerprint. Small values barely affect speed; higher masks more but slightly lowers MTU.",
+        "0 = выкл. По умолчанию 4: случайно меняет длину метки в каждом запросе (в диапазоне [длина-джиттер, длина]), чтобы метки не были одинаковыми — сложнее распознать по сигнатуре. Малые значения почти не влияют на скорость; большие лучше маскируют, но чуть снижают MTU."
     ),
     HINT_MAX_POLL_QPS(
         "0 = unlimited. Empty DNS polls that pull DOWNLOAD (and MAX_STREAM_DATA). Separate from upload. Default 1400; ~400+ kept during upload so download is not starved.",

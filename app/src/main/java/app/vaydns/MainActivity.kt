@@ -76,6 +76,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var language: Spinner
     private lateinit var auth: LinearLayout
     private lateinit var dnsLabelLengthField: EditText
+    private lateinit var dnsLabelLengthJitterField: EditText
     private lateinit var maxPollQpsField: EditText
     private lateinit var maxDataQpsField: EditText
     private lateinit var maxActiveClientsField: EditText
@@ -1247,6 +1248,9 @@ class MainActivity : android.app.Activity() {
         dnsLabelLengthField = edit("dns label length", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.dns_label_length_field
         }
+        dnsLabelLengthJitterField = edit("dns label length jitter", InputType.TYPE_CLASS_NUMBER).apply {
+            id = R.id.dns_label_length_jitter_field
+        }
         maxPollQpsField = edit("max poll qps", InputType.TYPE_CLASS_NUMBER).apply {
             id = R.id.max_poll_qps_field
         }
@@ -1295,6 +1299,11 @@ class MainActivity : android.app.Activity() {
         root.addView(labeledField(t(S.DNS_LABEL_LENGTH), dnsLabelLengthField), fieldParams())
         root.addView(
             hintText(t(S.HINT_DNS_LABEL_LENGTH)),
+            compactSectionParams()
+        )
+        root.addView(labeledField(t(S.DNS_LABEL_LENGTH_JITTER), dnsLabelLengthJitterField), fieldParams())
+        root.addView(
+            hintText(t(S.HINT_DNS_LABEL_LENGTH_JITTER)),
             compactSectionParams()
         )
         root.addView(labeledField(t(S.MAX_POLL_RATE), maxPollQpsField), fieldParams())
@@ -1932,6 +1941,7 @@ class MainActivity : android.app.Activity() {
         username.setText(c.username)
         password.setText(c.password)
         dnsLabelLengthField.setText(c.dnsLabelLength.toString())
+        dnsLabelLengthJitterField.setText(c.dnsLabelLengthJitter.toString())
         maxPollQpsField.setText(c.maxPollQps.toString())
         maxDataQpsField.setText(c.maxDataQps.toString())
         maxActiveClientsField.setText(c.maxActiveClients.toString())
@@ -2112,6 +2122,7 @@ class MainActivity : android.app.Activity() {
                 editingBaseConfig?.dnsQueryType ?: 16
             },
             dnsLabelLength = dnsLabelLengthField.text.toString().toIntOrNull()?.coerceIn(1, 63) ?: 57,
+            dnsLabelLengthJitter = dnsLabelLengthJitterField.text.toString().toIntOrNull()?.coerceIn(0, 56) ?: 4,
             maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 1400,
             maxDataQps = maxDataQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 800,
             maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 40,
@@ -2181,6 +2192,7 @@ class MainActivity : android.app.Activity() {
                 SlipstreamBridge.proxyOnlyMode = true
                 SlipstreamBridge.dnsQueryType = c.dnsQueryType
                 SlipstreamBridge.dnsLabelLength = c.dnsLabelLength
+                SlipstreamBridge.dnsLabelLengthJitter = c.dnsLabelLengthJitter
                 SlipstreamBridge.maxPollQps = c.maxPollQps
                 SlipstreamBridge.maxDataQps = c.maxDataQps
                 SlipstreamBridge.base64uEncoding = c.base64uEncoding
