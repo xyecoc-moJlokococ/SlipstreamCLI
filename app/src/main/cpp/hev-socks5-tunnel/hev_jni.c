@@ -26,6 +26,14 @@ static int tun_fd_global = -1;
 static char crash_log_path[512];
 static volatile sig_atomic_t signal_handlers_installed = 0;
 
+/* Previous (debuggerd) handlers, saved at install time so native_signal_handler can chain to them
+ * and still produce a full tombstone (backtrace + abort message). The old SIG_DFL path skipped
+ * debuggerd entirely -- which is why these SIGABRTs had no tombstone and were undiagnosable. */
+#ifndef NSIG
+#define NSIG 65
+#endif
+static struct sigaction old_handlers[NSIG];
+
 static void append_crash_log_line(const char *line) {
     if (!crash_log_path[0]) {
         return;
@@ -54,7 +62,15 @@ static void native_signal_handler(int sig, siginfo_t *info, void *ctx) {
         append_crash_log_line(line);
     }
 
-    signal(sig, SIG_DFL);
+    /* Chain to the previously-installed handler (normally debuggerd) so Android still writes a
+     * tombstone with a real backtrace + abort message. Restoring plain SIG_DFL here (the old code)
+     * skipped debuggerd, which is exactly why these crashes produced no tombstone and the component
+     * label is a hardcoded guess. Works for both a Rust panic (panic=abort) and a C-side abort. */
+    if (sig > 0 && sig < NSIG) {
+        sigaction(sig, &old_handlers[sig], NULL);
+    } else {
+        signal(sig, SIG_DFL);
+    }
     raise(sig);
 }
 
@@ -69,11 +85,11 @@ static void install_signal_handlers(void) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_SIGINFO;
 
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
-    sigaction(SIGBUS, &sa, NULL);
-    sigaction(SIGILL, &sa, NULL);
-    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGSEGV, &sa, &old_handlers[SIGSEGV]);
+    sigaction(SIGABRT, &sa, &old_handlers[SIGABRT]);
+    sigaction(SIGBUS, &sa, &old_handlers[SIGBUS]);
+    sigaction(SIGILL, &sa, &old_handlers[SIGILL]);
+    sigaction(SIGFPE, &sa, &old_handlers[SIGFPE]);
     signal_handlers_installed = 1;
 }
 
