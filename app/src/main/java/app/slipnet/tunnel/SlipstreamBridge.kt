@@ -165,11 +165,8 @@ object SlipstreamBridge {
             "",
             5000,
             false,
-            // DIAGNOSTIC BUILD: debugPoll/debugStreams on to trace where the QUIC handshake stalls
-            // (per-interval dns+/send_pkts+/polls+/zero_send+/pending_polls/inflight_polls report).
-            // Revert both to false before shipping -- this is verbose and costs CPU on the hot loop.
-            true,
-            true,
+            false,
+            false,
             10000,
             120000,
             transport,
