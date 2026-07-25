@@ -317,15 +317,37 @@ object ResolverSelector {
             .distinct()
     }
 
+    /**
+     * Split a manual resolver setting into the list of hosts to run over simultaneously.
+     *
+     * The whole chain below this point is already multi-resolver — [ResolverChoice.hosts],
+     * `ResolverListConfig.hosts`, the `resolverHosts: Array<String>` JNI parameter and the engine's
+     * multipath paths — only the manual setting was single-valued. Accepting a separated list here
+     * is what lets one profile use several resolvers at once.
+     *
+     * Why bother: a recursive resolver rate-limits *per client*, and the operator's resolvers turn
+     * out to be independent instances (measured on T2: `.157` reaches our authoritative server from
+     * egress `.156`, `.161` from `.160`), so each one is its own budget. Two resolvers also mean a
+     * single dead or throttled one no longer takes the tunnel down with it.
+     *
+     * Separators are comma / semicolon / whitespace so "1.1.1.1, 8.8.8.8" and one-per-line both work.
+     */
+    fun parseManualHosts(raw: String): List<String> =
+        raw.split(',', ';', ' ', '\t', '\n', '\r')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
     fun choose(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
         val generation = beginProbe(reason)
         checkNotCancelled(generation)
         val port = config.resolverPort
         if (config.resolverMode == Config.ResolverMode.MANUAL) {
-            val host = config.resolverHost.trim()
-            AppLog.i(TAG, "manual resolver selected host=$host:$port reason=$reason")
-            lastProgress = Progress(active = false, reason = reason, phase = "done", tested = 1, total = 1, alive = 1, selected = host)
-            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1, transport = config.resolverTransport)
+            val hosts = parseManualHosts(config.resolverHost)
+            val host = hosts.firstOrNull() ?: config.resolverHost.trim()
+            AppLog.i(TAG, "manual resolver selected hosts=${hosts.joinToString(",")}:$port reason=$reason")
+            lastProgress = Progress(active = false, reason = reason, phase = "done", tested = hosts.size, total = hosts.size, alive = hosts.size, selected = host)
+            return ResolverChoice(hosts.ifEmpty { listOf(host) }, port, host, "manual", qnameMtu = 0, testedCount = hosts.size, aliveCount = hosts.size, transport = config.resolverTransport)
         }
 
         val probe = autoProbe(context, port, reason, generation)
@@ -741,10 +763,11 @@ object ResolverSelector {
         checkNotCancelled(generation)
         val port = config.resolverPort
         if (config.resolverMode == Config.ResolverMode.MANUAL) {
-            val host = config.resolverHost.trim()
-            AppLog.i(TAG, "manual resolver selected host=$host:$port reason=$reason")
-            lastProgress = Progress(active = false, reason = reason, phase = "done", tested = 1, total = 1, alive = 1, selected = host)
-            return ResolverChoice(listOf(host), port, host, "manual", qnameMtu = 0, testedCount = 1, aliveCount = 1, transport = config.resolverTransport)
+            val hosts = parseManualHosts(config.resolverHost)
+            val host = hosts.firstOrNull() ?: config.resolverHost.trim()
+            AppLog.i(TAG, "manual resolver selected hosts=${hosts.joinToString(",")}:$port reason=$reason")
+            lastProgress = Progress(active = false, reason = reason, phase = "done", tested = hosts.size, total = hosts.size, alive = hosts.size, selected = host)
+            return ResolverChoice(hosts.ifEmpty { listOf(host) }, port, host, "manual", qnameMtu = 0, testedCount = hosts.size, aliveCount = hosts.size, transport = config.resolverTransport)
         }
         val cached = loadResolverCache(context, config)
         if (cached != null) {

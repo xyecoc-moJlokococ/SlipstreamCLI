@@ -1214,7 +1214,7 @@ class MainActivity : android.app.Activity() {
             setText(profile?.name ?: config.domain.ifBlank { t(S.CD_NEW_PROFILE) })
         }
         domain = edit("domain").apply { id = R.id.domain_field }
-        resolverHost = edit("resolver host").apply { id = R.id.resolver_host_field }
+        resolverHost = edit("1.2.3.4 or 1.2.3.4, 5.6.7.8").apply { id = R.id.resolver_host_field }
         // Ghost/link style (transparent, accent-colored text) instead of a full secondary button --
         // a compact inline "quick-fill" action next to the resolver field.
         useLocalDns = button(t(S.LOCAL_BTN)).apply {

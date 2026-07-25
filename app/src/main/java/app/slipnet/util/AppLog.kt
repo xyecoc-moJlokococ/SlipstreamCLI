@@ -126,10 +126,33 @@ object AppLog {
             if (pending.isEmpty()) return
             pending.toString().also { pending.setLength(0) }
         }
-        runCatching {
+        try {
             val f = file(context)
-            if (f.length() > MAX_FILE_SIZE_BYTES) f.writeText("")
+            if (f.length() > MAX_FILE_SIZE_BYTES) rotate(f)
             f.appendText(chunk)
+        } catch (error: Throwable) {
+            // Never fail silently. A swallowed write error here is indistinguishable from "file
+            // logging is switched off", and the log going quiet is exactly when it is being relied
+            // on -- logcat is the only channel guaranteed to still work, so complain there.
+            android.util.Log.e("AppLog", "file log write failed, dropped ${chunk.length} chars", error)
+        }
+    }
+
+    /**
+     * Roll over to `<name>.1` instead of truncating.
+     *
+     * The cap used to `writeText("")` the live file, which erased the whole history the moment it
+     * was hit -- i.e. precisely after a long session, when the earlier context is what you need.
+     * Keeping one previous generation bounds disk use at ~2x the cap while preserving it.
+     */
+    private fun rotate(f: File) {
+        try {
+            val previous = File(f.parentFile, "$FILE_NAME.1")
+            if (previous.exists()) previous.delete()
+            if (!f.renameTo(previous)) f.writeText("")
+        } catch (error: Throwable) {
+            android.util.Log.e("AppLog", "log rotation failed; truncating instead", error)
+            runCatching { f.writeText("") }
         }
     }
 

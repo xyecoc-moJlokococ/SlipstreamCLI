@@ -62,7 +62,7 @@ enum class S(val en: String, val ru: String) {
     PROFILE_NAME("Profile name", "Название профиля"),
     DOMAIN("Domain", "Домен"),
     DNS_MODE("DNS mode", "Режим DNS"),
-    RESOLVER_HOST("Resolver host", "Хост резолвера"),
+    RESOLVER_HOST("Resolver host(s), comma-separated", "Хосты резолверов через запятую"),
     TRANSPORT("Transport", "Транспорт"),
     RESOLVER_PORT("Resolver port", "Порт резолвера"),
     DNS_QUERY_TYPE("DNS query type", "Тип DNS-запроса"),
