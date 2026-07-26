@@ -23,11 +23,15 @@ object HevSocks5Tunnel {
         socksAddress: String,
         socksPort: Int,
         username: String?,
-        password: String?
+        password: String?,
+        // How UDP is carried to the SOCKS proxy: 'tcp' = hev's UDP-in-TCP scheme
+        // (what MiniSlipstreamSocksBridge speaks), 'udp' = standard SOCKS5 UDP
+        // ASSOCIATE (what the s3fu client implements natively).
+        udpMode: String = "tcp"
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("hev-socks5-tunnel is not loaded"))
         if (isRunning()) stop()
-        val config = buildConfig(socksAddress, socksPort, username, password)
+        val config = buildConfig(socksAddress, socksPort, username, password, udpMode)
         AppLog.i(TAG, "start tun2socks socks=$socksAddress:$socksPort")
         AppLog.d(TAG, config)
         nativeSetRejectQuic(true)
@@ -56,7 +60,8 @@ object HevSocks5Tunnel {
         )
     }
 
-    private fun buildConfig(address: String, port: Int, username: String?, password: String?): String = buildString {
+    private fun buildConfig(address: String, port: Int, username: String?, password: String?, udpMode: String): String = buildString {
+        val udp = if (udpMode == "udp") "udp" else "tcp"
         appendLine("tunnel:")
         appendLine("  mtu: 1500")
         appendLine("  ipv4: 10.255.0.2")
@@ -65,7 +70,7 @@ object HevSocks5Tunnel {
         appendLine("socks5:")
         appendLine("  address: $address")
         appendLine("  port: $port")
-        appendLine("  udp: 'tcp'")
+        appendLine("  udp: '$udp'")
         if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
             appendLine("  username: '${username.replace("'", "''")}'")
             appendLine("  password: '${password.replace("'", "''")}'")

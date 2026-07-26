@@ -88,6 +88,16 @@ class MainActivity : android.app.Activity() {
     private lateinit var localSocksPassword: EditText
     private lateinit var dnsResolverPool: EditText
     private lateinit var profileName: EditText
+    // Protocol selector + the two mutually-exclusive field groups it toggles.
+    private lateinit var protocolSelector: LinearLayout
+    private lateinit var slipstreamSection: LinearLayout
+    private lateinit var s3fuSection: LinearLayout
+    private lateinit var s3Endpoint: EditText
+    private lateinit var s3Bucket: EditText
+    private lateinit var s3AccessKey: EditText
+    private lateinit var s3SecretKey: EditText
+    private lateinit var s3UserId: EditText
+    private lateinit var s3Psk: EditText
     // The config the editor was opened with (profile's own config, or active/default for a new
     // profile). Used to preserve fields that have no editor UI (e.g. dnsQueryType) across saves,
     // so editing unrelated fields doesn't silently reset them to their defaults.
@@ -1268,64 +1278,65 @@ class MainActivity : android.app.Activity() {
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
         }
 
-        root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
-        root.addView(labeledField(t(S.DOMAIN), domain), fieldParams())
+        // Protocol picker + the two mutually-exclusive field groups it toggles.
+        protocolSelector = pillSelector(listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU))) { updateProtocolUi() }
+        s3Endpoint = edit("https://s3c3.001.gpucloud.ru")
+        s3Bucket = edit(t(S.S3_BUCKET_HINT))
+        s3AccessKey = edit(t(S.S3_ACCESS_KEY))
+        s3SecretKey = edit(t(S.S3_SECRET_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        s3UserId = edit(t(S.S3_USER_ID_HINT))
+        s3Psk = edit(t(S.S3_PSK_HINT))
 
-        root.addView(sectionTitle(t(S.DNS_RESOLVER)), sectionParams())
-        root.addView(labeledField(t(S.DNS_MODE), resolverMode), fieldParams())
+        root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
+        root.addView(labeledField(t(S.PROTOCOL), protocolSelector), fieldParams())
+
+        // --- Slipstream (DNS) fields ---
+        slipstreamSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        slipstreamSection.addView(labeledField(t(S.DOMAIN), domain), fieldParams())
+        slipstreamSection.addView(sectionTitle(t(S.DNS_RESOLVER)), sectionParams())
+        slipstreamSection.addView(labeledField(t(S.DNS_MODE), resolverMode), fieldParams())
         resolverHostContainer = labeledField(t(S.RESOLVER_HOST), resolverRow)
-        root.addView(resolverHostContainer, fieldParams())
+        slipstreamSection.addView(resolverHostContainer, fieldParams())
         resolverTransportContainer = labeledField(t(S.TRANSPORT), resolverTransport)
-        root.addView(
+        slipstreamSection.addView(
             row(labeledField(t(S.RESOLVER_PORT), resolverPort), resolverTransportContainer),
             fieldParams()
         )
         dnsQueryTypeContainer = labeledField(t(S.DNS_QUERY_TYPE), dnsQueryType)
-        root.addView(dnsQueryTypeContainer, fieldParams())
+        slipstreamSection.addView(dnsQueryTypeContainer, fieldParams())
         dnsQueryTypeHint = hintText(t(S.HINT_DNS_QUERY_TYPE))
-        root.addView(dnsQueryTypeHint, fieldParams())
-        root.addView(labeledField(t(S.DNS_PATH_MODE), resolverPathMode), fieldParams())
+        slipstreamSection.addView(dnsQueryTypeHint, fieldParams())
+        slipstreamSection.addView(labeledField(t(S.DNS_PATH_MODE), resolverPathMode), fieldParams())
+        slipstreamSection.addView(sectionTitle(t(S.AUTHENTICATION)), sectionParams())
+        slipstreamSection.addView(labeledField(t(S.AUTH_MODE), auth), fieldParams())
+        slipstreamSection.addView(labeledField(t(S.USERNAME), username), fieldParams())
+        slipstreamSection.addView(labeledField(t(S.PASSWORD), password), fieldParams())
+        slipstreamSection.addView(sectionTitle(t(S.ADVANCED_CLIENT_ONLY)), sectionParams())
+        slipstreamSection.addView(hintText(t(S.HINT_ADVANCED_CLIENT_ONLY)), fieldParams())
+        slipstreamSection.addView(labeledField(t(S.DNS_LABEL_LENGTH), dnsLabelLengthField), fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_DNS_LABEL_LENGTH)), compactSectionParams())
+        slipstreamSection.addView(labeledField(t(S.DNS_LABEL_LENGTH_JITTER), dnsLabelLengthJitterField), fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_DNS_LABEL_LENGTH_JITTER)), compactSectionParams())
+        slipstreamSection.addView(labeledField(t(S.MAX_POLL_RATE), maxPollQpsField), fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_MAX_POLL_QPS)), compactSectionParams())
+        slipstreamSection.addView(labeledField(t(S.MAX_DATA_RATE), maxDataQpsField), fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_MAX_DATA_QPS)), compactSectionParams())
+        slipstreamSection.addView(labeledField(t(S.MAX_ACTIVE_CONNECTIONS), maxActiveClientsField), fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_MAX_ACTIVE_CLIENTS)), compactSectionParams())
+        slipstreamSection.addView(base64uEncodingCheckbox, fieldParams())
+        slipstreamSection.addView(hintText(t(S.HINT_BASE64U)), compactSectionParams())
+        root.addView(slipstreamSection, fieldParams())
 
-        root.addView(sectionTitle(t(S.AUTHENTICATION)), sectionParams())
-        root.addView(labeledField(t(S.AUTH_MODE), auth), fieldParams())
-        root.addView(labeledField(t(S.USERNAME), username), fieldParams())
-        root.addView(labeledField(t(S.PASSWORD), password), fieldParams())
-
-        root.addView(sectionTitle(t(S.ADVANCED_CLIENT_ONLY)), sectionParams())
-        root.addView(
-            hintText(t(S.HINT_ADVANCED_CLIENT_ONLY)),
-            fieldParams()
-        )
-        root.addView(labeledField(t(S.DNS_LABEL_LENGTH), dnsLabelLengthField), fieldParams())
-        root.addView(
-            hintText(t(S.HINT_DNS_LABEL_LENGTH)),
-            compactSectionParams()
-        )
-        root.addView(labeledField(t(S.DNS_LABEL_LENGTH_JITTER), dnsLabelLengthJitterField), fieldParams())
-        root.addView(
-            hintText(t(S.HINT_DNS_LABEL_LENGTH_JITTER)),
-            compactSectionParams()
-        )
-        root.addView(labeledField(t(S.MAX_POLL_RATE), maxPollQpsField), fieldParams())
-        root.addView(
-            hintText(t(S.HINT_MAX_POLL_QPS)),
-            compactSectionParams()
-        )
-        root.addView(labeledField(t(S.MAX_DATA_RATE), maxDataQpsField), fieldParams())
-        root.addView(
-            hintText(t(S.HINT_MAX_DATA_QPS)),
-            compactSectionParams()
-        )
-        root.addView(labeledField(t(S.MAX_ACTIVE_CONNECTIONS), maxActiveClientsField), fieldParams())
-        root.addView(
-            hintText(t(S.HINT_MAX_ACTIVE_CLIENTS)),
-            compactSectionParams()
-        )
-        root.addView(base64uEncodingCheckbox, fieldParams())
-        root.addView(
-            hintText(t(S.HINT_BASE64U)),
-            compactSectionParams()
-        )
+        // --- S3 (s3-fuckup) fields ---
+        s3fuSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        s3fuSection.addView(sectionTitle(t(S.S3_SECTION)), sectionParams())
+        s3fuSection.addView(labeledField(t(S.S3_ENDPOINT), s3Endpoint), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_BUCKET), s3Bucket), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_ACCESS_KEY), s3AccessKey), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_SECRET_KEY), s3SecretKey), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_USER_ID), s3UserId), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
+        root.addView(s3fuSection, fieldParams())
 
         if (profile != null) {
             root.addView(button(t(S.DELETE_PROFILE_BTN)).apply {
@@ -1946,7 +1957,23 @@ class MainActivity : android.app.Activity() {
         maxDataQpsField.setText(c.maxDataQps.toString())
         maxActiveClientsField.setText(c.maxActiveClients.toString())
         base64uEncodingCheckbox.isChecked = c.base64uEncoding
+        protocolSelector.setPillSelectedIndex(if (c.protocol == Config.TunnelProtocol.S3FU) 1 else 0)
+        s3Endpoint.setText(c.s3Endpoint)
+        s3Bucket.setText(c.s3Bucket)
+        s3AccessKey.setText(c.s3AccessKey)
+        s3SecretKey.setText(c.s3SecretKey)
+        s3UserId.setText(c.s3UserId)
+        s3Psk.setText(c.s3Psk)
         updateResolverUi()
+        updateProtocolUi()
+    }
+
+    /** Show the field group for the selected protocol, hide the other. */
+    private fun updateProtocolUi() {
+        if (!::protocolSelector.isInitialized) return
+        val s3 = protocolSelector.pillSelectedIndex() == 1
+        if (::slipstreamSection.isInitialized) slipstreamSection.visibility = if (s3) View.GONE else View.VISIBLE
+        if (::s3fuSection.isInitialized) s3fuSection.visibility = if (s3) View.VISIBLE else View.GONE
     }
 
     private fun selectProfile(profile: ConfigProfile) {
@@ -2126,7 +2153,15 @@ class MainActivity : android.app.Activity() {
             maxPollQps = maxPollQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 1400,
             maxDataQps = maxDataQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 800,
             maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 40,
-            base64uEncoding = base64uEncodingCheckbox.isChecked
+            base64uEncoding = base64uEncodingCheckbox.isChecked,
+            protocol = if (protocolSelector.pillSelectedIndex() == 1) Config.TunnelProtocol.S3FU else Config.TunnelProtocol.SLIPSTREAM,
+            s3Endpoint = s3Endpoint.text.toString().trim(),
+            s3Bucket = s3Bucket.text.toString().trim(),
+            s3AccessKey = s3AccessKey.text.toString().trim(),
+            s3SecretKey = s3SecretKey.text.toString().trim(),
+            s3Region = editingBaseConfig?.s3Region ?: "",
+            s3UserId = s3UserId.text.toString().trim(),
+            s3Psk = s3Psk.text.toString().trim()
         )
     }
 
@@ -2166,7 +2201,9 @@ class MainActivity : android.app.Activity() {
         connectStartedAt = System.currentTimeMillis()
         updateStatus()
         ConfigStore.save(this, c)
-        if (c.mode == Config.Mode.VPN) {
+        // s3fu needs the TUN + hev bridge, so it always uses the VPN service path even if the
+        // global connection mode is PROXY (a SOCKS-only s3fu mode isn't wired yet).
+        if (c.mode == Config.Mode.VPN || c.protocol == Config.TunnelProtocol.S3FU) {
             pendingStartVpn = true
             continuePreflight()
         } else {

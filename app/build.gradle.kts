@@ -55,6 +55,9 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDir("build/rustJniLibs/android")
+            // libs3fu.so is staged here by the cargoBuildS3fu task (kept separate from the
+            // rust-android plugin's managed dir so the plugin never clobbers it).
+            jniLibs.srcDir("build/s3fuJniLibs")
         }
     }
 
@@ -130,6 +133,23 @@ cargo {
     }
 }
 
+// Build libs3fu.so (the s3-fuckup S3 dead-drop tunnel) for arm64 alongside libslipstream.so.
+// The rust-android-gradle `cargo {}` block only drives one module, so this second Rust crate
+// (a different workspace at ../../../s3-fuckup) is built by a dedicated Exec task that mirrors
+// the NDK cross-compile env. See s3-fuckup/build-android.sh.
+val cargoBuildS3fu by tasks.registering(Exec::class) {
+    val moduleDir = file("$projectDir/../../../s3-fuckup")
+    val outDir = file("$projectDir/build/s3fuJniLibs/arm64-v8a")
+    workingDir = moduleDir
+    commandLine("bash", "${moduleDir.absolutePath}/build-android.sh")
+    doFirst {
+        outDir.mkdirs()
+        environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        environment("S3FU_OUT_DIR", outDir.absolutePath)
+    }
+}
+
 tasks.named("preBuild") {
     dependsOn("cargoBuildArm64")
+    dependsOn(cargoBuildS3fu)
 }

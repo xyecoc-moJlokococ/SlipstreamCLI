@@ -54,6 +54,21 @@ enum class S(val en: String, val ru: String) {
     ADVANCED_CLIENT_ONLY("Advanced (client-only)", "Дополнительно (только клиент)"),
     ACTIONS("Actions", "Действия"),
 
+    // s3-fuckup (S3 dead-drop tunnel)
+    PROTOCOL("Protocol", "Протокол"),
+    PROTOCOL_SLIPSTREAM("Slipstream (DNS)", "Slipstream (DNS)"),
+    PROTOCOL_S3FU("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
+    S3_SECTION("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
+    S3_ENDPOINT("S3 endpoint", "S3 endpoint"),
+    S3_BUCKET("Bucket", "Бакет"),
+    S3_BUCKET_HINT("bucket name", "имя бакета"),
+    S3_ACCESS_KEY("Access key", "Access key"),
+    S3_SECRET_KEY("Secret key", "Secret key"),
+    S3_USER_ID("Login", "Логин"),
+    S3_USER_ID_HINT("login issued by the bot", "логин от бота"),
+    S3_PSK("PSK", "PSK"),
+    S3_PSK_HINT("64 hex chars", "64 hex-символа"),
+
     // Field labels
     LOCAL_PORT("Local port", "Локальный порт"),
     CONNECTION_MODE("Connection mode", "Режим подключения"),
@@ -62,7 +77,7 @@ enum class S(val en: String, val ru: String) {
     PROFILE_NAME("Profile name", "Название профиля"),
     DOMAIN("Domain", "Домен"),
     DNS_MODE("DNS mode", "Режим DNS"),
-    RESOLVER_HOST("Resolver host(s), comma-separated", "Хосты резолверов через запятую"),
+    RESOLVER_HOST("Resolver host", "DNS-резолвер"),
     TRANSPORT("Transport", "Транспорт"),
     RESOLVER_PORT("Resolver port", "Порт резолвера"),
     DNS_QUERY_TYPE("DNS query type", "Тип DNS-запроса"),

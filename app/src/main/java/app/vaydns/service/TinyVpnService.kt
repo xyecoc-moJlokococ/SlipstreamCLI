@@ -20,6 +20,7 @@ import android.os.Process
 import android.os.SystemClock
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.MiniSlipstreamSocksBridge
+import app.slipnet.tunnel.S3fuBridge
 import app.slipnet.tunnel.ResolverListConfig
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.util.AppLog
@@ -138,7 +139,12 @@ class TinyVpnService : VpnService() {
     }
 
     private fun startTunnelWorker(generation: Int) {
-        val config = normalizeAutoConfig(ConfigStore.effectiveConfig(this))
+        val rawConfig = ConfigStore.effectiveConfig(this)
+        if (rawConfig.protocol == Config.TunnelProtocol.S3FU) {
+            startS3fuTunnelWorker(generation, rawConfig)
+            return
+        }
+        val config = normalizeAutoConfig(rawConfig)
         currentConfig = config
         tunnelActive = true
         AppLog.i(TAG, "VPN start config=${config.copy(password = if (config.password.isBlank()) "" else "***")}")
@@ -253,6 +259,135 @@ class TinyVpnService : VpnService() {
         }
     }
 
+    /**
+     * S3FU protocol path: no DNS resolver machinery. Start the native s3fu SOCKS5
+     * client, then layer the existing tun2socks (hev) onto it exactly as the DNS
+     * path does. The app already excludes its own package from the VPN, so the
+     * client's TLS to the S3 endpoint travels outside the tunnel unaided.
+     */
+    private fun startS3fuTunnelWorker(generation: Int, config: Config) {
+        currentConfig = config
+        tunnelActive = true
+        AppLog.i(
+            TAG,
+            "S3FU start endpoint=${config.s3Endpoint} bucket=${config.s3Bucket} user=${config.s3UserId}"
+        )
+        try {
+            require(config.s3Endpoint.isNotBlank()) { "S3 endpoint is empty" }
+            require(config.s3Bucket.isNotBlank()) { "S3 bucket is empty" }
+            require(config.s3AccessKey.isNotBlank()) { "S3 access key is empty" }
+            require(config.s3SecretKey.isNotBlank()) { "S3 secret key is empty" }
+            require(config.s3UserId.isNotBlank()) { "user id is empty" }
+            require(config.s3Psk.isNotBlank()) { "PSK is empty" }
+            resetTrafficBase()
+
+            val socksPort = config.listenPort
+            val caPath = ensureCaBundle()
+            S3fuBridge.startClient(
+                endpoint = config.s3Endpoint.trim(),
+                bucket = config.s3Bucket.trim(),
+                accessKey = config.s3AccessKey.trim(),
+                secretKey = config.s3SecretKey.trim(),
+                region = config.s3Region.trim(),
+                userId = config.s3UserId.trim(),
+                psk = config.s3Psk.trim(),
+                socksListen = "127.0.0.1:$socksPort",
+                caFile = caPath
+            ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            // The SOCKS listener binds asynchronously inside the native runtime; wait for the
+            // port to accept before wiring the TUN, else the first flows race the bind.
+            if (!waitForLocalPort(socksPort, S3FU_SOCKS_READY_TIMEOUT_MS)) {
+                error("s3fu SOCKS proxy did not come up on 127.0.0.1:$socksPort")
+            }
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            val builder = Builder()
+                .setSession("Slipstream CLI")
+                .setMtu(1500)
+                .addAddress("10.255.0.2", 32)
+                .addAddress("fd00::2", 128)
+                .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
+                .addDnsServer(VPN_DNS_PRIMARY)
+                .addDnsServer(VPN_DNS_SECONDARY)
+            runCatching { builder.addDisallowedApplication(packageName) }
+                .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
+            tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
+
+            // s3fu implements standard SOCKS5 UDP ASSOCIATE (no auth) -> hev udp='udp'.
+            HevSocks5Tunnel.start(
+                tunFd = tunFd ?: error("TUN fd is null"),
+                socksAddress = "127.0.0.1",
+                socksPort = socksPort,
+                username = null,
+                password = null,
+                udpMode = "udp"
+            ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            maybeUpdateTrafficNotification(0, 0, force = true)
+            AppLog.i(TAG, "S3FU VPN connected socks=127.0.0.1:$socksPort")
+            handler.removeCallbacks(diagnostics)
+            handler.post(diagnostics)
+        } catch (e: Throwable) {
+            AppLog.e(TAG, "S3FU VPN start failed", e)
+            runCatching { HevSocks5Tunnel.stop() }
+            runCatching { S3fuBridge.stopClient() }
+            runCatching { tunFd?.close() }
+            tunFd = null
+            tunnelActive = false
+            stopTunnel()
+        }
+    }
+
+    /** Poll-connect to a local TCP port until it accepts or the timeout elapses. */
+    private fun waitForLocalPort(port: Int, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!tunnelActive) return false
+            val ok = runCatching {
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
+                    true
+                }
+            }.getOrDefault(false)
+            if (ok) return true
+            if (!S3fuBridge.isRunning()) return false // native side died -> stop waiting
+            Thread.sleep(100)
+        }
+        return false
+    }
+
+    /** Copy the bundled CA bundle (assets/cacert.pem) into files/ once; return its path. */
+    private fun ensureCaBundle(): String {
+        val out = java.io.File(filesDir, "cacert.pem")
+        if (!out.exists() || out.length() == 0L) {
+            runCatching {
+                assets.open("cacert.pem").use { input ->
+                    out.outputStream().use { output -> input.copyTo(output) }
+                }
+            }.onFailure { AppLog.e(TAG, "cacert.pem copy failed", it) }
+        }
+        return if (out.exists()) out.absolutePath else ""
+    }
+
+    /** Lightweight diagnostics for the S3FU path (no DNS/resolver/bridge machinery). */
+    private fun writeS3fuDiagnostics() {
+        val hev = HevSocks5Tunnel.stats()
+        maybeUpdateTrafficNotification(hev.rxBytes, hev.txBytes)
+        val running = S3fuBridge.isRunning()
+        AppLog.i(
+            TAG,
+            "diag[s3fu] running=$running hevRunning=${HevSocks5Tunnel.isRunning()} " +
+                "tunRx=${hev.rxBytes} tunTx=${hev.txBytes}"
+        )
+        if (!running && tunnelActive) {
+            AppLog.w(TAG, "s3fu client stopped while tunnel active; lastError=${S3fuBridge.lastError() ?: "none"}")
+        }
+    }
+
     private fun startSlipstreamWithTransportFallback(
         config: Config,
         choice: ResolverChoice,
@@ -328,7 +463,8 @@ class TinyVpnService : VpnService() {
             tunFd == null &&
             !HevSocks5Tunnel.isRunning() &&
             !MiniSlipstreamSocksBridge.isRunning() &&
-            !SlipstreamBridge.isRunning()
+            !SlipstreamBridge.isRunning() &&
+            !S3fuBridge.isRunning()
         ) {
             AppLog.i(TAG, "VPN already stopped")
             return
@@ -362,6 +498,8 @@ class TinyVpnService : VpnService() {
                     tunFd = null
                     runCatching { SlipstreamBridge.stopClient() }
                         .onFailure { AppLog.w(TAG, "native stop failed: ${it.message}") }
+                    runCatching { S3fuBridge.stopClient() }
+                        .onFailure { AppLog.w(TAG, "s3fu stop failed: ${it.message}") }
                     SlipstreamBridge.setVpnService(null)
                     AppLog.i(TAG, "VPN stop cleanup finished")
                 } else {
@@ -405,6 +543,10 @@ class TinyVpnService : VpnService() {
     }
 
     private fun writeDiagnostics() {
+        if (currentConfig?.protocol == Config.TunnelProtocol.S3FU) {
+            writeS3fuDiagnostics()
+            return
+        }
         val uid = applicationInfo.uid
         val rx = (TrafficStats.getUidRxBytes(uid).takeIf { it >= 0 } ?: 0) - rxBase
         val tx = (TrafficStats.getUidTxBytes(uid).takeIf { it >= 0 } ?: 0) - txBase
@@ -1457,5 +1599,6 @@ class TinyVpnService : VpnService() {
         private const val DETACHED_RESTART_WINDOW_MS = 120_000L
         private const val PROCESS_RESTART_DELAY_MS = 1_500L
         private const val RESTART_REQUEST_CODE = 4711
+        private const val S3FU_SOCKS_READY_TIMEOUT_MS = 8_000L
     }
 }

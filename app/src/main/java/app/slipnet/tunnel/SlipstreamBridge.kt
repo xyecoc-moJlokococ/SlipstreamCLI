@@ -44,6 +44,25 @@ object SlipstreamBridge {
     // Client-only fingerprint knob: per-query label-length jitter (chars below dnsLabelLength, 0 = off).
     // Randomizes each query's label length so they aren't all identical; small values barely touch MTU.
     @Volatile var dnsLabelLengthJitter = DEFAULT_DNS_LABEL_LENGTH_JITTER
+    /**
+     * Congestion-control override handed to the native client ("" = none).
+     *
+     * With no override, authoritative paths select `slipstream_server_cc`, which disables CC
+     * outright (`cwin` and `pacing.rate` both `UINT64_MAX`). The poll budget is derived from
+     * `pacing_rate`, so an infinite rate means ANY stream activity immediately unlocks the full
+     * ~384 polls in flight — measured on a live handset as ~138 KB/s of cellular traffic for
+     * 0.5 KB/s of actual app data (~260x), which is what keeps the radio hot.
+     *
+     * Naming a real controller makes the poll rate track measured delivery instead.
+     *
+     * MEASURED (T2 / TCP carrier / ns2w): `"bbr"` cut idle cellular traffic ~6 KB/s -> ~2.4 KB/s,
+     * but also cut download throughput ~1.0 MB/s -> ~0.2 MB/s (4-5x). Bulk-transfer efficiency was
+     * unchanged either way (1.29x vs 1.35x of payload). So it is a real speed-for-radio trade, not
+     * a free win, and the default stays off; flip this to "bbr" when battery/heat matters more than
+     * throughput. NOTE this used to be a dead knob (the JNI arg was hardcoded ""), so a profile
+     * setting for it silently did nothing.
+     */
+    @Volatile var congestionControl = ""
     // Client-only pacing knob: cap on DNS poll queries/second (0 = unlimited). No server counterpart.
     @Volatile var maxPollQps = DEFAULT_MAX_POLL_QPS
     // Cap data-bearing DNS queries/sec (0 = unlimited). Configurable in profile advanced settings.
@@ -151,7 +170,7 @@ object SlipstreamBridge {
         AppLog.i(
             TAG,
             "start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
-                "mode=$pathMode transport=$transport cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
+                "mode=$pathMode transport=$transport cc=$congestionControl listen=$DEFAULT_LISTEN_HOST:$listenPort " +
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
                 "maxDataQps=$maxDataQps upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
@@ -162,7 +181,7 @@ object SlipstreamBridge {
             BooleanArray(hosts.size) { resolver.authoritative },
             listenPort,
             DEFAULT_LISTEN_HOST,
-            "",
+            congestionControl,
             5000,
             false,
             false,
@@ -200,7 +219,7 @@ object SlipstreamBridge {
         AppLog.i(
             TAG,
             "probe start domain=$domain resolvers=${hosts.joinToString { "$it:${resolver.port}" }} " +
-                "mode=$pathMode transport=$transport cc=authoritative-fast listen=$DEFAULT_LISTEN_HOST:$listenPort " +
+                "mode=$pathMode transport=$transport cc=$congestionControl listen=$DEFAULT_LISTEN_HOST:$listenPort " +
                 "pacingGain=$DEFAULT_PACING_GAIN_PROBE dnsTcpBurst=$DEFAULT_DNS_TCP_PACKET_LOOP_BURST " +
                 "upstream=qname qnameMtu=${if (qnameMtu > 0) qnameMtu else "max"}"
         )
@@ -217,7 +236,7 @@ object SlipstreamBridge {
             BooleanArray(hosts.size) { resolver.authoritative },
             listenPort,
             DEFAULT_LISTEN_HOST,
-            "",
+            congestionControl,
             5000,
             false,
             false,

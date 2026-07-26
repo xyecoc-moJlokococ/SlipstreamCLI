@@ -47,13 +47,29 @@ data class Config(
     // Encode the tunnel payload with base64u instead of base32 (default false). ~20% denser, but
     // case-sensitive -- only safe once the resolver path is confirmed to preserve label case end to
     // end. Purely a client choice, no server config needed.
-    val base64uEncoding: Boolean = false
+    val base64uEncoding: Boolean = false,
+
+    // --- transport selection ---
+    // Which tunnel engine this profile drives. SLIPSTREAM = the DNS tunnel (all the DNS/resolver
+    // fields above); S3FU = the S3 dead-drop tunnel (the s3* fields below). Default SLIPSTREAM so
+    // existing profiles keep working unchanged.
+    val protocol: TunnelProtocol = TunnelProtocol.SLIPSTREAM,
+
+    // --- s3fu (S3 dead-drop tunnel) settings; used only when protocol == S3FU ---
+    val s3Endpoint: String = "",      // e.g. https://s3c3.001.gpucloud.ru
+    val s3Bucket: String = "",        // e.g. nrkiqxnn2c-0lpc
+    val s3AccessKey: String = "",
+    val s3SecretKey: String = "",
+    val s3Region: String = "",        // blank -> us-east-1 (Ceph RGW ignores it anyway)
+    val s3UserId: String = "",        // per-user namespace + registry id (from the bot's --adduser)
+    val s3Psk: String = ""            // 64 hex chars, paired with s3UserId
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
     enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
+    enum class TunnelProtocol { SLIPSTREAM, S3FU }
 }
 
 data class ConfigProfile(
@@ -144,7 +160,15 @@ object ConfigStore {
             maxPollQps = p.getInt("maxPollQps", 1400),
             maxDataQps = p.getInt("maxDataQps", 800),
             maxActiveClients = p.getInt("maxActiveClients", 40),
-            base64uEncoding = p.getBoolean("base64uEncoding", false)
+            base64uEncoding = p.getBoolean("base64uEncoding", false),
+            protocol = enumValue(p.getString("protocol", Config.TunnelProtocol.SLIPSTREAM.name), Config.TunnelProtocol.SLIPSTREAM),
+            s3Endpoint = p.getString("s3Endpoint", "") ?: "",
+            s3Bucket = p.getString("s3Bucket", "") ?: "",
+            s3AccessKey = p.getString("s3AccessKey", "") ?: "",
+            s3SecretKey = p.getString("s3SecretKey", "") ?: "",
+            s3Region = p.getString("s3Region", "") ?: "",
+            s3UserId = p.getString("s3UserId", "") ?: "",
+            s3Psk = p.getString("s3Psk", "") ?: ""
         )
     }
 
@@ -444,6 +468,14 @@ object ConfigStore {
             .putInt("maxDataQps", config.maxDataQps)
             .putInt("maxActiveClients", config.maxActiveClients)
             .putBoolean("base64uEncoding", config.base64uEncoding)
+            .putString("protocol", config.protocol.name)
+            .putString("s3Endpoint", config.s3Endpoint)
+            .putString("s3Bucket", config.s3Bucket)
+            .putString("s3AccessKey", config.s3AccessKey)
+            .putString("s3SecretKey", config.s3SecretKey)
+            .putString("s3Region", config.s3Region)
+            .putString("s3UserId", config.s3UserId)
+            .putString("s3Psk", config.s3Psk)
             .apply()
     }
 
@@ -489,6 +521,14 @@ object ConfigStore {
             .put("maxDataQps", config.maxDataQps)
             .put("maxActiveClients", config.maxActiveClients)
             .put("base64uEncoding", config.base64uEncoding)
+            .put("protocol", config.protocol.name)
+            .put("s3Endpoint", config.s3Endpoint)
+            .put("s3Bucket", config.s3Bucket)
+            .put("s3AccessKey", config.s3AccessKey)
+            .put("s3SecretKey", config.s3SecretKey)
+            .put("s3Region", config.s3Region)
+            .put("s3UserId", config.s3UserId)
+            .put("s3Psk", config.s3Psk)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -509,7 +549,15 @@ object ConfigStore {
             maxPollQps = json.optInt("maxPollQps", 1400),
             maxDataQps = json.optInt("maxDataQps", 800),
             maxActiveClients = json.optInt("maxActiveClients", 40),
-            base64uEncoding = json.optBoolean("base64uEncoding", false)
+            base64uEncoding = json.optBoolean("base64uEncoding", false),
+            protocol = enumValue(json.optString("protocol"), Config.TunnelProtocol.SLIPSTREAM),
+            s3Endpoint = json.optString("s3Endpoint", ""),
+            s3Bucket = json.optString("s3Bucket", ""),
+            s3AccessKey = json.optString("s3AccessKey", ""),
+            s3SecretKey = json.optString("s3SecretKey", ""),
+            s3Region = json.optString("s3Region", ""),
+            s3UserId = json.optString("s3UserId", ""),
+            s3Psk = json.optString("s3Psk", "")
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
