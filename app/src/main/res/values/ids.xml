@@ -7,6 +7,7 @@
     <item name="add_profile_button" type="id" />
     <item name="edit_profile_button" type="id" />
     <item name="delete_profile_button" type="id" />
+    <item name="profile_menu_button" type="id" />
     <item name="domain_field" type="id" />
     <item name="resolver_mode_spinner" type="id" />
     <item name="resolver_host_field" type="id" />

@@ -270,7 +270,8 @@ class TinyVpnService : VpnService() {
         tunnelActive = true
         AppLog.i(
             TAG,
-            "S3FU start endpoint=${config.s3Endpoint} bucket=${config.s3Bucket} login=${config.s3Login}"
+            "S3FU start endpoint=${config.s3Endpoint} bucket=${config.s3Bucket} " +
+                "prefix=${config.s3Prefix} login=${config.s3Login}"
         )
         try {
             require(config.s3Endpoint.isNotBlank()) { "S3 endpoint is empty" }
@@ -288,7 +289,7 @@ class TinyVpnService : VpnService() {
                 bucket = config.s3Bucket.trim(),
                 accessKey = config.s3AccessKey.trim(),
                 secretKey = config.s3SecretKey.trim(),
-                region = config.s3Region.trim(),
+                prefix = config.s3Prefix.trim().ifBlank { "s3fu" },
                 login = config.s3Login.trim(),
                 psk = config.s3Psk.trim(),
                 socksListen = "127.0.0.1:$socksPort",

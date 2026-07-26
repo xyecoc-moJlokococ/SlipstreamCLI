@@ -64,6 +64,8 @@ enum class S(val en: String, val ru: String) {
     S3_BUCKET_HINT("bucket name", "имя бакета"),
     S3_ACCESS_KEY("Access key", "Access key"),
     S3_SECRET_KEY("Secret key", "Secret key"),
+    S3_PREFIX("Prefix (server)", "Префикс (сервер)"),
+    S3_PREFIX_HINT("s3fu", "s3fu"),
     S3_LOGIN("Login", "Логин"),
     S3_LOGIN_HINT("login issued by the bot", "логин от бота"),
     S3_PSK("PSK", "PSK"),
@@ -165,6 +167,7 @@ enum class S(val en: String, val ru: String) {
     CD_BACK("Back", "Назад"),
     CD_EDIT_PROFILE("Edit profile", "Редактировать профиль"),
     CD_DELETE_PROFILE("Delete profile", "Удалить профиль"),
+    CD_PROFILE_MENU("Profile menu", "Меню профиля"),
 
     // Profile list
     PROFILE_NAME_FALLBACK("Manual", "Ручной"),
@@ -173,6 +176,9 @@ enum class S(val en: String, val ru: String) {
     MENU_NEW_PROFILE("New profile", "Новый профиль"),
     MENU_IMPORT_CLIPBOARD("Import from clipboard", "Импорт из буфера обмена"),
     MENU_IMPORT_FILE("Import from file", "Импорт из файла"),
+
+    // Per-profile overflow menu (⋯ button)
+    MENU_EXPORT_PROFILE("Export profile", "Экспортировать профиль"),
 
     // Dialogs
     DELETE_PROFILE_TITLE("Delete profile", "Удалить профиль"),
@@ -205,6 +211,7 @@ enum class S(val en: String, val ru: String) {
     TOAST_PROFILE_IMPORTED("profile imported", "профиль импортирован"),
     TOAST_CLIPBOARD_EMPTY("clipboard is empty", "буфер обмена пуст"),
     TOAST_IMPORT_FILE_FAILED("could not read import file", "не удалось прочитать файл импорта"),
+    TOAST_PROFILE_LINK_COPIED("profile link copied", "ссылка профиля скопирована"),
     TOAST_FILE_LOGGING_DISABLED("file logging is disabled", "логирование в файл отключено"),
     TOAST_CRASH_REPORT_COPIED("crash report copied", "отчёт о сбое скопирован"),
 
@@ -224,4 +231,5 @@ enum class S(val en: String, val ru: String) {
     // Default profile names
     PROFILE_NAME_DEFAULT_IMPORTED("Profile", "Профиль"),
     PROFILE_NAME_DEFAULT("Slipstream profile", "Профиль Slipstream"),
+    PROFILE_NAME_DEFAULT_S3FU("S3 profile", "S3-профиль"),
 }

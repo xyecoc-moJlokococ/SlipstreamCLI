@@ -96,6 +96,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var s3Bucket: EditText
     private lateinit var s3AccessKey: EditText
     private lateinit var s3SecretKey: EditText
+    private lateinit var s3Prefix: EditText
     private lateinit var s3Login: EditText
     private lateinit var s3Psk: EditText
     // The config the editor was opened with (profile's own config, or active/default for a new
@@ -1171,7 +1172,7 @@ class MainActivity : android.app.Activity() {
                     setSingleLine(true)
                 }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 addView(TextView(this@MainActivity).apply {
-                    text = maskDomain(profile.config.domain.ifBlank { profile.name })
+                    text = maskDomain(profileSubtitle(profile))
                     textSize = 13f
                     setTextColor(color(R.color.slipnet_text_secondary))
                     setSingleLine(true)
@@ -1185,6 +1186,10 @@ class MainActivity : android.app.Activity() {
                 id = R.id.delete_profile_button
                 setOnClickListener { confirmDeleteProfile(profile) }
             }
+            val more = iconButton(R.drawable.ic_more_vert, t(S.CD_PROFILE_MENU)).apply {
+                id = R.id.profile_menu_button
+                setOnClickListener { showProfileOverflowMenu(it, profile) }
+            }
             addView(marker, LinearLayout.LayoutParams(dp(34), dp(40)))
             addView(textColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 leftMargin = dp(8)
@@ -1194,6 +1199,7 @@ class MainActivity : android.app.Activity() {
             // the invisible tap area, not the drawn icon).
             addView(edit, LinearLayout.LayoutParams(dp(44), dp(44)))
             addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(4) })
+            addView(more, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(4) })
         }
 
     private fun showProfileEditor(profile: ConfigProfile?) {
@@ -1284,6 +1290,7 @@ class MainActivity : android.app.Activity() {
         s3Bucket = edit(t(S.S3_BUCKET_HINT))
         s3AccessKey = edit(t(S.S3_ACCESS_KEY))
         s3SecretKey = edit(t(S.S3_SECRET_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        s3Prefix = edit(t(S.S3_PREFIX_HINT))
         s3Login = edit(t(S.S3_LOGIN_HINT))
         s3Psk = edit(t(S.S3_PSK_HINT))
 
@@ -1334,6 +1341,7 @@ class MainActivity : android.app.Activity() {
         s3fuSection.addView(labeledField(t(S.S3_BUCKET), s3Bucket), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_ACCESS_KEY), s3AccessKey), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_SECRET_KEY), s3SecretKey), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_PREFIX), s3Prefix), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_LOGIN), s3Login), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
         root.addView(s3fuSection, fieldParams())
@@ -1962,6 +1970,7 @@ class MainActivity : android.app.Activity() {
         s3Bucket.setText(c.s3Bucket)
         s3AccessKey.setText(c.s3AccessKey)
         s3SecretKey.setText(c.s3SecretKey)
+        s3Prefix.setText(c.s3Prefix)
         s3Login.setText(c.s3Login)
         s3Psk.setText(c.s3Psk)
         updateResolverUi()
@@ -2159,7 +2168,7 @@ class MainActivity : android.app.Activity() {
             s3Bucket = s3Bucket.text.toString().trim(),
             s3AccessKey = s3AccessKey.text.toString().trim(),
             s3SecretKey = s3SecretKey.text.toString().trim(),
-            s3Region = editingBaseConfig?.s3Region ?: "",
+            s3Prefix = s3Prefix.text.toString().trim().ifBlank { "s3fu" },
             s3Login = s3Login.text.toString().trim(),
             s3Psk = s3Psk.text.toString().trim()
         )
@@ -2517,8 +2526,31 @@ class MainActivity : android.app.Activity() {
         ResolverSelector.preferredLocalResolver(this).orEmpty()
 
     private fun showAddProfileMenu(anchor: View) {
-        // Content is transparent; the PopupWindow background is the flat card that casts shadow
-        // (no corner radius, no stroke — just a light elevation).
+        showOverflowMenu(
+            anchor = anchor,
+            items = listOf(
+                t(S.MENU_NEW_PROFILE) to { showProfileEditor(null) },
+                t(S.MENU_IMPORT_CLIPBOARD) to { importProfileFromClipboard() },
+                t(S.MENU_IMPORT_FILE) to { pickProfileImportFile() }
+            )
+        )
+    }
+
+    private fun showProfileOverflowMenu(anchor: View, profile: ConfigProfile) {
+        showOverflowMenu(
+            anchor = anchor,
+            items = listOf(
+                t(S.MENU_EXPORT_PROFILE) to { exportProfileToClipboard(profile) }
+            )
+        )
+    }
+
+    /**
+     * Shared flat popup used by the top-bar "+" and the per-profile "⋯" buttons.
+     * Content is transparent; the PopupWindow background is the flat card that casts shadow
+     * (no corner radius, no stroke — just a light elevation).
+     */
+    private fun showOverflowMenu(anchor: View, items: List<Pair<String, () -> Unit>>) {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(4), 0, dp(4))
@@ -2533,12 +2565,12 @@ class MainActivity : android.app.Activity() {
             setBackgroundDrawable(ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_popup_menu))
             isOutsideTouchable = true
             isFocusable = true
-            // Draw over the plus button instead of dropping below it (API 23+).
+            // Draw over the anchor instead of dropping below it (API 23+).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 overlapAnchor = true
             }
         }
-        fun addItem(label: String, action: () -> Unit) {
+        items.forEach { (label, action) ->
             panel.addView(
                 TextView(this).apply {
                     text = label
@@ -2559,13 +2591,22 @@ class MainActivity : android.app.Activity() {
                 )
             )
         }
-        addItem(t(S.MENU_NEW_PROFILE)) { showProfileEditor(null) }
-        addItem(t(S.MENU_IMPORT_CLIPBOARD)) { importProfileFromClipboard() }
-        addItem(t(S.MENU_IMPORT_FILE)) { pickProfileImportFile() }
-        // Right-align to the plus; top of menu aligns with top of plus (covers the icon).
+        // Right-align to the anchor; top of menu aligns with top of icon (covers it).
         // On pre-M, pull the popup up by the anchor height so it still overlaps the button.
         val yOff = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) 0 else -anchor.height
         popup.showAsDropDown(anchor, 0, yOff, Gravity.END)
+    }
+
+    private fun exportProfileToClipboard(profile: ConfigProfile) {
+        val link = ConfigStore.exportProfileLink(profile)
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Slipstream profile", link))
+        toast(t(S.TOAST_PROFILE_LINK_COPIED))
+        AppLog.i(
+            TAG,
+            "exported profile id=${profile.id} name=${profile.name} " +
+                "protocol=${profile.config.protocol} linkLen=${link.length}"
+        )
     }
 
     private fun importProfileFromClipboard() {
@@ -2629,7 +2670,8 @@ class MainActivity : android.app.Activity() {
 
     private fun handleImportIntent(intent: Intent?) {
         val uri = intent?.data ?: return
-        if (uri.scheme?.lowercase() != "slipstream") return
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "slipstream" && scheme != "s3fu") return
         applyImportedProfile(ConfigStore.importProfile(this, uri), source = "intent:$uri")
     }
 
@@ -2842,6 +2884,16 @@ class MainActivity : android.app.Activity() {
             v >= 1024L * 1024L -> "${v / 1024L / 1024L} MiB/s"
             v >= 1024L -> "${v / 1024L} KiB/s"
             else -> "$v B/s"
+        }
+    }
+
+    private fun profileSubtitle(profile: ConfigProfile): String {
+        val c = profile.config
+        return when (c.protocol) {
+            Config.TunnelProtocol.S3FU ->
+                c.s3Endpoint.ifBlank { c.s3Login }.ifBlank { c.s3Bucket }.ifBlank { profile.name }
+            else ->
+                c.domain.ifBlank { profile.name }
         }
     }
 

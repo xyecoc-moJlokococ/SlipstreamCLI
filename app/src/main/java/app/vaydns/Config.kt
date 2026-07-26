@@ -60,7 +60,9 @@ data class Config(
     val s3Bucket: String = "",        // e.g. nrkiqxnn2c-0lpc
     val s3AccessKey: String = "",
     val s3SecretKey: String = "",
-    val s3Region: String = "",        // blank -> us-east-1 (Ceph RGW ignores it anyway)
+    // Bucket namespace = which server serves this profile. Each server owns one
+    // prefix, so several servers can share one bucket without colliding.
+    val s3Prefix: String = "s3fu",
     val s3Login: String = "",         // per-user namespace + registry id (from the bot's --adduser <login>)
     val s3Psk: String = ""            // 64 hex chars, paired with s3Login
 ) {
@@ -166,8 +168,8 @@ object ConfigStore {
             s3Bucket = p.getString("s3Bucket", "") ?: "",
             s3AccessKey = p.getString("s3AccessKey", "") ?: "",
             s3SecretKey = p.getString("s3SecretKey", "") ?: "",
-            s3Region = p.getString("s3Region", "") ?: "",
-            s3Login = (p.getString("s3Login", null) ?: p.getString("s3UserId", "")) ?: "",
+            s3Prefix = p.getString("s3Prefix", "")?.takeIf { it.isNotBlank() } ?: "s3fu",
+            s3Login = p.getString("s3Login", "") ?: "",
             s3Psk = p.getString("s3Psk", "") ?: ""
         )
     }
@@ -346,25 +348,55 @@ object ConfigStore {
         )
     }
 
+    /**
+     * Build a shareable deep link for [profile].
+     * - Slipstream (DNS) profiles → `slipstream://import?...`
+     * - S3FU profiles → `s3fu://import?...`
+     *
+     * The full config is carried as a URL-safe base64 JSON blob so every field round-trips
+     * (client knobs, s3 credentials, etc.). A human-readable `name` query param is included.
+     */
+    fun exportProfileLink(profile: ConfigProfile): String {
+        val scheme = when (profile.config.protocol) {
+            Config.TunnelProtocol.S3FU -> "s3fu"
+            else -> "slipstream"
+        }
+        val name = profile.name.trim().ifBlank { defaultProfileName(profile.config) }
+        val encoded = Base64.encodeToString(
+            configToJson(profile.config).toString().toByteArray(Charsets.UTF_8),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        return Uri.Builder()
+            .scheme(scheme)
+            .authority("import")
+            .appendQueryParameter("name", name)
+            .appendQueryParameter("config", encoded)
+            .build()
+            .toString()
+    }
+
     fun importProfile(context: Context, uri: Uri): ConfigProfile? {
-        val imported = SlipstreamLinkParser.parse(uri, effectiveConfig(context)) ?: return null
+        val imported = parseProfileLink(uri, effectiveConfig(context)) ?: return null
         return addProfile(context, imported.name, imported.config)
     }
 
     /**
      * Import a profile from free-form text (clipboard paste or file contents). Accepts:
-     * - a slipstream:// link (or one embedded in surrounding text)
+     * - a slipstream:// or s3fu:// link (or one embedded in surrounding text)
      * - a JSON profile blob ({"name", "config": {...}}) or bare config JSON ({"domain": ...})
-     * - a base64 / query-string payload understood by SlipstreamLinkParser
+     * - a base64 / query-string payload understood by the link parser
      */
     fun importProfileFromText(context: Context, text: String): ConfigProfile? {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
         val base = effectiveConfig(context)
 
-        // 1) Explicit or embedded slipstream URI.
-        val uriText = SLIPSTREAM_URI_IN_TEXT.find(trimmed)?.value
-            ?: trimmed.takeIf { it.startsWith("slipstream:", ignoreCase = true) }?.lineSequence()?.firstOrNull()
+        // 1) Explicit or embedded slipstream:// / s3fu:// URI.
+        val uriText = PROFILE_URI_IN_TEXT.find(trimmed)?.value
+            ?: trimmed.takeIf {
+                it.startsWith("slipstream:", ignoreCase = true) ||
+                    it.startsWith("s3fu:", ignoreCase = true)
+            }?.lineSequence()?.firstOrNull()
         if (uriText != null) {
             importProfile(context, Uri.parse(uriText.trim()))?.let { return it }
         }
@@ -378,7 +410,8 @@ object ConfigStore {
                         val parsed = profileFromJson(json)
                         return addProfile(context, parsed.name, parsed.config)
                     }
-                    json.has("domain") || json.has("resolverHost") -> {
+                    json.has("domain") || json.has("resolverHost") ||
+                        json.has("s3Endpoint") || json.has("protocol") -> {
                         val config = configFromJson(json)
                         return addProfile(context, defaultProfileName(config), config)
                     }
@@ -390,12 +423,115 @@ object ConfigStore {
         val payloadUri = Uri.parse("slipstream://import").buildUpon()
             .appendQueryParameter("config", trimmed)
             .build()
-        val fromPayload = SlipstreamLinkParser.parse(payloadUri, base) ?: return null
+        val fromPayload = parseProfileLink(payloadUri, base) ?: return null
         return addProfile(context, fromPayload.name, fromPayload.config)
     }
 
-    private val SLIPSTREAM_URI_IN_TEXT =
-        Regex("slipstream:[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+    private val PROFILE_URI_IN_TEXT =
+        Regex("(?:slipstream|s3fu):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+
+    /**
+     * Parse a slipstream:// or s3fu:// deep link into a name + config.
+     * Prefers a full base64 JSON config payload (export format); falls back to legacy
+     * query-param forms used by the bot / hand-written links.
+     */
+    private fun parseProfileLink(uri: Uri, base: Config): ImportedProfile? {
+        val scheme = uri.scheme?.lowercase() ?: return null
+        if (scheme != "slipstream" && scheme != "s3fu") return null
+
+        val params = linkedMapOf<String, String>()
+        uri.queryParameterNames.forEach { key ->
+            uri.getQueryParameter(key)?.let { params[key.lowercase()] = it }
+        }
+
+        // Full config JSON (optionally base64) in config/profile/data — export format.
+        val payloadRaw = params["config"] ?: params["profile"] ?: params["data"]
+        val decoded = decodeLinkPayload(payloadRaw)
+        if (decoded != null && decoded.trimStart().startsWith("{")) {
+            runCatching {
+                val json = JSONObject(decoded)
+                val configJson = json.optJSONObject("config")
+                val config = when {
+                    configJson != null -> configFromJson(configJson)
+                    json.has("domain") || json.has("resolverHost") ||
+                        json.has("s3Endpoint") || json.has("protocol") ||
+                        json.has("s3Bucket") || json.has("s3Login") -> configFromJson(json)
+                    else -> null
+                }
+                if (config != null) {
+                    val forced = if (scheme == "s3fu") {
+                        config.copy(protocol = Config.TunnelProtocol.S3FU)
+                    } else {
+                        config
+                    }
+                    val name = sequenceOf(
+                        json.optString("name").takeIf { it.isNotBlank() },
+                        params["name"],
+                        params["profilename"],
+                        defaultProfileName(forced)
+                    ).first { !it.isNullOrBlank() }!!
+                    return ImportedProfile(name, forced)
+                }
+            }
+        }
+
+        // s3fu query-param form (hand-written / bot links without full JSON blob).
+        if (scheme == "s3fu") {
+            return parseS3fuQueryParams(params, base)
+        }
+
+        // Legacy slipstream query-param form (bot deep links, etc.).
+        // Merge decoded key=value payload into params the way SlipstreamLinkParser expects.
+        if (decoded != null && !decoded.trimStart().startsWith("{")) {
+            Uri.parse("slipstream://import?$decoded").queryParameterNames.forEach { key ->
+                Uri.parse("slipstream://import?$decoded").getQueryParameter(key)?.let {
+                    params[key.lowercase()] = it
+                }
+            }
+        }
+        return SlipstreamLinkParser.parseFromParams(params, uri, base)
+    }
+
+    private fun parseS3fuQueryParams(params: Map<String, String>, base: Config): ImportedProfile? {
+        fun first(vararg keys: String): String? =
+            keys.firstNotNullOfOrNull { params[it.lowercase()]?.takeIf { v -> v.isNotBlank() } }
+
+        val endpoint = first("endpoint", "s3endpoint", "s3_endpoint")
+        val bucket = first("bucket", "s3bucket", "s3_bucket")
+        val accessKey = first("accesskey", "s3accesskey", "access_key", "s3_access_key")
+        val secretKey = first("secretkey", "s3secretkey", "secret_key", "s3_secret_key")
+        val login = first("login", "s3login", "user", "userid", "s3userid", "s3_login")
+        val psk = first("psk", "s3psk", "s3_psk")
+        // Need at least endpoint + bucket + credentials, or login+psk with endpoint.
+        if (endpoint.isNullOrBlank() && bucket.isNullOrBlank() && login.isNullOrBlank()) {
+            return null
+        }
+        val config = base.copy(
+            protocol = Config.TunnelProtocol.S3FU,
+            s3Endpoint = endpoint ?: base.s3Endpoint,
+            s3Bucket = bucket ?: base.s3Bucket,
+            s3AccessKey = accessKey ?: base.s3AccessKey,
+            s3SecretKey = secretKey ?: base.s3SecretKey,
+            s3Prefix = (first("prefix", "s3prefix", "s3_prefix") ?: base.s3Prefix).ifBlank { "s3fu" },
+            s3Login = login ?: base.s3Login,
+            s3Psk = psk ?: base.s3Psk
+        )
+        val name = first("name", "profilename")
+            ?: config.s3Login.takeIf { it.isNotBlank() }
+            ?: config.s3Bucket.takeIf { it.isNotBlank() }
+            ?: defaultProfileName(config)
+        return ImportedProfile(name, config)
+    }
+
+    private fun decodeLinkPayload(value: String?): String? {
+        if (value.isNullOrBlank()) return null
+        return runCatching {
+            String(
+                Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING),
+                Charsets.UTF_8
+            )
+        }.getOrElse { value }
+    }
 
     fun saveProfile(context: Context, profile: ConfigProfile): ConfigProfile {
         val profiles = loadProfiles(context)
@@ -473,7 +609,7 @@ object ConfigStore {
             .putString("s3Bucket", config.s3Bucket)
             .putString("s3AccessKey", config.s3AccessKey)
             .putString("s3SecretKey", config.s3SecretKey)
-            .putString("s3Region", config.s3Region)
+            .putString("s3Prefix", config.s3Prefix)
             .putString("s3Login", config.s3Login)
             .putString("s3Psk", config.s3Psk)
             .apply()
@@ -526,7 +662,7 @@ object ConfigStore {
             .put("s3Bucket", config.s3Bucket)
             .put("s3AccessKey", config.s3AccessKey)
             .put("s3SecretKey", config.s3SecretKey)
-            .put("s3Region", config.s3Region)
+            .put("s3Prefix", config.s3Prefix)
             .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
 
@@ -555,8 +691,8 @@ object ConfigStore {
             s3Bucket = json.optString("s3Bucket", ""),
             s3AccessKey = json.optString("s3AccessKey", ""),
             s3SecretKey = json.optString("s3SecretKey", ""),
-            s3Region = json.optString("s3Region", ""),
-            s3Login = json.optString("s3Login", json.optString("s3UserId", "")),
+            s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
+            s3Login = json.optString("s3Login", ""),
             s3Psk = json.optString("s3Psk", "")
         )
 
@@ -565,8 +701,12 @@ object ConfigStore {
 
     private fun newProfileId(): String = System.currentTimeMillis().toString(36)
 
-    private fun defaultProfileName(config: Config): String =
-        config.domain.ifBlank { t(S.PROFILE_NAME_DEFAULT) }
+    private fun defaultProfileName(config: Config): String = when (config.protocol) {
+        Config.TunnelProtocol.S3FU ->
+            config.s3Login.ifBlank { config.s3Bucket }.ifBlank { t(S.PROFILE_NAME_DEFAULT_S3FU) }
+        else ->
+            config.domain.ifBlank { t(S.PROFILE_NAME_DEFAULT) }
+    }
 
     private fun uniqueName(base: String, existing: Set<String>): String {
         if (base !in existing) return base
@@ -588,15 +728,9 @@ object ConfigStore {
 
 private data class ImportedProfile(val name: String, val config: Config)
 
+/** Legacy slipstream query-param deep links (bot-generated, hand-written). */
 private object SlipstreamLinkParser {
-    fun parse(uri: Uri, base: Config): ImportedProfile? {
-        if (uri.scheme?.lowercase() != "slipstream") return null
-        val params = linkedMapOf<String, String>()
-        uri.queryParameterNames.forEach { key ->
-            uri.getQueryParameter(key)?.let { params[key.lowercase()] = it }
-        }
-        parsePayload(params["config"] ?: params["profile"] ?: params["data"])?.let { params.putAll(it) }
-
+    fun parseFromParams(params: Map<String, String>, uri: Uri, base: Config): ImportedProfile? {
         val host = uri.host.orEmpty().takeIf { it.isNotBlank() && it != "import" && it != "profile" }
         val domain = first(params, "domain", "server", "sni", "host")
             ?: host
@@ -648,26 +782,10 @@ private object SlipstreamLinkParser {
             maxDataQps = maxDataQps,
             maxActiveClients = maxActiveClients,
             dnsQueryType = dnsQueryType,
-            base64uEncoding = base64uEncoding
+            base64uEncoding = base64uEncoding,
+            protocol = Config.TunnelProtocol.SLIPSTREAM
         )
-        return ImportedProfile(first(params, "name", "profileName") ?: domain, config)
-    }
-
-    private fun parsePayload(value: String?): Map<String, String>? {
-        if (value.isNullOrBlank()) return null
-        val decoded = runCatching {
-            String(Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING), Charsets.UTF_8)
-        }.getOrElse { value }
-        return if (decoded.trimStart().startsWith("{")) {
-            runCatching {
-                val json = JSONObject(decoded)
-                json.keys().asSequence().associate { it.lowercase() to json.optString(it) }
-            }.getOrNull()
-        } else {
-            Uri.parse("slipstream://import?$decoded").queryParameterNames.associateWith {
-                Uri.parse("slipstream://import?$decoded").getQueryParameter(it).orEmpty()
-            }.mapKeys { it.key.lowercase() }
-        }
+        return ImportedProfile(first(params, "name", "profilename") ?: domain, config)
     }
 
     private fun first(params: Map<String, String>, vararg keys: String): String? =
