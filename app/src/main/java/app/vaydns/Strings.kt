@@ -64,8 +64,8 @@ enum class S(val en: String, val ru: String) {
     S3_BUCKET_HINT("bucket name", "имя бакета"),
     S3_ACCESS_KEY("Access key", "Access key"),
     S3_SECRET_KEY("Secret key", "Secret key"),
-    S3_USER_ID("Login", "Логин"),
-    S3_USER_ID_HINT("login issued by the bot", "логин от бота"),
+    S3_LOGIN("Login", "Логин"),
+    S3_LOGIN_HINT("login issued by the bot", "логин от бота"),
     S3_PSK("PSK", "PSK"),
     S3_PSK_HINT("64 hex chars", "64 hex-символа"),
 

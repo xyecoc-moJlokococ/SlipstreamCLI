@@ -61,8 +61,8 @@ data class Config(
     val s3AccessKey: String = "",
     val s3SecretKey: String = "",
     val s3Region: String = "",        // blank -> us-east-1 (Ceph RGW ignores it anyway)
-    val s3UserId: String = "",        // per-user namespace + registry id (from the bot's --adduser)
-    val s3Psk: String = ""            // 64 hex chars, paired with s3UserId
+    val s3Login: String = "",         // per-user namespace + registry id (from the bot's --adduser <login>)
+    val s3Psk: String = ""            // 64 hex chars, paired with s3Login
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
@@ -167,7 +167,7 @@ object ConfigStore {
             s3AccessKey = p.getString("s3AccessKey", "") ?: "",
             s3SecretKey = p.getString("s3SecretKey", "") ?: "",
             s3Region = p.getString("s3Region", "") ?: "",
-            s3UserId = p.getString("s3UserId", "") ?: "",
+            s3Login = (p.getString("s3Login", null) ?: p.getString("s3UserId", "")) ?: "",
             s3Psk = p.getString("s3Psk", "") ?: ""
         )
     }
@@ -474,7 +474,7 @@ object ConfigStore {
             .putString("s3AccessKey", config.s3AccessKey)
             .putString("s3SecretKey", config.s3SecretKey)
             .putString("s3Region", config.s3Region)
-            .putString("s3UserId", config.s3UserId)
+            .putString("s3Login", config.s3Login)
             .putString("s3Psk", config.s3Psk)
             .apply()
     }
@@ -527,7 +527,7 @@ object ConfigStore {
             .put("s3AccessKey", config.s3AccessKey)
             .put("s3SecretKey", config.s3SecretKey)
             .put("s3Region", config.s3Region)
-            .put("s3UserId", config.s3UserId)
+            .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
 
     private fun configFromJson(json: JSONObject): Config =
@@ -556,7 +556,7 @@ object ConfigStore {
             s3AccessKey = json.optString("s3AccessKey", ""),
             s3SecretKey = json.optString("s3SecretKey", ""),
             s3Region = json.optString("s3Region", ""),
-            s3UserId = json.optString("s3UserId", ""),
+            s3Login = json.optString("s3Login", json.optString("s3UserId", "")),
             s3Psk = json.optString("s3Psk", "")
         )
 

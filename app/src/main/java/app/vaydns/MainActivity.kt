@@ -96,7 +96,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var s3Bucket: EditText
     private lateinit var s3AccessKey: EditText
     private lateinit var s3SecretKey: EditText
-    private lateinit var s3UserId: EditText
+    private lateinit var s3Login: EditText
     private lateinit var s3Psk: EditText
     // The config the editor was opened with (profile's own config, or active/default for a new
     // profile). Used to preserve fields that have no editor UI (e.g. dnsQueryType) across saves,
@@ -1284,7 +1284,7 @@ class MainActivity : android.app.Activity() {
         s3Bucket = edit(t(S.S3_BUCKET_HINT))
         s3AccessKey = edit(t(S.S3_ACCESS_KEY))
         s3SecretKey = edit(t(S.S3_SECRET_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
-        s3UserId = edit(t(S.S3_USER_ID_HINT))
+        s3Login = edit(t(S.S3_LOGIN_HINT))
         s3Psk = edit(t(S.S3_PSK_HINT))
 
         root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
@@ -1334,7 +1334,7 @@ class MainActivity : android.app.Activity() {
         s3fuSection.addView(labeledField(t(S.S3_BUCKET), s3Bucket), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_ACCESS_KEY), s3AccessKey), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_SECRET_KEY), s3SecretKey), fieldParams())
-        s3fuSection.addView(labeledField(t(S.S3_USER_ID), s3UserId), fieldParams())
+        s3fuSection.addView(labeledField(t(S.S3_LOGIN), s3Login), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
         root.addView(s3fuSection, fieldParams())
 
@@ -1962,7 +1962,7 @@ class MainActivity : android.app.Activity() {
         s3Bucket.setText(c.s3Bucket)
         s3AccessKey.setText(c.s3AccessKey)
         s3SecretKey.setText(c.s3SecretKey)
-        s3UserId.setText(c.s3UserId)
+        s3Login.setText(c.s3Login)
         s3Psk.setText(c.s3Psk)
         updateResolverUi()
         updateProtocolUi()
@@ -2160,7 +2160,7 @@ class MainActivity : android.app.Activity() {
             s3AccessKey = s3AccessKey.text.toString().trim(),
             s3SecretKey = s3SecretKey.text.toString().trim(),
             s3Region = editingBaseConfig?.s3Region ?: "",
-            s3UserId = s3UserId.text.toString().trim(),
+            s3Login = s3Login.text.toString().trim(),
             s3Psk = s3Psk.text.toString().trim()
         )
     }

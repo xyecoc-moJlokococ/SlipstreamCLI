@@ -44,15 +44,15 @@ object S3fuBridge {
         accessKey: String,
         secretKey: String,
         region: String,
-        userId: String,
+        login: String,
         psk: String,
         socksListen: String,
         caFile: String
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libs3fu is not loaded"))
-        AppLog.i(TAG, "start endpoint=$endpoint bucket=$bucket user=$userId socks=$socksListen")
+        AppLog.i(TAG, "start endpoint=$endpoint bucket=$bucket login=$login socks=$socksListen")
         val code = runCatching {
-            nativeStartClient(endpoint, bucket, accessKey, secretKey, region, userId, psk, socksListen, caFile)
+            nativeStartClient(endpoint, bucket, accessKey, secretKey, region, login, psk, socksListen, caFile)
         }.getOrElse {
             AppLog.e(TAG, "nativeStartClient threw", it)
             return Result.failure(it)
@@ -83,7 +83,7 @@ object S3fuBridge {
         accessKey: String,
         secretKey: String,
         region: String,
-        userId: String,
+        login: String,
         psk: String,
         socksListen: String,
         caFile: String
