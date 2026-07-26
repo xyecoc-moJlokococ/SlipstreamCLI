@@ -64,14 +64,22 @@ data class Config(
     // prefix, so several servers can share one bucket without colliding.
     val s3Prefix: String = "s3fu",
     val s3Login: String = "",         // per-user namespace + registry id (from the bot's --adduser <login>)
-    val s3Psk: String = ""            // 64 hex chars, paired with s3Login
+    val s3Psk: String = "",           // 64 hex chars, paired with s3Login
+
+    // --- Xray settings; used only when protocol == XRAY ---
+    // The complete Xray config as literal JSON. Xray profiles deliberately have no
+    // structured fields: a vless:// import renders this once (see XrayConfigBuilder)
+    // and from then on the JSON itself is the profile. The SOCKS inbound port is
+    // re-pinned to the global local port at connect time so the TUN bridge always
+    // finds it -- see XrayConfigBuilder.withSocksPort.
+    val xrayConfigJson: String = ""
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
     enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
-    enum class TunnelProtocol { SLIPSTREAM, S3FU }
+    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY }
 }
 
 data class ConfigProfile(
@@ -170,7 +178,8 @@ object ConfigStore {
             s3SecretKey = p.getString("s3SecretKey", "") ?: "",
             s3Prefix = p.getString("s3Prefix", "")?.takeIf { it.isNotBlank() } ?: "s3fu",
             s3Login = p.getString("s3Login", "") ?: "",
-            s3Psk = p.getString("s3Psk", "") ?: ""
+            s3Psk = p.getString("s3Psk", "") ?: "",
+            xrayConfigJson = p.getString("xrayConfigJson", "") ?: ""
         )
     }
 
@@ -359,6 +368,7 @@ object ConfigStore {
     fun exportProfileLink(profile: ConfigProfile): String {
         val scheme = when (profile.config.protocol) {
             Config.TunnelProtocol.S3FU -> "s3fu"
+            Config.TunnelProtocol.XRAY -> "xray"
             else -> "slipstream"
         }
         val name = profile.name.trim().ifBlank { defaultProfileName(profile.config) }
@@ -381,21 +391,61 @@ object ConfigStore {
     }
 
     /**
+     * Import every `vless://` link found in [text] as its own Xray profile.
+     * Handles a whole subscription paste, not just a single link.
+     */
+    fun importVlessProfiles(context: Context, text: String): List<ConfigProfile> {
+        val base = effectiveConfig(context)
+        return VlessLinkParser.findAll(text).mapNotNull { raw ->
+            val link = VlessLinkParser.parse(raw) ?: return@mapNotNull null
+            val config = base.copy(
+                protocol = Config.TunnelProtocol.XRAY,
+                xrayConfigJson = XrayConfigBuilder.build(link, base.listenPort)
+            )
+            addProfile(context, link.remarks, config)
+        }
+    }
+
+    /**
+     * Import everything [text] contains. A vless:// paste (one link or a whole
+     * subscription) yields one profile per link; anything else falls back to the
+     * single-profile path in [importProfileFromText].
+     */
+    fun importProfilesFromText(context: Context, text: String): List<ConfigProfile> {
+        if (VlessLinkParser.looksLikeLink(text)) {
+            val profiles = importVlessProfiles(context, text)
+            if (profiles.isNotEmpty()) return profiles
+        }
+        return listOfNotNull(importProfileFromText(context, text))
+    }
+
+    /**
      * Import a profile from free-form text (clipboard paste or file contents). Accepts:
-     * - a slipstream:// or s3fu:// link (or one embedded in surrounding text)
+     * - one or more vless:// links (each becomes an Xray profile)
+     * - a slipstream://, s3fu:// or xray:// link (or one embedded in surrounding text)
      * - a JSON profile blob ({"name", "config": {...}}) or bare config JSON ({"domain": ...})
+     * - a raw Xray config JSON ({"inbounds": ..., "outbounds": ...})
      * - a base64 / query-string payload understood by the link parser
+     *
+     * Returns the last profile created, so a multi-link paste still yields something
+     * to select; callers wanting the full set use [importVlessProfiles].
      */
     fun importProfileFromText(context: Context, text: String): ConfigProfile? {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
         val base = effectiveConfig(context)
 
-        // 1) Explicit or embedded slipstream:// / s3fu:// URI.
+        // 0) vless:// links -- the Xray import path.
+        if (VlessLinkParser.looksLikeLink(trimmed)) {
+            importVlessProfiles(context, trimmed).lastOrNull()?.let { return it }
+        }
+
+        // 1) Explicit or embedded slipstream:// / s3fu:// / xray:// URI.
         val uriText = PROFILE_URI_IN_TEXT.find(trimmed)?.value
             ?: trimmed.takeIf {
                 it.startsWith("slipstream:", ignoreCase = true) ||
-                    it.startsWith("s3fu:", ignoreCase = true)
+                    it.startsWith("s3fu:", ignoreCase = true) ||
+                    it.startsWith("xray:", ignoreCase = true)
             }?.lineSequence()?.firstOrNull()
         if (uriText != null) {
             importProfile(context, Uri.parse(uriText.trim()))?.let { return it }
@@ -415,6 +465,14 @@ object ConfigStore {
                         val config = configFromJson(json)
                         return addProfile(context, defaultProfileName(config), config)
                     }
+                    // A bare Xray config pasted straight from a panel / another client.
+                    json.has("outbounds") -> {
+                        val config = base.copy(
+                            protocol = Config.TunnelProtocol.XRAY,
+                            xrayConfigJson = XrayConfigBuilder.withSocksPort(trimmed, base.listenPort)
+                        )
+                        return addProfile(context, defaultProfileName(config), config)
+                    }
                 }
             }
         }
@@ -428,16 +486,19 @@ object ConfigStore {
     }
 
     private val PROFILE_URI_IN_TEXT =
-        Regex("(?:slipstream|s3fu):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+        Regex("(?:slipstream|s3fu|xray):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
 
     /**
-     * Parse a slipstream:// or s3fu:// deep link into a name + config.
+     * Parse a slipstream://, s3fu:// or xray:// deep link into a name + config.
      * Prefers a full base64 JSON config payload (export format); falls back to legacy
      * query-param forms used by the bot / hand-written links.
+     *
+     * `vless://` links do not come through here -- they are not profile containers
+     * but server definitions, and are translated by [importVlessProfiles].
      */
     private fun parseProfileLink(uri: Uri, base: Config): ImportedProfile? {
         val scheme = uri.scheme?.lowercase() ?: return null
-        if (scheme != "slipstream" && scheme != "s3fu") return null
+        if (scheme != "slipstream" && scheme != "s3fu" && scheme != "xray") return null
 
         val params = linkedMapOf<String, String>()
         uri.queryParameterNames.forEach { key ->
@@ -455,14 +516,15 @@ object ConfigStore {
                     configJson != null -> configFromJson(configJson)
                     json.has("domain") || json.has("resolverHost") ||
                         json.has("s3Endpoint") || json.has("protocol") ||
-                        json.has("s3Bucket") || json.has("s3Login") -> configFromJson(json)
+                        json.has("s3Bucket") || json.has("s3Login") ||
+                        json.has("xrayConfigJson") -> configFromJson(json)
                     else -> null
                 }
                 if (config != null) {
-                    val forced = if (scheme == "s3fu") {
-                        config.copy(protocol = Config.TunnelProtocol.S3FU)
-                    } else {
-                        config
+                    val forced = when (scheme) {
+                        "s3fu" -> config.copy(protocol = Config.TunnelProtocol.S3FU)
+                        "xray" -> config.copy(protocol = Config.TunnelProtocol.XRAY)
+                        else -> config
                     }
                     val name = sequenceOf(
                         json.optString("name").takeIf { it.isNotBlank() },
@@ -479,6 +541,10 @@ object ConfigStore {
         if (scheme == "s3fu") {
             return parseS3fuQueryParams(params, base)
         }
+
+        // xray:// only ever carries the exported JSON blob handled above; there is
+        // no query-param shorthand to fall back to (vless:// fills that role).
+        if (scheme == "xray") return null
 
         // Legacy slipstream query-param form (bot deep links, etc.).
         // Merge decoded key=value payload into params the way SlipstreamLinkParser expects.
@@ -612,6 +678,7 @@ object ConfigStore {
             .putString("s3Prefix", config.s3Prefix)
             .putString("s3Login", config.s3Login)
             .putString("s3Psk", config.s3Psk)
+            .putString("xrayConfigJson", config.xrayConfigJson)
             .apply()
     }
 
@@ -665,6 +732,7 @@ object ConfigStore {
             .put("s3Prefix", config.s3Prefix)
             .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
+            .put("xrayConfigJson", config.xrayConfigJson)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -693,7 +761,8 @@ object ConfigStore {
             s3SecretKey = json.optString("s3SecretKey", ""),
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
             s3Login = json.optString("s3Login", ""),
-            s3Psk = json.optString("s3Psk", "")
+            s3Psk = json.optString("s3Psk", ""),
+            xrayConfigJson = json.optString("xrayConfigJson", "")
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
@@ -704,6 +773,8 @@ object ConfigStore {
     private fun defaultProfileName(config: Config): String = when (config.protocol) {
         Config.TunnelProtocol.S3FU ->
             config.s3Login.ifBlank { config.s3Bucket }.ifBlank { t(S.PROFILE_NAME_DEFAULT_S3FU) }
+        Config.TunnelProtocol.XRAY ->
+            XrayConfigBuilder.describeServer(config.xrayConfigJson) ?: t(S.PROFILE_NAME_DEFAULT_XRAY)
         else ->
             config.domain.ifBlank { t(S.PROFILE_NAME_DEFAULT) }
     }

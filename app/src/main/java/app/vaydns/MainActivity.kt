@@ -52,6 +52,7 @@ import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.MiniSlipstreamSocksBridge
 import app.slipnet.tunnel.ResolverListConfig
 import app.slipnet.tunnel.SlipstreamBridge
+import app.slipnet.tunnel.XrayBridge
 import app.slipnet.util.AppLog
 import app.vaydns.service.TinyVpnService
 
@@ -88,7 +89,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var localSocksPassword: EditText
     private lateinit var dnsResolverPool: EditText
     private lateinit var profileName: EditText
-    // Protocol selector + the two mutually-exclusive field groups it toggles.
+    // Protocol selector + the mutually-exclusive field groups it toggles.
     private lateinit var protocolSelector: LinearLayout
     private lateinit var slipstreamSection: LinearLayout
     private lateinit var s3fuSection: LinearLayout
@@ -99,6 +100,9 @@ class MainActivity : android.app.Activity() {
     private lateinit var s3Prefix: EditText
     private lateinit var s3Login: EditText
     private lateinit var s3Psk: EditText
+    // Xray profiles have no structured fields at all -- just this JSON editor.
+    private lateinit var xraySection: LinearLayout
+    private lateinit var xrayConfigField: EditText
     // The config the editor was opened with (profile's own config, or active/default for a new
     // profile). Used to preserve fields that have no editor UI (e.g. dnsQueryType) across saves,
     // so editing unrelated fields doesn't silently reset them to their defaults.
@@ -1284,8 +1288,20 @@ class MainActivity : android.app.Activity() {
             buttonTintList = ColorStateList.valueOf(color(R.color.slipnet_accent))
         }
 
-        // Protocol picker + the two mutually-exclusive field groups it toggles.
-        protocolSelector = pillSelector(listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU))) { updateProtocolUi() }
+        // Protocol picker + the mutually-exclusive field groups it toggles.
+        protocolSelector = pillSelector(
+            listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY))
+        ) { updateProtocolUi() }
+        xrayConfigField = multilineEdit(minLinesVisible = 18).apply {
+            id = R.id.xray_config_field
+            // Config JSON is code: monospace, and no autocorrect/autocaps mangling it.
+            typeface = Typeface.MONOSPACE
+            textSize = 12f
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setHorizontallyScrolling(false)
+        }
         s3Endpoint = edit("https://s3c3.001.gpucloud.ru")
         s3Bucket = edit(t(S.S3_BUCKET_HINT))
         s3AccessKey = edit(t(S.S3_ACCESS_KEY))
@@ -1345,6 +1361,25 @@ class MainActivity : android.app.Activity() {
         s3fuSection.addView(labeledField(t(S.S3_LOGIN), s3Login), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
         root.addView(s3fuSection, fieldParams())
+
+        // --- Xray fields: the JSON config is the entire profile ---
+        xraySection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        xraySection.addView(sectionTitle(t(S.XRAY_SECTION)), sectionParams())
+        xraySection.addView(
+            row(
+                button(t(S.XRAY_FORMAT_BTN)).apply {
+                    id = R.id.xray_format_button
+                    setOnClickListener { formatXrayConfig() }
+                },
+                button(t(S.XRAY_VALIDATE_BTN)).apply {
+                    id = R.id.xray_validate_button
+                    setOnClickListener { validateXrayConfig() }
+                }
+            ),
+            fieldParams()
+        )
+
+        root.addView(xraySection, fieldParams())
 
         if (profile != null) {
             root.addView(button(t(S.DELETE_PROFILE_BTN)).apply {
@@ -1965,7 +2000,14 @@ class MainActivity : android.app.Activity() {
         maxDataQpsField.setText(c.maxDataQps.toString())
         maxActiveClientsField.setText(c.maxActiveClients.toString())
         base64uEncodingCheckbox.isChecked = c.base64uEncoding
-        protocolSelector.setPillSelectedIndex(if (c.protocol == Config.TunnelProtocol.S3FU) 1 else 0)
+        protocolSelector.setPillSelectedIndex(
+            when (c.protocol) {
+                Config.TunnelProtocol.S3FU -> 1
+                Config.TunnelProtocol.XRAY -> 2
+                else -> 0
+            }
+        )
+        xrayConfigField.setText(c.xrayConfigJson)
         s3Endpoint.setText(c.s3Endpoint)
         s3Bucket.setText(c.s3Bucket)
         s3AccessKey.setText(c.s3AccessKey)
@@ -1977,12 +2019,69 @@ class MainActivity : android.app.Activity() {
         updateProtocolUi()
     }
 
-    /** Show the field group for the selected protocol, hide the other. */
+    /** Show the field group for the selected protocol, hide the others. */
     private fun updateProtocolUi() {
         if (!::protocolSelector.isInitialized) return
-        val s3 = protocolSelector.pillSelectedIndex() == 1
-        if (::slipstreamSection.isInitialized) slipstreamSection.visibility = if (s3) View.GONE else View.VISIBLE
-        if (::s3fuSection.isInitialized) s3fuSection.visibility = if (s3) View.VISIBLE else View.GONE
+        val protocol = selectedProtocol()
+        if (::slipstreamSection.isInitialized) {
+            slipstreamSection.visibility = visibleIf(protocol == Config.TunnelProtocol.SLIPSTREAM)
+        }
+        if (::s3fuSection.isInitialized) {
+            s3fuSection.visibility = visibleIf(protocol == Config.TunnelProtocol.S3FU)
+        }
+        if (::xraySection.isInitialized) {
+            xraySection.visibility = visibleIf(protocol == Config.TunnelProtocol.XRAY)
+        }
+        // Switching a fresh profile to Xray gives the user something runnable to edit
+        // rather than an empty box.
+        if (protocol == Config.TunnelProtocol.XRAY &&
+            ::xrayConfigField.isInitialized &&
+            xrayConfigField.text.toString().isBlank()
+        ) {
+            xrayConfigField.setText(XrayConfigBuilder.blankTemplate(ConfigStore.loadGlobalSettings(this).listenPort))
+        }
+    }
+
+    private fun visibleIf(condition: Boolean): Int = if (condition) View.VISIBLE else View.GONE
+
+    private fun selectedProtocol(): Config.TunnelProtocol = when (protocolSelector.pillSelectedIndex()) {
+        1 -> Config.TunnelProtocol.S3FU
+        2 -> Config.TunnelProtocol.XRAY
+        else -> Config.TunnelProtocol.SLIPSTREAM
+    }
+
+    /** Re-indent the JSON in the editor; leaves it untouched (with a toast) if unparseable. */
+    private fun formatXrayConfig() {
+        val text = xrayConfigField.text.toString().trim()
+        if (text.isEmpty()) {
+            toast(t(S.TOAST_XRAY_CONFIG_EMPTY))
+            return
+        }
+        val formatted = runCatching { org.json.JSONObject(text).toString(2) }.getOrElse {
+            toast(t(S.TOAST_XRAY_NOT_JSON))
+            return
+        }
+        xrayConfigField.setText(formatted)
+    }
+
+    /** Run the config through Xray's own parser and report whatever it says. */
+    private fun validateXrayConfig() {
+        val text = xrayConfigField.text.toString().trim()
+        if (text.isEmpty()) {
+            toast(t(S.TOAST_XRAY_CONFIG_EMPTY))
+            return
+        }
+        val error = XrayBridge.validateConfig(text)
+        if (error == null) {
+            toast(t(S.TOAST_XRAY_CONFIG_OK))
+            return
+        }
+        AppLog.w(TAG, "xray config invalid: $error")
+        AlertDialog.Builder(this)
+            .setTitle(t(S.XRAY_VALIDATE_BTN))
+            .setMessage(error)
+            .setPositiveButton(t(S.CLOSE_BTN), null)
+            .show()
     }
 
     private fun selectProfile(profile: ConfigProfile) {
@@ -2163,7 +2262,8 @@ class MainActivity : android.app.Activity() {
             maxDataQps = maxDataQpsField.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 800,
             maxActiveClients = maxActiveClientsField.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 40,
             base64uEncoding = base64uEncodingCheckbox.isChecked,
-            protocol = if (protocolSelector.pillSelectedIndex() == 1) Config.TunnelProtocol.S3FU else Config.TunnelProtocol.SLIPSTREAM,
+            protocol = selectedProtocol(),
+            xrayConfigJson = xrayConfigField.text.toString().trim(),
             s3Endpoint = s3Endpoint.text.toString().trim(),
             s3Bucket = s3Bucket.text.toString().trim(),
             s3AccessKey = s3AccessKey.text.toString().trim(),
@@ -2210,9 +2310,12 @@ class MainActivity : android.app.Activity() {
         connectStartedAt = System.currentTimeMillis()
         updateStatus()
         ConfigStore.save(this, c)
-        // s3fu needs the TUN + hev bridge, so it always uses the VPN service path even if the
-        // global connection mode is PROXY (a SOCKS-only s3fu mode isn't wired yet).
-        if (c.mode == Config.Mode.VPN || c.protocol == Config.TunnelProtocol.S3FU) {
+        // s3fu and Xray need the TUN + hev bridge, so they always use the VPN service path even
+        // if the global connection mode is PROXY (SOCKS-only variants aren't wired for them).
+        if (c.mode == Config.Mode.VPN ||
+            c.protocol == Config.TunnelProtocol.S3FU ||
+            c.protocol == Config.TunnelProtocol.XRAY
+        ) {
             pendingStartVpn = true
             continuePreflight()
         } else {
@@ -2622,7 +2725,7 @@ class MainActivity : android.app.Activity() {
             toast(t(S.TOAST_CLIPBOARD_EMPTY))
             return
         }
-        applyImportedProfile(ConfigStore.importProfileFromText(this, text), source = "clipboard")
+        applyImportedProfiles(ConfigStore.importProfilesFromText(this, text), source = "clipboard")
     }
 
     private fun pickProfileImportFile() {
@@ -2652,27 +2755,43 @@ class MainActivity : android.app.Activity() {
             AppLog.w(TAG, "profile import file empty or unreadable: $uri")
             return
         }
-        applyImportedProfile(ConfigStore.importProfileFromText(this, text), source = "file:$uri")
+        applyImportedProfiles(ConfigStore.importProfilesFromText(this, text), source = "file:$uri")
     }
 
     private fun applyImportedProfile(imported: ConfigProfile?, source: String) {
-        if (imported == null) {
-            toast(t(S.TOAST_INVALID_SLIPSTREAM_LINK))
-            AppLog.w(TAG, "invalid slipstream import from $source")
+        applyImportedProfiles(listOfNotNull(imported), source)
+    }
+
+    /** A vless:// subscription paste imports many profiles at once; report the count. */
+    private fun applyImportedProfiles(imported: List<ConfigProfile>, source: String) {
+        if (imported.isEmpty()) {
+            toast(t(S.TOAST_INVALID_PROFILE_LINK))
+            AppLog.w(TAG, "invalid profile import from $source")
             return
         }
         loadConfig()
         navigateTo(buildMainUi(), ScreenTransition.FORWARD)
         updateStatus()
-        toast(t(S.TOAST_PROFILE_IMPORTED))
-        AppLog.i(TAG, "imported profile id=${imported.id} name=${imported.name} source=$source")
+        toast(if (imported.size == 1) t(S.TOAST_PROFILE_IMPORTED) else profilesImportedText(imported.size))
+        AppLog.i(
+            TAG,
+            "imported ${imported.size} profile(s) source=$source last=${imported.last().name}"
+        )
     }
 
     private fun handleImportIntent(intent: Intent?) {
         val uri = intent?.data ?: return
-        val scheme = uri.scheme?.lowercase()
-        if (scheme != "slipstream" && scheme != "s3fu") return
-        applyImportedProfile(ConfigStore.importProfile(this, uri), source = "intent:$uri")
+        when (uri.scheme?.lowercase()) {
+            "slipstream", "s3fu", "xray" ->
+                applyImportedProfile(ConfigStore.importProfile(this, uri), source = "intent:$uri")
+            // vless links are server definitions, not profile containers -- they go
+            // through the text importer, which renders them into Xray JSON.
+            "vless" ->
+                applyImportedProfiles(
+                    ConfigStore.importProfilesFromText(this, uri.toString()),
+                    source = "intent:vless"
+                )
+        }
     }
 
     private fun shareLogFile() {
@@ -2892,6 +3011,8 @@ class MainActivity : android.app.Activity() {
         return when (c.protocol) {
             Config.TunnelProtocol.S3FU ->
                 c.s3Endpoint.ifBlank { c.s3Login }.ifBlank { c.s3Bucket }.ifBlank { profile.name }
+            Config.TunnelProtocol.XRAY ->
+                XrayConfigBuilder.describeServer(c.xrayConfigJson) ?: profile.name
             else ->
                 c.domain.ifBlank { profile.name }
         }

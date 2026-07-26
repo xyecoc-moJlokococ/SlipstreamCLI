@@ -23,6 +23,7 @@ import app.slipnet.tunnel.MiniSlipstreamSocksBridge
 import app.slipnet.tunnel.S3fuBridge
 import app.slipnet.tunnel.ResolverListConfig
 import app.slipnet.tunnel.SlipstreamBridge
+import app.slipnet.tunnel.XrayBridge
 import app.slipnet.util.AppLog
 import app.vaydns.Config
 import app.vaydns.ConfigStore
@@ -31,6 +32,7 @@ import app.vaydns.R
 import app.vaydns.ResolverChoice
 import app.vaydns.ResolverSelector
 import app.vaydns.S
+import app.vaydns.XrayConfigBuilder
 import app.vaydns.t
 
 class TinyVpnService : VpnService() {
@@ -142,6 +144,10 @@ class TinyVpnService : VpnService() {
         val rawConfig = ConfigStore.effectiveConfig(this)
         if (rawConfig.protocol == Config.TunnelProtocol.S3FU) {
             startS3fuTunnelWorker(generation, rawConfig)
+            return
+        }
+        if (rawConfig.protocol == Config.TunnelProtocol.XRAY) {
+            startXrayTunnelWorker(generation, rawConfig)
             return
         }
         val config = normalizeAutoConfig(rawConfig)
@@ -299,7 +305,7 @@ class TinyVpnService : VpnService() {
 
             // The SOCKS listener binds asynchronously inside the native runtime; wait for the
             // port to accept before wiring the TUN, else the first flows race the bind.
-            if (!waitForLocalPort(socksPort, S3FU_SOCKS_READY_TIMEOUT_MS)) {
+            if (!waitForLocalPort(socksPort, S3FU_SOCKS_READY_TIMEOUT_MS) { S3fuBridge.isRunning() }) {
                 error("s3fu SOCKS proxy did not come up on 127.0.0.1:$socksPort")
             }
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
@@ -343,8 +349,110 @@ class TinyVpnService : VpnService() {
         }
     }
 
-    /** Poll-connect to a local TCP port until it accepts or the timeout elapses. */
-    private fun waitForLocalPort(port: Int, timeoutMs: Long): Boolean {
+    /**
+     * XRAY protocol path: the profile is a literal Xray JSON config. Start the
+     * core, then layer the existing tun2socks (hev) onto the SOCKS inbound it
+     * exposes -- structurally identical to the S3FU path. The app already excludes
+     * its own package from the VPN, so Xray's outbound connections travel outside
+     * the tunnel without needing per-socket protect().
+     */
+    private fun startXrayTunnelWorker(generation: Int, config: Config) {
+        currentConfig = config
+        tunnelActive = true
+        try {
+            require(config.xrayConfigJson.isNotBlank()) { "Xray config is empty" }
+            XrayBridge.init(this)
+            require(XrayBridge.isLoaded()) { "libxray failed to load" }
+            resetTrafficBase()
+
+            // The stored JSON may have been written when the local port was something
+            // else (or pasted from elsewhere with an inbound we can't reach), so pin
+            // the SOCKS inbound to the port the TUN bridge is about to dial.
+            val socksPort = config.listenPort
+            val configJson = XrayConfigBuilder.withSocksPort(config.xrayConfigJson, socksPort)
+            AppLog.i(
+                TAG,
+                "XRAY start server=${XrayConfigBuilder.describeServer(configJson) ?: "?"} " +
+                    "socks=127.0.0.1:$socksPort core=${XrayBridge.version() ?: "?"}"
+            )
+
+            XrayBridge.startClient(configJson).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            // Xray binds its inbounds asynchronously; wait for the listener before
+            // wiring the TUN, else the first flows race the bind.
+            if (!waitForLocalPort(socksPort, XRAY_SOCKS_READY_TIMEOUT_MS) { XrayBridge.isRunning() }) {
+                error(
+                    XrayBridge.lastError()
+                        ?: "Xray SOCKS inbound did not come up on 127.0.0.1:$socksPort"
+                )
+            }
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            val builder = Builder()
+                .setSession("Slipstream CLI")
+                .setMtu(1500)
+                .addAddress("10.255.0.2", 32)
+                .addAddress("fd00::2", 128)
+                .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
+                .addDnsServer(VPN_DNS_PRIMARY)
+                .addDnsServer(VPN_DNS_SECONDARY)
+            runCatching { builder.addDisallowedApplication(packageName) }
+                .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
+            tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
+
+            // The generated socks inbound sets "udp": true, i.e. real SOCKS5 UDP
+            // ASSOCIATE -> hev udp='udp' (same as s3fu, unlike the DNS tunnel).
+            HevSocks5Tunnel.start(
+                tunFd = tunFd ?: error("TUN fd is null"),
+                socksAddress = "127.0.0.1",
+                socksPort = socksPort,
+                username = null,
+                password = null,
+                udpMode = "udp"
+            ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            maybeUpdateTrafficNotification(0, 0, force = true)
+            AppLog.i(TAG, "XRAY VPN connected socks=127.0.0.1:$socksPort")
+            handler.removeCallbacks(diagnostics)
+            handler.post(diagnostics)
+        } catch (e: Throwable) {
+            AppLog.e(TAG, "XRAY VPN start failed", e)
+            runCatching { HevSocks5Tunnel.stop() }
+            runCatching { XrayBridge.stopClient() }
+            runCatching { tunFd?.close() }
+            tunFd = null
+            tunnelActive = false
+            stopTunnel()
+        }
+    }
+
+    /** Lightweight diagnostics for the XRAY path (no DNS/resolver/bridge machinery). */
+    private fun writeXrayDiagnostics() {
+        val hev = HevSocks5Tunnel.stats()
+        maybeUpdateTrafficNotification(hev.rxBytes, hev.txBytes)
+        val running = XrayBridge.isRunning()
+        // queryStats RESETS the counters, so these are per-interval deltas.
+        val up = XrayBridge.queryStats(XrayConfigBuilder.PROXY_TAG, XrayBridge.UPLINK)
+        val down = XrayBridge.queryStats(XrayConfigBuilder.PROXY_TAG, XrayBridge.DOWNLINK)
+        AppLog.i(
+            TAG,
+            "diag[xray] running=$running hevRunning=${HevSocks5Tunnel.isRunning()} " +
+                "tunRx=${hev.rxBytes} tunTx=${hev.txBytes} proxyUp=$up proxyDown=$down"
+        )
+        if (!running && tunnelActive) {
+            AppLog.w(TAG, "xray core stopped while tunnel active; lastError=${XrayBridge.lastError() ?: "none"}")
+        }
+    }
+
+    /**
+     * Poll-connect to a local TCP port until it accepts or the timeout elapses.
+     * [isAlive] reports whether the native side that should be opening the port is
+     * still up, so a crashed engine aborts the wait instead of burning the timeout.
+     */
+    private fun waitForLocalPort(port: Int, timeoutMs: Long, isAlive: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (!tunnelActive) return false
@@ -355,7 +463,7 @@ class TinyVpnService : VpnService() {
                 }
             }.getOrDefault(false)
             if (ok) return true
-            if (!S3fuBridge.isRunning()) return false // native side died -> stop waiting
+            if (!isAlive()) return false // native side died -> stop waiting
             Thread.sleep(100)
         }
         return false
@@ -465,7 +573,8 @@ class TinyVpnService : VpnService() {
             !HevSocks5Tunnel.isRunning() &&
             !MiniSlipstreamSocksBridge.isRunning() &&
             !SlipstreamBridge.isRunning() &&
-            !S3fuBridge.isRunning()
+            !S3fuBridge.isRunning() &&
+            !XrayBridge.isRunning()
         ) {
             AppLog.i(TAG, "VPN already stopped")
             return
@@ -501,6 +610,8 @@ class TinyVpnService : VpnService() {
                         .onFailure { AppLog.w(TAG, "native stop failed: ${it.message}") }
                     runCatching { S3fuBridge.stopClient() }
                         .onFailure { AppLog.w(TAG, "s3fu stop failed: ${it.message}") }
+                    runCatching { XrayBridge.stopClient() }
+                        .onFailure { AppLog.w(TAG, "xray stop failed: ${it.message}") }
                     SlipstreamBridge.setVpnService(null)
                     AppLog.i(TAG, "VPN stop cleanup finished")
                 } else {
@@ -546,6 +657,10 @@ class TinyVpnService : VpnService() {
     private fun writeDiagnostics() {
         if (currentConfig?.protocol == Config.TunnelProtocol.S3FU) {
             writeS3fuDiagnostics()
+            return
+        }
+        if (currentConfig?.protocol == Config.TunnelProtocol.XRAY) {
+            writeXrayDiagnostics()
             return
         }
         val uid = applicationInfo.uid
@@ -1601,5 +1716,6 @@ class TinyVpnService : VpnService() {
         private const val PROCESS_RESTART_DELAY_MS = 1_500L
         private const val RESTART_REQUEST_CODE = 4711
         private const val S3FU_SOCKS_READY_TIMEOUT_MS = 8_000L
+        private const val XRAY_SOCKS_READY_TIMEOUT_MS = 8_000L
     }
 }

@@ -76,6 +76,9 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
+    // libxray.aar = Xray-core wrapped by `gomobile bind` (see xray-mobile/build-android.sh).
+    // Ships its own jni/arm64-v8a/libgojni.so plus the geoip/geosite assets.
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
@@ -149,7 +152,21 @@ val cargoBuildS3fu by tasks.registering(Exec::class) {
     }
 }
 
+// Build libxray.aar (Xray-core via gomobile bind). Unlike the Rust crates this is
+// NOT rebuilt on every build -- a gomobile bind of the whole Xray dependency tree
+// takes minutes and the wrapper changes rarely. It only runs when the AAR is
+// missing (fresh clone); re-run it by hand after touching xray-mobile/:
+//   bash xray-mobile/build-android.sh
+val xrayAar = file("$projectDir/libs/libxray.aar")
+val buildXrayAar by tasks.registering(Exec::class) {
+    val moduleDir = file("$projectDir/../xray-mobile")
+    workingDir = moduleDir
+    commandLine("bash", "${moduleDir.absolutePath}/build-android.sh")
+    onlyIf { !xrayAar.exists() }
+}
+
 tasks.named("preBuild") {
     dependsOn("cargoBuildArm64")
     dependsOn(cargoBuildS3fu)
+    dependsOn(buildXrayAar)
 }

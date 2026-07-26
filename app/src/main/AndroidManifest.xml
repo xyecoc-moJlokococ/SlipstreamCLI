@@ -34,6 +34,15 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="s3fu" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- vless:// = an Xray server definition (translated into a JSON
+                     profile on import); xray:// = a profile exported by this app. -->
+                <data android:scheme="vless" />
+                <data android:scheme="xray" />
+            </intent-filter>
         </activity>
 
         <service

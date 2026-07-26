@@ -58,6 +58,7 @@ enum class S(val en: String, val ru: String) {
     PROTOCOL("Protocol", "Протокол"),
     PROTOCOL_SLIPSTREAM("Slipstream (DNS)", "Slipstream (DNS)"),
     PROTOCOL_S3FU("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
+    PROTOCOL_XRAY("Xray", "Xray"),
     S3_SECTION("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
     S3_ENDPOINT("S3 endpoint", "S3 endpoint"),
     S3_BUCKET("Bucket", "Бакет"),
@@ -70,6 +71,13 @@ enum class S(val en: String, val ru: String) {
     S3_LOGIN_HINT("login issued by the bot", "логин от бота"),
     S3_PSK("PSK", "PSK"),
     S3_PSK_HINT("64 hex chars", "64 hex-символа"),
+
+    // Xray
+    XRAY_SECTION("Xray configuration", "Конфигурация Xray"),
+    XRAY_CONFIG_HINT("Xray JSON config", "JSON-конфигурация Xray"),
+    XRAY_FORMAT_BTN("FORMAT", "ФОРМАТИРОВАТЬ"),
+    XRAY_VALIDATE_BTN("CHECK", "ПРОВЕРИТЬ"),
+    XRAY_CORE_VERSION("Xray-core", "Xray-core"),
 
     // Field labels
     LOCAL_PORT("Local port", "Локальный порт"),
@@ -207,11 +215,15 @@ enum class S(val en: String, val ru: String) {
     TOAST_START_FAILED("start failed", "не удалось запустить"),
     TOAST_VPN_START_FAILED("vpn start failed", "не удалось запустить VPN"),
     TOAST_NO_LOCAL_DNS("no local DNS", "нет локального DNS"),
-    TOAST_INVALID_SLIPSTREAM_LINK("invalid slipstream link", "неверная ссылка slipstream"),
+    // Covers every import form: slipstream://, s3fu://, xray://, vless:// and raw JSON.
+    TOAST_INVALID_PROFILE_LINK("invalid profile link", "неверная ссылка профиля"),
     TOAST_PROFILE_IMPORTED("profile imported", "профиль импортирован"),
     TOAST_CLIPBOARD_EMPTY("clipboard is empty", "буфер обмена пуст"),
     TOAST_IMPORT_FILE_FAILED("could not read import file", "не удалось прочитать файл импорта"),
     TOAST_PROFILE_LINK_COPIED("profile link copied", "ссылка профиля скопирована"),
+    TOAST_XRAY_CONFIG_OK("config is valid", "конфигурация корректна"),
+    TOAST_XRAY_CONFIG_EMPTY("config is empty", "конфигурация пуста"),
+    TOAST_XRAY_NOT_JSON("not valid JSON", "некорректный JSON"),
     TOAST_FILE_LOGGING_DISABLED("file logging is disabled", "логирование в файл отключено"),
     TOAST_CRASH_REPORT_COPIED("crash report copied", "отчёт о сбое скопирован"),
 
@@ -232,4 +244,18 @@ enum class S(val en: String, val ru: String) {
     PROFILE_NAME_DEFAULT_IMPORTED("Profile", "Профиль"),
     PROFILE_NAME_DEFAULT("Slipstream profile", "Профиль Slipstream"),
     PROFILE_NAME_DEFAULT_S3FU("S3 profile", "S3-профиль"),
+    PROFILE_NAME_DEFAULT_XRAY("Xray profile", "Профиль Xray"),
+}
+
+/** "N profiles imported" -- pluralized per language. */
+fun profilesImportedText(count: Int): String = if (Strings.current == AppLanguage.RU) {
+    val plural = when {
+        count % 100 in 11..14 -> "профилей"
+        count % 10 == 1 -> "профиль"
+        count % 10 in 2..4 -> "профиля"
+        else -> "профилей"
+    }
+    "импортировано $count $plural"
+} else {
+    if (count == 1) "1 profile imported" else "$count profiles imported"
 }
