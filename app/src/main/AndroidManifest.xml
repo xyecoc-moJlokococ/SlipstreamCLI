@@ -15,9 +15,12 @@
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+        <!-- Shared Compose Multiplatform UI (Android / desktop / iOS same screens). -->
         <activity
-            android:name=".MainActivity"
-            android:exported="true">
+            android:name=".ComposeMainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/AppTheme">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -38,12 +41,16 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <!-- vless:// = an Xray server definition (translated into a JSON
-                     profile on import); xray:// = a profile exported by this app. -->
                 <data android:scheme="vless" />
                 <data android:scheme="xray" />
             </intent-filter>
         </activity>
+
+        <!-- Legacy View-based UI kept for reference / emergency rollback (not launched). -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
 
         <service
             android:name=".service.TinyVpnService"

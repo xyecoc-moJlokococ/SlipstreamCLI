@@ -11,18 +11,12 @@ package app.slipnet.tunnel
  * half-open connection lingers for minutes, piling up under connection churn.
  *
  * Policy:
- *  - Absolute age cap: any connection older than [maxAgeMs] is reaped regardless of activity. Bounds
- *    pathological cases (silent half-open, backpressure-blind FIN) that escape the other rules.
- *  - Jammed buffer: a relay buffer (toRemote or toClient) that has been non-empty continuously for
- *    [stuckMs] means data isn't draining -- on a healthy localhost hop it clears in microseconds, so
- *    a buffer stuck for tens of seconds means the far side (slipstream over a dead carrier, or a
- *    gone client) isn't accepting. Crucially this ALSO covers the case the other rules miss: under
- *    write-backpressure the bridge stops reading the client and never observes its FIN, so neither
- *    idle nor half-closed timers ever arm -- the connection would linger in CLOSE-WAIT for minutes
- *    while the buffer trickles out. This was the root cause of renewed CLOSE-WAIT growth in the field.
- *  - Half-closed connection (one side already EOF): reap on a much shorter idle ([halfIdleMs]) OR
- *    once it has been half-closed for [halfMaxMs] regardless of trickle.
- *  - Fully-open connection: reap only after [fullIdleMs] of no progress (unchanged, generous).
+ *  - Absolute age cap: any connection older than [maxAgeMs] is reaped regardless of activity.
+ *  - Jammed buffer: a relay buffer that has been non-empty continuously for [stuckMs] means data
+ *    isn't draining.
+ *  - Half-closed connection: reap on a much shorter idle ([halfIdleMs]) OR once it has been
+ *    half-closed for [halfMaxMs] regardless of trickle.
+ *  - Fully-open connection: reap only after [fullIdleMs] of no progress.
  */
 object ConnReaper {
     fun shouldReap(

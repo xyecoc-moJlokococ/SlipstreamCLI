@@ -2,6 +2,9 @@ package app.slipnet.tunnel
 
 import android.net.VpnService
 import app.slipnet.util.AppLog
+import app.vaydns.platform.NoOpSocketProtector
+import app.vaydns.platform.SocketProtect
+import app.vaydns.platform.SocketProtector
 import java.net.DatagramSocket
 
 data class ResolverConfig(
@@ -85,6 +88,16 @@ object SlipstreamBridge {
     fun setVpnService(service: VpnService?) {
         vpnService = service
         proxyOnlyMode = service == null
+        // Shared multiplatform SocketProtect so non-Android code can protect fds without
+        // importing android.net.VpnService.
+        SocketProtect.protector = if (service == null) {
+            NoOpSocketProtector
+        } else {
+            object : SocketProtector {
+                override val proxyOnly: Boolean = false
+                override fun protect(fd: Int): Boolean = service.protect(fd)
+            }
+        }
         AppLog.i(TAG, "VpnService ${if (service == null) "cleared" else "set"}")
     }
 

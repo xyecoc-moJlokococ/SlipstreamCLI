@@ -14,5 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VaydnsAndroid"
+rootProject.name = "Vaydns"
+include(":shared")
 include(":app")
+include(":desktop")
