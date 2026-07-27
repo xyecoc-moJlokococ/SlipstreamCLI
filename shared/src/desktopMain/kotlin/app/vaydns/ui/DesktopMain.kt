@@ -5,6 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -87,10 +93,25 @@ fun main() {
                 "skiko.renderApi=${System.getProperty("skiko.renderApi")}"
             )
             val platform = DesktopPlatform()
+            val shortcuts = remember { AppShortcuts() }
             Window(
                 onCloseRequest = ::exitApplication,
                 title = "Vaydns",
-                state = rememberWindowState(size = DpSize(420.dp, 780.dp))
+                state = rememberWindowState(size = DpSize(420.dp, 780.dp)),
+                // Ctrl+V pastes a profile from the clipboard. This is onKeyEvent, not
+                // onPreviewKeyEvent, so a focused text field gets the key first and its own paste
+                // still works — the shortcut only fires when nothing is being typed into.
+                onKeyEvent = { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        event.isCtrlPressed &&
+                        event.key == Key.V
+                    ) {
+                        shortcuts.importFromClipboard?.invoke()
+                        true
+                    } else {
+                        false
+                    }
+                }
             ) {
                 DisposableEffect(window) {
                     paintWindowDark(window)
@@ -138,7 +159,7 @@ fun main() {
                 }
                 // Compose-side full-bleed dark so any frame lag still shows SlipnetBg, not white.
                 Box(Modifier.fillMaxSize().background(SlipnetBg)) {
-                    VaydnsApp(platform)
+                    VaydnsApp(platform, shortcuts)
                 }
             }
         }

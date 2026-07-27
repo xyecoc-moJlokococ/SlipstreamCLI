@@ -38,6 +38,18 @@ data class EditorDraft(
 )
 
 /**
+ * Actions the host window can trigger from outside the Compose tree — desktop keyboard shortcuts,
+ * a future menu bar or tray menu.
+ *
+ * The UI fills these in while it is composed. Going through a holder rather than a key modifier
+ * inside `VaydnsApp` is deliberate: window-level `onKeyEvent` fires only after the focused
+ * component declined the key, so Ctrl+V still pastes text normally while a text field has focus.
+ */
+class AppShortcuts {
+    var importFromClipboard: (() -> Unit)? = null
+}
+
+/**
  * Platform hooks the shared Compose UI calls for tunnel control, import/export, clipboard.
  * Android wires VpnService; desktop/iOS can implement proxy-only / no-ops.
  */

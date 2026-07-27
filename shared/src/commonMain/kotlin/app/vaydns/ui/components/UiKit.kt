@@ -61,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -95,7 +96,7 @@ import app.vaydns.ui.theme.SlipnetTextMuted
 import app.vaydns.ui.theme.SlipnetTextPrimary
 import app.vaydns.ui.theme.SlipnetTextSecondary
 
-/** Clickable with hand cursor, no Material ripple / light-flash hover. */
+/** Clickable with hand cursor, no Material ripple / light-flash hover. For actual buttons. */
 @Composable
 fun Modifier.handClickable(
     enabled: Boolean = true,
@@ -111,6 +112,25 @@ fun Modifier.handClickable(
             role = Role.Button,
             onClick = onClick
         )
+}
+
+/**
+ * Clickable that keeps the normal arrow cursor — for large selectable surfaces such as a profile
+ * row. The hand cursor is reserved for the controls inside them (delete, ⋮), which do keep it:
+ * `pointerHoverIcon` on a child wins over an ancestor's.
+ */
+@Composable
+fun Modifier.surfaceClickable(
+    enabled: Boolean = true,
+    onClick: () -> Unit
+): Modifier {
+    val interaction = remember { MutableInteractionSource() }
+    return this.clickable(
+        enabled = enabled,
+        interactionSource = interaction,
+        indication = null,
+        onClick = onClick
+    )
 }
 
 /**
@@ -175,10 +195,11 @@ fun MenuLayer(
                             scaleY = 0.94f + 0.06f * p
                             transformOrigin = TransformOrigin(1f, 0f)
                         }
-                        .shadow(10.dp, RoundedCornerShape(10.dp))
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SlipnetCard)
-                        .border(1.dp, SlipnetStroke, RoundedCornerShape(10.dp))
+                        // Square corners, panel painted in the app background, and only a light
+                        // drop shadow to lift it off the content underneath.
+                        .shadow(6.dp, RectangleShape)
+                        .background(SlipnetBg)
+                        .border(1.dp, SlipnetStroke, RectangleShape)
                         .padding(vertical = 4.dp),
                     content = content
                 )
@@ -620,7 +641,9 @@ fun ProfileCard(
                     }
                 } else Modifier
             )
-            .handClickable(onClick = onClick)
+            // The card is a selectable surface, not a button — arrow cursor. The delete and ⋮
+            // controls inside it still use handClickable and override the cursor themselves.
+            .surfaceClickable(onClick = onClick)
             .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

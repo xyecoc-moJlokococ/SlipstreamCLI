@@ -37,6 +37,61 @@ private fun cliMain(args: Array<String>) {
             val config = app.vaydns.ConfigJson.configFromString(java.io.File(path).readText())
             println("OK protocol=${config.protocol} domain=${config.domain} port=${config.listenPort}")
         }
-        else -> println("Unknown args. Use --print-platform | --write-default-config | --validate-config, or no args for GUI.")
+        args.contains("--engines") -> println(EngineBinaries.report())
+        args.contains("--connect") -> runHeadless()
+        args.contains("--show-system-proxy") -> {
+            println("current: " + WindowsSystemProxy.snapshot().describe())
+            println("pending restore: " + WindowsSystemProxy.hasPendingRestore())
+        }
+        // Recovery for the one case a shutdown hook cannot cover: the app was force-killed
+        // (Task Manager / power loss) while it owned the system proxy, so the machine is left
+        // pointing at a local port that no longer listens.
+        args.contains("--restore-system-proxy") -> {
+            if (!WindowsSystemProxy.hasPendingRestore()) {
+                println("nothing to restore; current: " + WindowsSystemProxy.snapshot().describe())
+            } else if (WindowsSystemProxy.restore()) {
+                println("restored: " + WindowsSystemProxy.snapshot().describe())
+            } else {
+                println("restore FAILED — check the log")
+            }
+        }
+        else -> println(
+            "Unknown args. Use --print-platform | --write-default-config | --validate-config | " +
+                "--engines | --connect | --show-system-proxy | --restore-system-proxy, " +
+                "or no args for GUI."
+        )
     }
+}
+
+/**
+ * Run the tunnel without a window, using the active profile, until Ctrl+C.
+ *
+ * Set `VAYDNS_NO_SYSTEM_PROXY=1` to keep the machine's proxy settings untouched and expose the
+ * tunnel only as a local proxy on 127.0.0.1:<listenPort>.
+ */
+private fun runHeadless() {
+    val store = app.vaydns.ui.FileProfileStore()
+    val settings = store.loadGlobalSettings()
+    app.vaydns.platform.PlatformLog.fileLoggingEnabled = settings.fileLogging
+    val profiles = store.loadProfiles()
+    val active = profiles.firstOrNull { it.id == store.loadActiveProfileId() } ?: profiles.firstOrNull()
+    if (active == null) {
+        println("no profiles configured")
+        return
+    }
+    println("connecting profile='${active.name}' protocol=${active.config.protocol}")
+    val outcome = DesktopTunnel.start(active.config, settings).getOrElse {
+        println("FAILED: ${it.message}")
+        return
+    }
+    outcome.warning?.let { println("WARNING: $it") }
+    println("READY engine=${outcome.engineName} listen=127.0.0.1:${outcome.listenPort} systemProxy=${outcome.systemProxyApplied}")
+    Runtime.getRuntime().addShutdownHook(Thread { DesktopTunnel.stop() })
+    while (DesktopTunnel.isRunning) {
+        Thread.sleep(1000)
+        val p = DesktopTunnel.proxyServer() ?: break
+        println("conns=${p.activeConnections()} ok=${p.connectOkCount()} fail=${p.connectFailCount()} rx=${p.rxBytes()} tx=${p.txBytes()}")
+    }
+    println("engine stopped")
+    DesktopTunnel.stop()
 }

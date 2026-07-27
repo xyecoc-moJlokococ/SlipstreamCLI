@@ -63,7 +63,7 @@ import kotlin.math.abs
  * including horizontal page transitions and drawer content-shift.
  */
 @Composable
-fun VaydnsApp(platform: VaydnsPlatform) {
+fun VaydnsApp(platform: VaydnsPlatform, shortcuts: AppShortcuts? = null) {
     VaydnsTheme {
         // Alias keeps call sites short; toast is observed below (desktop snackbar).
         val ui = platform
@@ -132,6 +132,22 @@ fun VaydnsApp(platform: VaydnsPlatform) {
         fun reloadProfiles() {
             profiles = ui.loadProfiles()
             activeId = ui.loadActiveProfileId() ?: profiles.firstOrNull()?.id
+        }
+
+        /** Import a profile from whatever is on the clipboard — menu item and Ctrl+V both land here. */
+        fun importFromClipboard() {
+            val text = ui.readClipboard()
+            if (text.isBlank()) {
+                ui.toast(t(S.TOAST_CLIPBOARD_EMPTY))
+                return
+            }
+            val imported = ui.importFromText(text)
+            if (imported.isEmpty()) {
+                ui.toast(t(S.TOAST_INVALID_PROFILE_LINK))
+            } else {
+                reloadProfiles()
+                ui.toast(t(S.TOAST_PROFILE_IMPORTED))
+            }
         }
 
         fun requestDeleteProfile(p: ConfigProfile) {
@@ -315,6 +331,15 @@ fun VaydnsApp(platform: VaydnsPlatform) {
             }
         }
 
+        // Expose clipboard import to the host window (Ctrl+V) while this UI is on screen.
+        DisposableEffect(shortcuts) {
+            shortcuts?.importFromClipboard = {
+                // Ignore while the editor is open: there, Ctrl+V belongs to the text fields.
+                if (editor == null) importFromClipboard()
+            }
+            onDispose { shortcuts?.importFromClipboard = null }
+        }
+
         BoxWithConstraints(Modifier.fillMaxSize().background(SlipnetBg)) {
             val editorWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
             // Main content — shifts right while the drawer is open.
@@ -342,19 +367,7 @@ fun VaydnsApp(platform: VaydnsPlatform) {
                                     )
                                 )
                             },
-                            onImportClipboard = {
-                                val text = ui.readClipboard()
-                                if (text.isBlank()) {
-                                    ui.toast(t(S.TOAST_CLIPBOARD_EMPTY))
-                                } else {
-                                    val imported = ui.importFromText(text)
-                                    if (imported.isEmpty()) ui.toast(t(S.TOAST_INVALID_PROFILE_LINK))
-                                    else {
-                                        reloadProfiles()
-                                        ui.toast(t(S.TOAST_PROFILE_IMPORTED))
-                                    }
-                                }
-                            },
+                            onImportClipboard = { importFromClipboard() },
                             onImportFile = {
                                 ui.pickImportFile { text ->
                                     if (text == null) return@pickImportFile

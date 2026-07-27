@@ -6,6 +6,8 @@ import app.vaydns.ConfigProfile
 import app.vaydns.GlobalSettings
 import app.vaydns.S
 import app.vaydns.currentHostPlatform
+import app.vaydns.desktop.DesktopTunnel
+import app.vaydns.desktop.EngineBinaries
 import app.vaydns.platform.PlatformLog
 import app.vaydns.platform.LogLevel
 import app.vaydns.supportsSystemVpn
@@ -31,6 +33,85 @@ class DesktopPlatform(
     private val listeners = CopyOnWriteArrayList<(ConnectUiState) -> Unit>()
     private val toastListeners = CopyOnWriteArrayList<(String) -> Unit>()
     @Volatile private var connectState = ConnectUiState.idle()
+    @Volatile private var connecting = false
+    @Volatile private var lastError: String = ""
+
+    init {
+        PlatformLog.fileLoggingEnabled = runCatching { store.loadGlobalSettings().fileLogging }
+            .getOrDefault(false)
+        // A previous run may have died with the system proxy still pointing at our (now dead)
+        // local port, which would leave the machine with no working connection at all.
+        if (DesktopTunnel.recoverFromCrash()) {
+            toast(
+                if (app.vaydns.Strings.current == app.vaydns.AppLanguage.RU) {
+                    "Системный прокси восстановлен после некорректного завершения"
+                } else {
+                    "System proxy restored after an unclean shutdown"
+                }
+            )
+        }
+        // Make sure the tunnel dies with the UI even on a hard exit.
+        Runtime.getRuntime().addShutdownHook(Thread { runCatching { DesktopTunnel.stop() } })
+        Thread({ statusLoop() }, "vaydns-status").apply { isDaemon = true }.start()
+    }
+
+    /** Publishes connect state once a second so traffic counters and engine death are visible. */
+    private fun statusLoop() {
+        while (true) {
+            runCatching { publishIfChanged() }
+            Thread.sleep(1000)
+        }
+    }
+
+    private fun snapshot(): ConnectUiState {
+        val running = DesktopTunnel.isRunning
+        val proxy = DesktopTunnel.proxyServer()
+        val rx = proxy?.rxBytes() ?: 0L
+        val tx = proxy?.txBytes() ?: 0L
+        val status = when {
+            connecting -> t(S.STATUS_CONNECTING)
+            running -> t(S.STATUS_CONNECTED)
+            else -> t(S.STATUS_NOT_CONNECTED)
+        }
+        return ConnectUiState(
+            statusText = status,
+            trafficText = "↓ ${formatBytes(rx)}   ↑ ${formatBytes(tx)}",
+            running = running && !connecting,
+            connecting = connecting,
+            diagnosticsText = buildString {
+                appendLine("running=$running connecting=$connecting")
+                appendLine("connections=${proxy?.activeConnections() ?: 0} ok=${proxy?.connectOkCount() ?: 0} fail=${proxy?.connectFailCount() ?: 0}")
+                if (lastError.isNotBlank()) appendLine("lastError=$lastError")
+                appendLine(EngineBinaries.report())
+            }
+        )
+    }
+
+    private var lastPublished: ConnectUiState? = null
+
+    private fun publishIfChanged() {
+        val s = snapshot()
+        if (s == lastPublished) return
+        lastPublished = s
+        listeners.forEach { runCatching { it(s) } }
+    }
+
+    private fun publish() {
+        lastPublished = null
+        publishIfChanged()
+    }
+
+    private fun formatBytes(n: Long): String = when {
+        n < 1024 -> "$n B"
+        n < 1024 * 1024 -> "${n / 1024} KB"
+        else -> String.format("%.1f MB", n / (1024.0 * 1024.0))
+    }
+
+    private fun activeConfig(): Config? {
+        val profiles = store.loadProfiles()
+        val id = store.loadActiveProfileId()
+        return (profiles.firstOrNull { it.id == id } ?: profiles.firstOrNull())?.config
+    }
 
     override fun loadProfiles(): List<ConfigProfile> = store.loadProfiles()
     override fun loadActiveProfileId(): String? = store.loadActiveProfileId()
@@ -38,20 +119,12 @@ class DesktopPlatform(
 
     override fun selectProfile(id: String) {
         if (id == store.loadActiveProfileId()) return
-        val wasRunning = connectState.running
+        val wasRunning = DesktopTunnel.isRunning || connecting
         store.setActiveProfile(id)
         if (wasRunning) {
             toast(t(S.TOAST_SWITCHING_PROFILE))
-            // Dry-run reconnect: drop "connected" then re-assert for the new profile.
-            connectState = ConnectUiState.idle()
-            listeners.forEach { it(connectState) }
-            connectState = ConnectUiState(
-                statusText = t(S.STATUS_CONNECTED) + " (UI)",
-                trafficText = "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)",
-                running = true,
-                diagnosticsText = "Desktop: switched active profile (UI dry-run)."
-            )
-            listeners.forEach { it(connectState) }
+            disconnect()
+            startConnection()
         }
     }
 
@@ -62,6 +135,7 @@ class DesktopPlatform(
     override fun loadGlobalSettings(): GlobalSettings = store.loadGlobalSettings()
     override fun saveGlobalSettings(settings: GlobalSettings) {
         store.saveGlobalSettings(settings)
+        PlatformLog.fileLoggingEnabled = settings.fileLogging
         // When debug mode is on, ensure a log file exists so Diagnostics has something to show.
         if (settings.fileLogging) {
             val f = File(app.vaydns.platform.AppPaths.filesDir(), "vaydns-debug.log")
@@ -76,29 +150,61 @@ class DesktopPlatform(
     }
 
     override fun toggleConnect() {
-        // Full native tunnel not wired on desktop yet — surface clear status in the same UI.
-        connectState = if (connectState.running) {
-            ConnectUiState(
-                statusText = t(S.STATUS_NOT_CONNECTED),
-                trafficText = "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)",
-                running = false,
-                diagnosticsText = "Desktop: tunnel engine not started (SOCKS/native host build pending)."
-            )
+        if (DesktopTunnel.isRunning || connecting) {
+            disconnect()
         } else {
-            ConnectUiState(
-                statusText = t(S.STATUS_CONNECTED) + " (UI)",
-                trafficText = "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)",
-                running = true,
-                diagnosticsText = "Desktop connect is a UI dry-run. Shared UI + profile store are active.\n" +
-                    "Native slipstream/xray host libs can be attached next."
-            )
+            startConnection()
         }
-        listeners.forEach { it(connectState) }
+    }
+
+    /**
+     * Connect off the UI thread: starting an engine involves process spawn plus a wait for its
+     * listener, which is far too long to block a frame on.
+     */
+    private fun startConnection() {
+        if (connecting) return
+        val config = activeConfig()
+        if (config == null) {
+            toast(t(S.TOAST_START_FAILED))
+            return
+        }
+        connecting = true
+        lastError = ""
+        publish()
+        Thread({
+            val result = DesktopTunnel.start(config, store.loadGlobalSettings())
+            connecting = false
+            result
+                .onSuccess { outcome ->
+                    outcome.warning?.let { toast(it) }
+                    toast(
+                        if (app.vaydns.Strings.current == app.vaydns.AppLanguage.RU) {
+                            "Подключено (${outcome.engineName}) — 127.0.0.1:${outcome.listenPort}"
+                        } else {
+                            "Connected (${outcome.engineName}) — 127.0.0.1:${outcome.listenPort}"
+                        }
+                    )
+                }
+                .onFailure { e ->
+                    lastError = e.message.orEmpty()
+                    toast(e.message ?: t(S.TOAST_START_FAILED))
+                }
+            publish()
+        }, "vaydns-connect").start()
+    }
+
+    private fun disconnect() {
+        connecting = false
+        Thread({
+            DesktopTunnel.stop()
+            publish()
+        }, "vaydns-disconnect").start()
+        publish()
     }
 
     override fun observeConnect(onChange: (ConnectUiState) -> Unit): () -> Unit {
         listeners += onChange
-        onChange(connectState)
+        onChange(snapshot())
         return { listeners -= onChange }
     }
 
@@ -220,39 +326,38 @@ class DesktopPlatform(
         }
     }
 
+    /** Reused across calls — see [showSystemFileChooser]. Swing objects are main-thread only. */
+    private var cachedChooser: JFileChooser? = null
+
     /**
-     * JFileChooser with **system** Look&Feel colors — avoids black file list when
-     * the app window uses a dark AWT background / noerasebackground.
+     * JFileChooser with **system** Look&Feel colors — avoids a black file list when the app window
+     * uses a dark AWT background / noerasebackground.
+     *
+     * Both the L&F switch and the chooser itself are done once and kept. Rebuilding them per call
+     * meant every "Import from file" paid Swing's full first-use cost — `setLookAndFeel` plus
+     * `updateComponentTreeUI` on a fresh component tree is hundreds of milliseconds.
      */
     private fun showSystemFileChooser(
         save: Boolean,
         title: String?,
         suggestedName: String?
-    ): File? {
-        val previousLf = UIManager.getLookAndFeel()
-        return try {
-            // Force classic system L&F for this dialog only (Windows explorer colors).
-            runCatching {
-                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
-            }
-            val chooser = JFileChooser().apply {
-                if (!title.isNullOrBlank()) dialogTitle = title
-                if (!suggestedName.isNullOrBlank()) selectedFile = File(suggestedName)
-                // Explicit light control colors in case L&F keys were overridden.
+    ): File? = try {
+        val chooser = cachedChooser ?: run {
+            // Classic system L&F (Windows explorer colors) for AWT dialogs; Compose draws its own
+            // UI with Skia and is unaffected, so this can stay set for the process lifetime.
+            runCatching { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()) }
+            JFileChooser().apply {
                 background = java.awt.SystemColor.window
                 isOpaque = true
-            }
-            // Refresh UI after L&F switch.
-            SwingUtilities.updateComponentTreeUI(chooser)
-            val result = if (save) chooser.showSaveDialog(null) else chooser.showOpenDialog(null)
-            if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
-        } catch (_: Exception) {
-            null
-        } finally {
-            runCatching {
-                if (previousLf != null) UIManager.setLookAndFeel(previousLf)
-            }
+                SwingUtilities.updateComponentTreeUI(this)
+            }.also { cachedChooser = it }
         }
+        chooser.dialogTitle = title
+        chooser.selectedFile = if (suggestedName.isNullOrBlank()) null else File(suggestedName)
+        val result = if (save) chooser.showSaveDialog(null) else chooser.showOpenDialog(null)
+        if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    } catch (_: Exception) {
+        null
     }
 
     override fun supportsSystemVpn(): Boolean = currentHostPlatform().supportsSystemVpn()

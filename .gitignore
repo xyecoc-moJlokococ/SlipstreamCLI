@@ -23,3 +23,9 @@ externalNativeBuild/
 app/libs/*.aar
 app/libs/*-sources.jar
 xray-mobile/assets/
+
+# Native tunnel engines (built by _wsl_build_s3fu_windows.sh / Go); 40+ MB, not source
+engines/
+
+# jpackage app-image output (bundled JRE + engines, ~275 MB)
+dist/
