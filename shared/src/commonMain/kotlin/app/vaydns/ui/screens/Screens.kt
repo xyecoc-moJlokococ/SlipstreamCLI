@@ -36,10 +36,12 @@ import app.vaydns.S
 import app.vaydns.t
 import app.vaydns.ui.ConnectUiState
 import app.vaydns.ui.EditorDraft
+import app.vaydns.ui.PlatformBackHandler
 import app.vaydns.ui.components.AccentLinkButton
 import app.vaydns.ui.components.BottomConnectBar
 import app.vaydns.ui.components.HintText
 import app.vaydns.ui.components.LabeledField
+import app.vaydns.ui.components.MenuLayer
 import app.vaydns.ui.components.MenuRow
 import app.vaydns.ui.components.PillSelector
 import app.vaydns.ui.components.PrimaryButton
@@ -74,6 +76,14 @@ fun HomeScreen(
 ) {
     var addMenu by remember { mutableStateOf(false) }
     var moreFor by remember { mutableStateOf<ConfigProfile?>(null) }
+    var menuProfile by remember { mutableStateOf<ConfigProfile?>(null) }
+    // Menus are drawn by this screen (see MenuLayer) instead of in their own Popup
+    // window, so each anchor reports where its panel should start. Positions land in
+    // plain (non-snapshot) holders — they are written on every layout pass and are
+    // only read when a menu actually opens.
+    val addAnchor = remember { intArrayOf(0) }
+    val cardAnchors = remember { mutableMapOf<String, Int>() }
+    var menuAnchorY by remember { mutableStateOf(0) }
 
     // Local order while dragging; resync from [profiles] when idle.
     var ordered by remember { mutableStateOf(profiles) }
@@ -86,6 +96,13 @@ fun HomeScreen(
         if (draggingId == null) ordered = profiles
     }
 
+    // The menus are plain overlays, not focusable Popup windows, so back has to be
+    // handled here — otherwise it would fall through and close the app.
+    PlatformBackHandler(enabled = addMenu || moreFor != null) {
+        addMenu = false
+        moreFor = null
+    }
+
     val density = LocalDensity.current
     // Card height (~56 content) + bottom padding 8 ≈ slot pitch used for gap math.
     val slotPitchPx = with(density) { 72.dp.toPx() }
@@ -96,14 +113,12 @@ fun HomeScreen(
             TopBar(
                 title = t(S.HOME),
                 onMenu = onMenu,
-                onAdd = { addMenu = true },
-                addMenuExpanded = addMenu,
-                onAddMenuDismiss = { addMenu = false },
-                addMenuContent = {
-                    MenuRow(t(S.MENU_NEW_PROFILE)) { addMenu = false; onAddNew() }
-                    MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
-                    MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
-                }
+                onAdd = {
+                    menuAnchorY = addAnchor[0]
+                    moreFor = null
+                    addMenu = true
+                },
+                onAddAnchor = { addAnchor[0] = it }
             )
             Column(
                 Modifier
@@ -132,19 +147,13 @@ fun HomeScreen(
                         selected = profile.id == activeId,
                         onClick = { if (draggingId == null) onSelect(profile) },
                         onDelete = { onDelete(profile) },
-                        moreMenuExpanded = moreFor?.id == profile.id,
-                        onMoreClick = { moreFor = profile },
-                        onMoreDismiss = { moreFor = null },
-                        moreMenuContent = {
-                            MenuRow(t(S.CD_EDIT_PROFILE)) {
-                                moreFor = null
-                                onEdit(profile)
-                            }
-                            MenuRow(t(S.MENU_EXPORT_PROFILE)) {
-                                moreFor = null
-                                onExport(profile)
-                            }
+                        onMoreClick = {
+                            menuAnchorY = cardAnchors[profile.id] ?: 0
+                            addMenu = false
+                            menuProfile = profile
+                            moreFor = profile
                         },
+                        onMoreAnchor = { y -> cardAnchors[profile.id] = y },
                         dragOffsetY = if (isDragging) dragOffsetY else 0f,
                         isDragging = isDragging,
                         gapOffsetY = gapOffset,
@@ -197,6 +206,29 @@ fun HomeScreen(
             onToggle = onToggle,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+
+        // Menus last so they paint over the list and the bottom bar.
+        MenuLayer(
+            visible = addMenu,
+            anchorY = menuAnchorY,
+            onDismiss = { addMenu = false }
+        ) {
+            MenuRow(t(S.MENU_NEW_PROFILE)) { addMenu = false; onAddNew() }
+            MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
+            MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
+        }
+        // [menuProfile] keeps the rows populated while the panel fades out; only
+        // [moreFor] is cleared on dismiss.
+        menuProfile?.let { p ->
+            MenuLayer(
+                visible = moreFor?.id == p.id,
+                anchorY = menuAnchorY,
+                onDismiss = { moreFor = null }
+            ) {
+                MenuRow(t(S.CD_EDIT_PROFILE)) { moreFor = null; onEdit(p) }
+                MenuRow(t(S.MENU_EXPORT_PROFILE)) { moreFor = null; onExport(p) }
+            }
+        }
     }
 }
 
@@ -401,6 +433,9 @@ fun ProfileEditorScreen(
             title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
             onBack = onBack
         )
+        // Plain scrolling Column on purpose. A LazyColumn was measured here and came out
+        // ~40ms slower per open: its per-item subcomposition costs more than composing
+        // this many lightweight rows up front.
         Column(
             Modifier
                 .weight(1f)

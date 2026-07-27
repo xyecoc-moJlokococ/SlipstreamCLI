@@ -9,11 +9,14 @@ import app.vaydns.S
 import app.vaydns.defaultConfig
 import app.vaydns.t
 
+/**
+ * Main tabs reachable from the drawer. The profile editor is not a tab — it is a
+ * layer drawn over the current tab (see `VaydnsApp`).
+ */
 enum class AppScreen {
     HOME,
     SETTINGS,
-    DIAGNOSTICS,
-    PROFILE_EDITOR
+    DIAGNOSTICS
 }
 
 data class ConnectUiState(

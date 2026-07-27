@@ -2,6 +2,7 @@ package app.vaydns.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.MutableTransitionState
@@ -50,8 +51,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +67,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -73,12 +80,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import app.vaydns.AppVersion
 import app.vaydns.ui.theme.SlipnetAccent
 import app.vaydns.ui.theme.SlipnetBg
@@ -110,57 +114,88 @@ fun Modifier.handClickable(
 }
 
 /**
- * Popup menu anchored to its parent Box at **TopEnd**.
- * Panel overlays the + / ⋮ control (does not drop fully below it).
- * Equal ~8dp gutters from the window right edge (via x inset).
+ * Drop-down menu drawn **inside the normal composition** — deliberately not a
+ * [androidx.compose.ui.window.Popup].
+ *
+ * A Popup is a second Android window: opening one costs a window relayout, a focus
+ * hand-off, and a cross-window `postAndWait` on every animated frame, and it keeps
+ * asking for vsync callbacks while it is open. Drawing the panel as a plain overlay
+ * in the host screen costs a single layout pass instead.
+ *
+ * Place this last inside the screen's root Box so it paints over everything.
+ * The panel's top-right corner sits at [anchorY] (root coordinates), 8dp in from the
+ * right edge, clamped so it never runs off the bottom.
  */
 @Composable
-fun AnchoredPopupMenu(
-    expanded: Boolean,
-    onDismissRequest: () -> Unit,
+fun MenuLayer(
+    visible: Boolean,
+    anchorY: Int,
+    onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    // Keep the Popup mounted until the exit animation finishes.
-    val visibleState = remember { MutableTransitionState(false) }
-    visibleState.targetState = expanded
-    if (!visibleState.currentState && !visibleState.targetState) return
+    // One float drives fade + scale, so showing/hiding is a layer property change
+    // rather than an AnimatedVisibility transition tree. [mounted] flips only at the
+    // two ends of the animation — anim.value itself is read inside graphicsLayer, so
+    // the rows are not recomposed on every frame.
+    val anim = remember { Animatable(0f) }
+    var mounted by remember { mutableStateOf(false) }
+    LaunchedEffect(visible) {
+        if (visible) {
+            mounted = true
+            anim.animateTo(1f, tween(140, easing = LinearOutSlowInEasing))
+        } else {
+            anim.animateTo(0f, tween(110, easing = LinearOutSlowInEasing))
+            mounted = false
+        }
+    }
+    if (!mounted) return
 
-    val density = LocalDensity.current
-    // Overlay the anchor: small downward nudge so the first row sits over the icon,
-    // and matching left shift so the panel isn't flush to the window chrome.
-    val gutterPx = with(density) { 8.dp.roundToPx() }
-    Popup(
-        alignment = Alignment.TopEnd,
-        offset = IntOffset(
-            x = -gutterPx,
-            y = gutterPx // same 8dp — menu covers the + while keeping equal top/right feel
-        ),
-        onDismissRequest = onDismissRequest,
-        properties = PopupProperties(focusable = true)
-    ) {
-        AnimatedVisibility(
-            visibleState = visibleState,
-            enter = fadeIn(animationSpec = tween(110, easing = LinearOutSlowInEasing)) + scaleIn(
-                initialScale = 0.94f,
-                animationSpec = tween(160, easing = LinearOutSlowInEasing),
-                transformOrigin = TransformOrigin(1f, 0f) // grow from top-right over the + / ⋮
-            ),
-            exit = fadeOut(animationSpec = tween(100, easing = LinearOutSlowInEasing)) + scaleOut(
-                targetScale = 0.96f,
-                animationSpec = tween(130, easing = LinearOutSlowInEasing),
-                transformOrigin = TransformOrigin(1f, 0f)
+    val gutterPx = with(LocalDensity.current) { 8.dp.roundToPx() }
+    Box(Modifier.fillMaxSize()) {
+        // Outside tap closes the menu (same as a Popup's dismiss-on-outside-touch).
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                )
+        )
+        Layout(
+            content = {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 168.dp, max = 280.dp)
+                        .graphicsLayer {
+                            val p = anim.value
+                            alpha = p
+                            // Grow from the top-right, over the + / ⋮ that opened it.
+                            scaleX = 0.94f + 0.06f * p
+                            scaleY = 0.94f + 0.06f * p
+                            transformOrigin = TransformOrigin(1f, 0f)
+                        }
+                        .shadow(10.dp, RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SlipnetCard)
+                        .border(1.dp, SlipnetStroke, RoundedCornerShape(10.dp))
+                        .padding(vertical = 4.dp),
+                    content = content
+                )
+            }
+        ) { measurables, constraints ->
+            val panel = measurables.first().measure(
+                constraints.copy(minWidth = 0, minHeight = 0)
             )
-        ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(min = 168.dp, max = 280.dp)
-                    .shadow(10.dp, RoundedCornerShape(10.dp))
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SlipnetCard)
-                    .border(1.dp, SlipnetStroke, RoundedCornerShape(10.dp))
-                    .padding(vertical = 4.dp),
-                content = content
-            )
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                panel.place(
+                    x = (constraints.maxWidth - panel.width - gutterPx).coerceAtLeast(0),
+                    y = anchorY.coerceIn(
+                        0,
+                        (constraints.maxHeight - panel.height).coerceAtLeast(0)
+                    )
+                )
+            }
         }
     }
 }
@@ -201,9 +236,8 @@ fun TopBar(
     onMenu: (() -> Unit)? = null,
     onBack: (() -> Unit)? = null,
     onAdd: (() -> Unit)? = null,
-    addMenuExpanded: Boolean = false,
-    onAddMenuDismiss: () -> Unit = {},
-    addMenuContent: (@Composable ColumnScope.() -> Unit)? = null
+    /** Reports the + button's top edge in root coords so the screen can anchor its menu. */
+    onAddAnchor: (Int) -> Unit = {}
 ) {
     // Full-bleed bar: menu / + sit against the physical window edges; 56dp targets.
     Row(
@@ -257,29 +291,18 @@ fun TopBar(
         )
         if (onAdd != null) {
             Box(
-                modifier = Modifier.size(TopBarIconSize),
+                Modifier
+                    .size(TopBarIconSize)
+                    .onGloballyPositioned { onAddAnchor(it.positionInRoot().y.toInt()) }
+                    .handClickable(onClick = onAdd),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    Modifier
-                        .size(TopBarIconSize)
-                        .handClickable(onClick = onAdd),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        null,
-                        tint = SlipnetTextPrimary,
-                        modifier = Modifier.size(TopBarIconGlyph)
-                    )
-                }
-                if (addMenuContent != null) {
-                    AnchoredPopupMenu(
-                        expanded = addMenuExpanded,
-                        onDismissRequest = onAddMenuDismiss,
-                        content = addMenuContent
-                    )
-                }
+                Icon(
+                    Icons.Default.Add,
+                    null,
+                    tint = SlipnetTextPrimary,
+                    modifier = Modifier.size(TopBarIconGlyph)
+                )
             }
         }
     }
@@ -505,10 +528,9 @@ fun ProfileCard(
     selected: Boolean,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    moreMenuExpanded: Boolean,
     onMoreClick: () -> Unit,
-    onMoreDismiss: () -> Unit,
-    moreMenuContent: @Composable ColumnScope.() -> Unit,
+    /** Reports the ⋮ button's top edge in root coords so the screen can anchor its menu. */
+    onMoreAnchor: (Int) -> Unit,
     /** Vertical drag offset while this card is the active reorder target. */
     dragOffsetY: Float = 0f,
     isDragging: Boolean = false,
@@ -654,28 +676,20 @@ fun ProfileCard(
                 modifier = Modifier.size(24.dp)
             )
         }
-        // ⋮ menu: Edit + Export (pencil removed from the row).
+        // ⋮ menu: Edit + Export (pencil removed from the row). The panel itself is
+        // drawn by the host screen — a card sits inside a clipping scroll container.
         Box(
-            modifier = Modifier.size(48.dp),
+            Modifier
+                .size(48.dp)
+                .onGloballyPositioned { onMoreAnchor(it.positionInRoot().y.toInt()) }
+                .handClickable(onClick = onMoreClick),
             contentAlignment = Alignment.Center
         ) {
-            Box(
-                Modifier
-                    .size(48.dp)
-                    .handClickable(onClick = onMoreClick),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.MoreVert,
-                    null,
-                    tint = SlipnetTextSecondary,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-            AnchoredPopupMenu(
-                expanded = moreMenuExpanded,
-                onDismissRequest = onMoreDismiss,
-                content = moreMenuContent
+            Icon(
+                Icons.Default.MoreVert,
+                null,
+                tint = SlipnetTextSecondary,
+                modifier = Modifier.size(24.dp)
             )
         }
     }
@@ -849,7 +863,7 @@ enum class AppDrawerItem {
 }
 
 /**
- * Modal card overlay with the same enter/exit feel as [AnchoredPopupMenu]
+ * Modal card overlay with the same enter/exit feel as [MenuLayer]
  * (fade + slight scale). Stays composed until the exit animation finishes —
  * parent must pass [visible] and keep composing while animating out.
  */

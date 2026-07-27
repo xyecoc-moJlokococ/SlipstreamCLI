@@ -68,6 +68,18 @@ android {
         }
     }
 
+    buildTypes {
+        // A debuggable app is never AOT-compiled by ART and runs with CheckJNI, which
+        // roughly triples Compose composition/layout cost. This variant is the same code
+        // with debuggable off, signed with the debug key so it installs over the debug
+        // build — use it whenever you are judging how the UI actually feels.
+        release {
+            isDebuggable = false
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures {
         compose = true
     }
