@@ -1,0 +1,220 @@
+package app.vaydns.subscription
+
+import app.vaydns.Config
+import app.vaydns.ConfigProfile
+import app.vaydns.defaultConfig
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class SubscriptionRepositoryTest {
+
+    /** In-memory Storage so the repository's rules can be checked without a real store. */
+    private class FakeStorage : SubscriptionRepository.Storage {
+        var subs = mutableListOf<Subscription>()
+        var profiles = mutableListOf<ConfigProfile>()
+        var now = 1_000_000L
+        private var seq = 0
+
+        override fun loadSubscriptions() = subs.toList()
+        override fun saveSubscriptions(subs: List<Subscription>) {
+            this.subs = subs.toMutableList()
+        }
+        override fun loadProfiles() = profiles.toList()
+        override fun writeProfiles(profiles: List<ConfigProfile>) {
+            this.profiles = profiles.toMutableList()
+        }
+        override fun baseConfig(): Config = defaultConfig(mode = Config.Mode.PROXY)
+        override fun newId(): String = "gen-${++seq}"
+        override fun nowMs(): Long = now
+        override fun profileFromLink(uri: String, name: String): ConfigProfile? =
+            if (uri.startsWith("vless://")) {
+                ConfigProfile("tmp", name.ifBlank { "link" }, baseConfig())
+            } else {
+                null
+            }
+    }
+
+    private lateinit var server: HttpServer
+    private lateinit var storage: FakeStorage
+    private lateinit var repo: SubscriptionRepository
+    private var payload: String = ""
+    private var payloadHeaders: Map<String, String> = emptyMap()
+
+    private fun url(path: String) = "http://127.0.0.1:${server.address.port}$path"
+
+    private fun config(name: String) =
+        """{"remarks":"$name","outbounds":[{"tag":"proxy","protocol":"vless"}]}"""
+
+    @BeforeTest
+    fun setUp() {
+        server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/sub") { ex ->
+            payloadHeaders.forEach { (k, v) -> ex.responseHeaders.add(k, v) }
+            val bytes = payload.toByteArray()
+            ex.sendResponseHeaders(200, bytes.size.toLong())
+            ex.responseBody.use { it.write(bytes) }
+            ex.close()
+        }
+        server.createContext("/broken") { ex ->
+            ex.sendResponseHeaders(500, -1)
+            ex.close()
+        }
+        server.start()
+        storage = FakeStorage()
+        repo = SubscriptionRepository(storage)
+        payload = "[${config("Spain")},${config("Estonia")}]"
+        payloadHeaders = emptyMap()
+    }
+
+    @AfterTest
+    fun tearDown() = server.stop(0)
+
+    @Test
+    fun addImportsProfilesTaggedWithTheSubscription() {
+        val result = repo.add(url("/sub"), name = "My VPN")
+        assertTrue(result.isSuccess, "add failed: ${result.error}")
+        assertEquals(2, result.profileCount)
+
+        val profiles = repo.profilesOf(result.subscription.id)
+        assertEquals(listOf("Spain", "Estonia"), profiles.map { it.name })
+        assertTrue(profiles.all { it.config.protocol == Config.TunnelProtocol.XRAY })
+        assertTrue(profiles.all { it.subscriptionId == result.subscription.id })
+    }
+
+    @Test
+    fun refreshReplacesOnlyItsOwnProfiles() {
+        val handMade = ConfigProfile("mine", "Hand made", storage.baseConfig())
+        storage.profiles.add(handMade)
+        val first = repo.add(url("/sub"))
+        val otherSub = repo.add(url("/sub?x=2"))
+
+        // The panel drops one server and adds another.
+        payload = "[${config("Spain")},${config("Germany")}]"
+        val refreshed = repo.refresh(first.subscription.id)
+        assertTrue(refreshed.isSuccess, "refresh failed: ${refreshed.error}")
+
+        assertEquals(listOf("Spain", "Germany"), repo.profilesOf(first.subscription.id).map { it.name })
+        // Untouched: the user's own profile and the other subscription.
+        assertEquals(listOf("Hand made"), repo.ownProfiles().map { it.name })
+        assertEquals(2, repo.profilesOf(otherSub.subscription.id).size)
+    }
+
+    @Test
+    fun refreshKeepsIdsOfServersThatSurvived() {
+        val added = repo.add(url("/sub"))
+        val spainIdBefore = repo.profilesOf(added.subscription.id).first { it.name == "Spain" }.id
+
+        payload = "[${config("Spain")},${config("Germany")}]"
+        repo.refresh(added.subscription.id)
+
+        // Same server, same id — otherwise the active selection would be lost on every refresh.
+        assertEquals(spainIdBefore, repo.profilesOf(added.subscription.id).first { it.name == "Spain" }.id)
+    }
+
+    @Test
+    fun failedRefreshLeavesExistingProfilesAlone() {
+        val added = repo.add(url("/sub"))
+        val before = repo.profilesOf(added.subscription.id)
+
+        storage.saveSubscriptions(
+            storage.loadSubscriptions().map { it.copy(url = url("/broken")) }
+        )
+        val result = repo.refresh(added.subscription.id)
+
+        assertTrue(!result.isSuccess)
+        // A panel outage must never wipe the user's servers.
+        assertEquals(before.map { it.name }, repo.profilesOf(added.subscription.id).map { it.name })
+        assertTrue(result.subscription.lastError.isNotBlank())
+    }
+
+    @Test
+    fun addingTheSameUrlTwiceRefreshesInsteadOfDuplicating() {
+        val first = repo.add(url("/sub"))
+        val second = repo.add(url("/sub"))
+        assertEquals(first.subscription.id, second.subscription.id)
+        assertEquals(1, repo.list().size)
+        assertEquals(2, repo.profilesOf(first.subscription.id).size)
+    }
+
+    @Test
+    fun deleteRemovesSubscriptionAndItsProfilesOnly() {
+        storage.profiles.add(ConfigProfile("mine", "Hand made", storage.baseConfig()))
+        val added = repo.add(url("/sub"))
+
+        repo.delete(added.subscription.id)
+
+        assertTrue(repo.list().isEmpty())
+        assertTrue(repo.profilesOf(added.subscription.id).isEmpty())
+        assertEquals(listOf("Hand made"), repo.ownProfiles().map { it.name })
+    }
+
+    @Test
+    fun linkSubscriptionsGoThroughThePlatformImporter() {
+        payload = "vless://uuid@example.com:443#Spain\nvless://uuid@example.net:443#Estonia"
+        val result = repo.add(url("/sub"))
+        assertTrue(result.isSuccess, "add failed: ${result.error}")
+        assertEquals(listOf("Spain", "Estonia"), repo.profilesOf(result.subscription.id).map { it.name })
+    }
+
+    @Test
+    fun rejectsThingsThatAreNotSubscriptionUrls() {
+        val result = repo.add("vless://uuid@host:443#not-a-sub")
+        assertTrue(!result.isSuccess)
+        assertTrue(repo.list().isEmpty())
+    }
+
+    @Test
+    fun refreshDuePicksOnlyStaleOnes() {
+        val added = repo.add(url("/sub"))
+        assertTrue(repo.refreshDue().isEmpty(), "just-added subscription is not due")
+
+        storage.now += 25L * 60 * 60 * 1000
+        assertEquals(1, repo.refreshDue().size)
+        assertEquals(added.subscription.id, repo.list().single().id)
+    }
+
+    @Test
+    fun renameAndDisableArePersisted() {
+        val added = repo.add(url("/sub")).subscription
+        repo.rename(added.id, "Renamed")
+        repo.setEnabled(added.id, false)
+
+        val stored = repo.find(added.id)
+        assertEquals("Renamed", stored?.name)
+        assertEquals(false, stored?.enabled)
+        // A disabled subscription is never auto-refreshed.
+        storage.now += 25L * 60 * 60 * 1000
+        assertTrue(repo.refreshDue().isEmpty())
+    }
+
+    @Test
+    fun unknownIdIsReportedNotCrashed() {
+        val result = repo.refresh("nope")
+        assertTrue(!result.isSuccess)
+        assertNull(repo.find("nope"))
+    }
+
+    @Test
+    fun adoptsThePanelTitleAsTheFolderName() {
+        // Regression: a blank name used to be persisted as the URL, so the refresh saw a
+        // non-blank name and never picked up profile-title.
+        payloadHeaders = mapOf("profile-title" to "base64:0JHQsNC70LTRkdC20L3Ri9C5IFZQTg==")
+        val result = repo.add(url("/sub"))
+        assertEquals("Балдёжный VPN", result.subscription.name)
+        assertEquals("Балдёжный VPN", repo.list().single().name)
+    }
+
+    @Test
+    fun aUserChosenNameSurvivesRefresh() {
+        payloadHeaders = mapOf("profile-title" to "Panel name")
+        val added = repo.add(url("/sub"), name = "My own")
+        repo.refresh(added.subscription.id)
+        assertEquals("My own", repo.list().single().name)
+    }
+}

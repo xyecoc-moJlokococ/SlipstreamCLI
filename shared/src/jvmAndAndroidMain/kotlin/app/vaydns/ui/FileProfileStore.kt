@@ -22,6 +22,18 @@ class FileProfileStore(
     private val profilesFile get() = File(dir, "profiles.json")
     private val settingsFile get() = File(dir, "settings.json")
     private val activeFile get() = File(dir, "active_profile_id.txt")
+    private val subscriptionsFile get() = File(dir, "subscriptions.json")
+
+    fun loadSubscriptions(): List<app.vaydns.subscription.Subscription> =
+        runCatching {
+            subscriptionsFile.takeIf { it.exists() }?.readText().orEmpty()
+        }.getOrDefault("").let { app.vaydns.subscription.SubscriptionJson.listFromString(it) }
+
+    fun saveSubscriptions(subs: List<app.vaydns.subscription.Subscription>) {
+        runCatching {
+            subscriptionsFile.writeText(app.vaydns.subscription.SubscriptionJson.listToString(subs))
+        }
+    }
 
     init {
         dir.mkdirs()
@@ -76,16 +88,21 @@ class FileProfileStore(
         return profile
     }
 
-    fun deleteProfile(id: String): ConfigProfile {
+    /** Returns the profile that is active afterwards, or null once nothing is left. */
+    fun deleteProfile(id: String): ConfigProfile? {
         val list = loadProfiles()
-        if (list.size <= 1) return list.first()
         val remaining = list.filterNot { it.id == id }
         writeProfiles(remaining)
+        val first = remaining.firstOrNull()
+        if (first == null) {
+            setActiveProfile("")
+            return null
+        }
         val active = loadActiveProfileId()
         if (active == id || remaining.none { it.id == active }) {
-            setActiveProfile(remaining.first().id)
+            setActiveProfile(first.id)
         }
-        return remaining.first()
+        return first
     }
 
     fun reorderProfiles(orderedIds: List<String>) {

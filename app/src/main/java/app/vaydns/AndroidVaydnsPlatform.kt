@@ -115,7 +115,7 @@ class AndroidVaydnsPlatform(
     override fun addProfile(name: String, config: Config): ConfigProfile =
         ConfigStore.addProfile(activity, name, config)
 
-    override fun deleteProfile(id: String): ConfigProfile =
+    override fun deleteProfile(id: String): ConfigProfile? =
         ConfigStore.deleteProfile(activity, id)
 
     override fun reorderProfiles(orderedIds: List<String>) =
@@ -459,4 +459,65 @@ class AndroidVaydnsPlatform(
 
     override fun localDnsResolver(): String? =
         ResolverSelector.preferredLocalResolver(activity)
+
+    // ---- subscriptions ----
+
+    private val subscriptions by lazy {
+        app.vaydns.subscription.SubscriptionRepository(
+            object : app.vaydns.subscription.SubscriptionRepository.Storage {
+                override fun loadSubscriptions() = ConfigStore.loadSubscriptions(activity)
+                override fun saveSubscriptions(subs: List<app.vaydns.subscription.Subscription>) =
+                    ConfigStore.saveSubscriptions(activity, subs)
+                override fun loadProfiles() = ConfigStore.loadProfiles(activity)
+                override fun writeProfiles(profiles: List<ConfigProfile>) =
+                    ConfigStore.replaceProfiles(activity, profiles)
+                override fun baseConfig(): Config = ConfigStore.effectiveConfig(activity)
+                override fun newId(): String = java.util.UUID.randomUUID().toString()
+                override fun nowMs(): Long = System.currentTimeMillis()
+
+                override fun profileFromLink(uri: String, name: String): ConfigProfile? =
+                    ConfigStore.importProfilesFromText(activity, uri).lastOrNull()
+
+                /**
+                 * Always try **both** ways round: the panel may be blocked in this country (so it
+                 * needs the tunnel) or, just as often, may be reachable only outside it (so the
+                 * tunnel's exit is what fails). Whichever answers first wins.
+                 */
+                override fun fetchRoutes(): List<app.vaydns.subscription.SubscriptionFetcher.ProxySpec?> =
+                    buildList {
+                        val local = app.vaydns.subscription.SubscriptionFetcher.ProxySpec(
+                            "127.0.0.1",
+                            ConfigStore.loadGlobalSettings(activity).listenPort
+                        )
+                        if (isRunning()) {
+                            // Tunnel up: it is the more likely winner, but a direct attempt still
+                            // follows in case the panel is only served to local addresses.
+                            add(local)
+                            add(null)
+                        } else {
+                            add(null)
+                            // The local proxy may still be listening even when the tunnel reports
+                            // stopped (proxy-only mode), so it is worth a second attempt.
+                            add(local)
+                        }
+                    }
+            }
+        )
+    }
+
+    override fun loadSubscriptions() = subscriptions.list()
+
+    override fun addSubscription(rawUrl: String): String? = subscriptions.add(rawUrl).error
+
+    override fun refreshSubscription(id: String): String? = subscriptions.refresh(id).error
+
+    override fun refreshDueSubscriptions(): Int =
+        subscriptions.refreshDue().count { it.isSuccess }
+
+    override fun deleteSubscription(id: String) = subscriptions.delete(id)
+
+    override fun renameSubscription(id: String, name: String) = subscriptions.rename(id, name)
+
+    override fun looksLikeSubscription(text: String): Boolean =
+        app.vaydns.subscription.SubscriptionManager.looksLikeSubscription(text)
 }

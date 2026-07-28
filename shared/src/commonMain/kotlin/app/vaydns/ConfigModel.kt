@@ -44,7 +44,13 @@ data class Config(
 data class ConfigProfile(
     val id: String,
     val name: String,
-    val config: Config
+    val config: Config,
+    /**
+     * Subscription this profile came from, or null for a hand-made one. This is the grouping key:
+     * refreshing a subscription replaces exactly the profiles carrying its id and leaves the rest
+     * untouched.
+     */
+    val subscriptionId: String? = null
 )
 
 object DnsResolverPool {

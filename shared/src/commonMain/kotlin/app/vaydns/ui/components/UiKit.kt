@@ -145,14 +145,19 @@ fun Modifier.surfaceClickable(
  * in the host screen costs a single layout pass instead.
  *
  * Place this last inside the screen's root Box so it paints over everything.
- * The panel's top-right corner sits at [anchorY] (root coordinates), 8dp in from the
- * right edge, clamped so it never runs off the bottom.
+ * The panel's top corner sits at [anchorY] (root coordinates), 8dp in from the right
+ * edge — or at [anchorX] when given — clamped so it never runs off the screen.
  */
 @Composable
 fun MenuLayer(
     visible: Boolean,
     anchorY: Int,
     onDismiss: () -> Unit,
+    /**
+     * Panel's left edge in root coordinates, for anchors that do not sit on the right edge
+     * (a folder tab). Null keeps the right-aligned placement the + and ⋮ buttons use.
+     */
+    anchorX: Int? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     // One float drives fade + scale, so showing/hiding is a layer property change
@@ -192,10 +197,11 @@ fun MenuLayer(
                         .graphicsLayer {
                             val p = anim.value
                             alpha = p
-                            // Grow from the top-right, over the + / ⋮ that opened it.
+                            // Grow out of the control that opened it: the + / ⋮ on the right
+                            // edge, or the left edge of a folder tab.
                             scaleX = 0.94f + 0.06f * p
                             scaleY = 0.94f + 0.06f * p
-                            transformOrigin = TransformOrigin(1f, 0f)
+                            transformOrigin = TransformOrigin(if (anchorX == null) 1f else 0f, 0f)
                         }
                         // Square corners, panel painted in the app background, no outline —
                         // only a light drop shadow lifts it off the content underneath.
@@ -210,8 +216,9 @@ fun MenuLayer(
                 constraints.copy(minWidth = 0, minHeight = 0)
             )
             layout(constraints.maxWidth, constraints.maxHeight) {
+                val maxX = (constraints.maxWidth - panel.width).coerceAtLeast(0)
                 panel.place(
-                    x = (constraints.maxWidth - panel.width - gutterPx).coerceAtLeast(0),
+                    x = anchorX?.coerceIn(0, maxX) ?: (maxX - gutterPx).coerceAtLeast(0),
                     y = anchorY.coerceIn(
                         0,
                         (constraints.maxHeight - panel.height).coerceAtLeast(0)
@@ -549,7 +556,8 @@ fun ProfileCard(
     subtitle: String,
     selected: Boolean,
     onClick: () -> Unit,
-    onDelete: () -> Unit,
+    /** Null hides the delete button — subscription servers are owned by the subscription. */
+    onDelete: (() -> Unit)?,
     onMoreClick: () -> Unit,
     /** Reports the ⋮ button's top edge in root coords so the screen can anchor its menu. */
     onMoreAnchor: (Int) -> Unit,
@@ -693,18 +701,20 @@ fun ProfileCard(
                 )
             }
         }
-        Box(
-            Modifier
-                .size(48.dp)
-                .handClickable(onClick = onDelete),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Default.Delete,
-                null,
-                tint = SlipnetTextSecondary,
-                modifier = Modifier.size(24.dp)
-            )
+        if (onDelete != null) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .handClickable(onClick = onDelete),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Delete,
+                    null,
+                    tint = SlipnetTextSecondary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
         // ⋮ menu: Edit + Export (pencil removed from the row). The panel itself is
         // drawn by the host screen — a card sits inside a clipping scroll container.

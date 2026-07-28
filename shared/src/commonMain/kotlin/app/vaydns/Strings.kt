@@ -162,7 +162,7 @@ enum class S(val en: String, val ru: String) {
     CD_NEW_PROFILE("New profile", "Новый профиль"),
     CD_ADD_PROFILE_MENU("Add profile", "Добавить профиль"),
     CD_BACK("Back", "Назад"),
-    CD_EDIT_PROFILE("Edit profile", "Редактировать профиль"),
+    CD_EDIT_PROFILE("Edit", "Редактировать"),
     CD_DELETE_PROFILE("Delete profile", "Удалить профиль"),
     CD_PROFILE_MENU("Profile menu", "Меню профиля"),
 
@@ -175,10 +175,10 @@ enum class S(val en: String, val ru: String) {
     MENU_IMPORT_FILE("Import from file", "Импорт из файла"),
 
     // Per-profile overflow menu (⋯ button)
-    MENU_EXPORT_PROFILE("Export profile", "Экспортировать профиль"),
+    MENU_EXPORT_PROFILE("Export", "Экспортировать"),
 
     // Dialogs
-    DELETE_PROFILE_TITLE("Delete profile", "Удалить профиль"),
+    DELETE_PROFILE_TITLE("Delete profile?", "Удалить профиль?"),
     DELETE_BTN("Delete", "Удалить"),
     CANCEL_BTN("Cancel", "Отмена"),
     CRASH_REPORT_TITLE("Crash report", "Отчёт о сбое"),
@@ -231,6 +231,37 @@ enum class S(val en: String, val ru: String) {
     STATUS_SPEED_PROBING("Speed probing", "Проверка скорости"),
     STATUS_DNS_PROBING("DNS probing", "Поиск DNS"),
     STATUS_STARTING("Starting", "Запуск"),
+
+    NO_PROFILES_HINT(
+        "You have no VPN configurations",
+        "У вас нет VPN-конфигураций"
+    ),
+    /** Same thing inside a subscription folder — the user has profiles, just not in this one. */
+    NO_PROFILES_IN_FOLDER_HINT(
+        "There are no VPN configurations here",
+        "Здесь нет VPN-конфигураций"
+    ),
+    RENAME_FOLDER("Rename", "Переименовать"),
+    DELETE_FOLDER_TITLE("Delete", "Удалить"),
+    DELETE_FOLDER_MESSAGE(
+        "The subscription and all its servers will be removed.",
+        "Подписка и все её серверы будут удалены."
+    ),
+    SAVE_BTN("Save", "Сохранить"),
+
+    // Subscriptions (folders)
+    HOME_FOLDER("Home", "Главная"),
+    SUBSCRIPTION_USED("used", "использовано"),
+    SUBSCRIPTION_EXPIRES_IN("Days left:", "Осталось дней:"),
+    SUBSCRIPTION_EXPIRED("Expired", "Истекла"),
+    SUBSCRIPTION_UPDATED("updated", "обновлено"),
+    SUBSCRIPTION_UPDATED_JUST_NOW("updated just now", "обновлено только что"),
+    SUBSCRIPTION_AUTO_UPDATE("auto", "автообновление"),
+    SUBSCRIPTION_REFRESH("Refresh subscription", "Обновить подписку"),
+    SUBSCRIPTION_DELETE("Delete subscription", "Удалить подписку"),
+    TOAST_SUBSCRIPTION_ADDED("Subscription imported", "Подписка импортирована"),
+    TOAST_SUBSCRIPTION_UPDATED("Subscription updated", "Подписка обновлена"),
+    TOAST_SUBSCRIPTION_FAILED("Subscription failed", "Ошибка подписки"),
 
     // Default profile names
     PROFILE_NAME_DEFAULT_IMPORTED("Profile", "Профиль"),

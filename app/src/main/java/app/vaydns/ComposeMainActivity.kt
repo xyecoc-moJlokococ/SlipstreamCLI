@@ -44,6 +44,24 @@ class ComposeMainActivity : ComponentActivity() {
 
     private fun handleImportIntent(intent: Intent?) {
         val data = intent?.data ?: return
+        val text = data.toString()
+
+        // A subscription link creates a folder, not a single profile — and it needs the network,
+        // so it cannot run on the main thread.
+        if (app.vaydns.subscription.SubscriptionManager.looksLikeSubscription(text)) {
+            Thread({
+                val error = platform.addSubscription(text)
+                runOnUiThread {
+                    android.widget.Toast.makeText(
+                        this,
+                        error ?: t(S.TOAST_SUBSCRIPTION_ADDED),
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }, "subscription-deeplink").start()
+            return
+        }
+
         val imported = ConfigStore.importProfile(this, data)
         if (imported != null) {
             // Profiles refresh on next composition / navigation; toast confirms.

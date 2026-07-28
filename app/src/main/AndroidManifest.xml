@@ -44,6 +44,18 @@
                 <data android:scheme="vless" />
                 <data android:scheme="xray" />
             </intent-filter>
+            <!-- Subscription import. `sub://<base64 url>` is what other clients share; the
+                 install-sub host mirrors v2rayNG's own deep link so panel links Just Work.
+                 Kept in its own filter with no host: Android matches <data> attributes as
+                 independent sets, so a host declared anywhere in a filter is required by every
+                 scheme in it — which silently stopped sub:// from resolving at all. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sub" />
+                <data android:scheme="vaydns" />
+            </intent-filter>
         </activity>
 
         <!-- Legacy View-based UI kept for reference / emergency rollback (not launched). -->

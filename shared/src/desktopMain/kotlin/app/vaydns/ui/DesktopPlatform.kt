@@ -130,7 +130,7 @@ class DesktopPlatform(
 
     override fun saveProfile(profile: ConfigProfile): ConfigProfile = store.saveProfile(profile)
     override fun addProfile(name: String, config: Config): ConfigProfile = store.addProfile(name, config)
-    override fun deleteProfile(id: String): ConfigProfile = store.deleteProfile(id)
+    override fun deleteProfile(id: String): ConfigProfile? = store.deleteProfile(id)
     override fun reorderProfiles(orderedIds: List<String>) = store.reorderProfiles(orderedIds)
     /**
      * Local proxy auth is forced off on desktop — the setting is not offered here (see
@@ -391,4 +391,75 @@ class DesktopPlatform(
         runCatching { JSONObject(json).toString(2) }.getOrNull()
 
     override fun localDnsResolver(): String? = null
+
+    // ---- subscriptions ----
+
+    private val subscriptions by lazy {
+        app.vaydns.subscription.SubscriptionRepository(
+            object : app.vaydns.subscription.SubscriptionRepository.Storage {
+                override fun loadSubscriptions() = store.loadSubscriptions()
+                override fun saveSubscriptions(subs: List<app.vaydns.subscription.Subscription>) =
+                    store.saveSubscriptions(subs)
+                override fun loadProfiles() = store.loadProfiles()
+                override fun writeProfiles(profiles: List<ConfigProfile>) = store.writeProfiles(profiles)
+                override fun baseConfig(): Config {
+                    val settings = store.loadGlobalSettings()
+                    return app.vaydns.defaultConfig(
+                        listenPort = settings.listenPort,
+                        mode = Config.Mode.PROXY
+                    )
+                }
+                override fun newId(): String = java.util.UUID.randomUUID().toString()
+                override fun nowMs(): Long = System.currentTimeMillis()
+                override fun profileFromLink(uri: String, name: String): ConfigProfile? =
+                    importFromText(uri).firstOrNull()
+
+                override fun fetchRoutes(): List<app.vaydns.subscription.SubscriptionFetcher.ProxySpec?> =
+                    buildList {
+                        // Both ways are tried: the panel may be blocked here (needs the tunnel)
+                        // or blocked at the tunnel's exit (needs a direct connection).
+                        if (DesktopTunnel.isRunning) {
+                            add(
+                                app.vaydns.subscription.SubscriptionFetcher.ProxySpec(
+                                    "127.0.0.1",
+                                    store.loadGlobalSettings().listenPort
+                                )
+                            )
+                        }
+                        // Then whatever proxy the machine is already configured to use.
+                        if (app.vaydns.desktop.WindowsSystemProxy.isWindows) {
+                            val snapshot = app.vaydns.desktop.WindowsSystemProxy.snapshot()
+                            if (snapshot.enabled) {
+                                val hostPort = snapshot.server.substringAfterLast('=').trim()
+                                val host = hostPort.substringBeforeLast(':', "")
+                                val port = hostPort.substringAfterLast(':', "").toIntOrNull()
+                                if (host.isNotBlank() && port != null) {
+                                    add(app.vaydns.subscription.SubscriptionFetcher.ProxySpec(host, port))
+                                }
+                            }
+                        }
+                        add(null) // direct, last
+                    }
+            }
+        )
+    }
+
+    override fun loadSubscriptions() = subscriptions.list()
+
+    override fun addSubscription(rawUrl: String): String? {
+        val result = subscriptions.add(rawUrl)
+        return result.error
+    }
+
+    override fun refreshSubscription(id: String): String? = subscriptions.refresh(id).error
+
+    override fun refreshDueSubscriptions(): Int =
+        subscriptions.refreshDue().count { it.isSuccess }
+
+    override fun deleteSubscription(id: String) = subscriptions.delete(id)
+
+    override fun renameSubscription(id: String, name: String) = subscriptions.rename(id, name)
+
+    override fun looksLikeSubscription(text: String): Boolean =
+        app.vaydns.subscription.SubscriptionManager.looksLikeSubscription(text)
 }

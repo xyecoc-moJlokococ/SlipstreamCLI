@@ -66,7 +66,8 @@ interface VaydnsPlatform {
     }
     fun saveProfile(profile: ConfigProfile): ConfigProfile
     fun addProfile(name: String, config: Config): ConfigProfile
-    fun deleteProfile(id: String): ConfigProfile
+    /** Null once the last profile is gone — an empty list is allowed. */
+    fun deleteProfile(id: String): ConfigProfile?
     fun reorderProfiles(orderedIds: List<String>)
     fun loadGlobalSettings(): GlobalSettings
     fun saveGlobalSettings(settings: GlobalSettings)
@@ -96,6 +97,33 @@ interface VaydnsPlatform {
     fun validateXrayConfig(json: String): String?
     fun formatXrayJson(json: String): String?
     fun localDnsResolver(): String?
+
+    // ---- subscriptions (folders) ----
+    // Defaults keep platforms that have not wired storage yet (iOS) compiling and inert.
+
+    fun loadSubscriptions(): List<app.vaydns.subscription.Subscription> = emptyList()
+
+    /**
+     * Import a subscription from anything the user pasted or opened: a plain URL, an
+     * `install-sub` deep link, or `sub://…`. Runs the network, so call it off the UI thread.
+     * Returns an error message, or null on success.
+     */
+    fun addSubscription(rawUrl: String): String? = "subscriptions are not supported on this platform"
+
+    /** Re-fetch one subscription. Returns an error message, or null on success. */
+    fun refreshSubscription(id: String): String? = "subscriptions are not supported on this platform"
+
+    /**
+     * Refresh every subscription whose interval has elapsed. Networked — call off the UI thread.
+     * Returns how many were actually refreshed.
+     */
+    fun refreshDueSubscriptions(): Int = 0
+
+    fun deleteSubscription(id: String) {}
+    fun renameSubscription(id: String, name: String) {}
+
+    /** True when [text] should be treated as a subscription rather than a single config. */
+    fun looksLikeSubscription(text: String): Boolean = false
 }
 
 fun emptyDraft(base: Config = defaultConfig(mode = Config.Mode.PROXY)): EditorDraft =

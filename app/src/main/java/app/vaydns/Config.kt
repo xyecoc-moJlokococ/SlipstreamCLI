@@ -14,6 +14,7 @@ import java.security.SecureRandom
 object ConfigStore {
     private const val PREFS = "config"
     private const val KEY_PROFILES = "profiles"
+    private const val KEY_SUBSCRIPTIONS = "subscriptions"
     private const val KEY_ACTIVE_PROFILE_ID = "activeProfileId"
     private const val KEY_GLOBAL_LISTEN_PORT = "globalListenPort"
     private const val KEY_GLOBAL_MODE = "globalMode"
@@ -110,10 +111,28 @@ object ConfigStore {
                 }
             }
         }.getOrDefault(emptyList())
-        if (profiles.isNotEmpty()) return profiles
-        val profile = ConfigProfile(newProfileId(), defaultProfileName(load(context)), load(context))
-        writeProfiles(context, listOf(profile), profile.id)
-        return listOf(profile)
+        // No auto-created placeholder: an empty list is a legitimate state, and the UI shows an
+        // "import a configuration to get started" message for it.
+        return profiles
+    }
+
+    fun loadSubscriptions(context: Context): List<app.vaydns.subscription.Subscription> {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_SUBSCRIPTIONS, null).orEmpty()
+        return app.vaydns.subscription.SubscriptionJson.listFromString(raw)
+    }
+
+    fun saveSubscriptions(context: Context, subs: List<app.vaydns.subscription.Subscription>) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_SUBSCRIPTIONS, app.vaydns.subscription.SubscriptionJson.listToString(subs))
+            .apply()
+    }
+
+    /** Replace the whole profile list, keeping the active id when it still exists. */
+    fun replaceProfiles(context: Context, profiles: List<ConfigProfile>) {
+        val active = activeProfileId(context)
+        val keep = if (profiles.any { it.id == active }) active.orEmpty() else profiles.firstOrNull()?.id.orEmpty()
+        writeProfiles(context, profiles, keep)
     }
 
     fun activeProfileId(context: Context): String? =
@@ -519,11 +538,15 @@ object ConfigStore {
         return next
     }
 
-    fun deleteProfile(context: Context, id: String): ConfigProfile {
+    /** Returns the profile that is active afterwards, or null once nothing is left. */
+    fun deleteProfile(context: Context, id: String): ConfigProfile? {
         val profiles = loadProfiles(context)
-        if (profiles.size <= 1) return profiles.first()
         val remaining = profiles.filterNot { it.id == id }
-        if (remaining.size == profiles.size) return profiles.first()
+        if (remaining.size == profiles.size) return profiles.firstOrNull()
+        if (remaining.isEmpty()) {
+            writeProfiles(context, emptyList(), "")
+            return null
+        }
         val activeId = activeProfileId(context) ?: profiles.first().id
         val next = if (activeId == id) {
             remaining.first()
@@ -581,12 +604,15 @@ object ConfigStore {
             .put("id", profile.id)
             .put("name", profile.name)
             .put("config", configToJson(profile.config))
+            // Only for imported profiles, so exported links stay clean.
+            .apply { profile.subscriptionId?.let { put("subscriptionId", it) } }
 
     private fun profileFromJson(json: JSONObject): ConfigProfile =
         ConfigProfile(
             id = json.optString("id").ifBlank { newProfileId() },
             name = json.optString("name").ifBlank { t(S.PROFILE_NAME_DEFAULT_IMPORTED) },
-            config = configFromJson(json.optJSONObject("config") ?: JSONObject())
+            config = configFromJson(json.optJSONObject("config") ?: JSONObject()),
+            subscriptionId = json.optString("subscriptionId").ifBlank { null }
         )
 
     private fun configToJson(config: Config): JSONObject =

@@ -1,5 +1,18 @@
 package app.vaydns.ui.screens
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.layout.widthIn
+import app.vaydns.ui.components.AnimatedModalCard
+import app.vaydns.ui.components.ConfirmDialog
+import app.vaydns.ui.theme.SlipnetTextPrimary
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +26,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -36,7 +51,9 @@ import app.vaydns.S
 import app.vaydns.t
 import app.vaydns.ui.ConnectUiState
 import app.vaydns.ui.EditorDraft
+import app.vaydns.subscription.Subscription
 import app.vaydns.ui.PlatformBackHandler
+import app.vaydns.ui.rememberTickHaptic
 import app.vaydns.ui.components.AccentLinkButton
 import app.vaydns.ui.components.BottomConnectBar
 import app.vaydns.ui.components.HintText
@@ -49,6 +66,8 @@ import app.vaydns.ui.components.ProfileCard
 import app.vaydns.ui.components.SecondaryButton
 import app.vaydns.ui.components.SectionTitle
 import app.vaydns.ui.components.SlipnetCheckbox
+import app.vaydns.ui.components.FolderTabs
+import app.vaydns.ui.components.SubscriptionCard
 import app.vaydns.ui.components.SlipnetTextField
 import app.vaydns.ui.components.TopBar
 import app.vaydns.ui.maskDomain
@@ -72,7 +91,14 @@ fun HomeScreen(
     onExport: (ConfigProfile) -> Unit,
     /** Persist new order after long-press drag (ids top→bottom). */
     onReorder: (orderedIds: List<String>) -> Unit = {},
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    /** Imported subscriptions; empty means no folder tabs are shown at all. */
+    subscriptions: List<Subscription> = emptyList(),
+    onRefreshSubscription: (String) -> Unit = {},
+    /** Id of the subscription currently being fetched, if any. */
+    refreshingSubscriptionId: String? = null,
+    onDeleteSubscription: (String) -> Unit = {},
+    onRenameSubscription: (String, String) -> Unit = { _, _ -> }
 ) {
     var addMenu by remember { mutableStateOf(false) }
     var moreFor by remember { mutableStateOf<ConfigProfile?>(null) }
@@ -84,26 +110,70 @@ fun HomeScreen(
     val addAnchor = remember { intArrayOf(0) }
     val cardAnchors = remember { mutableMapOf<String, Int>() }
     var menuAnchorY by remember { mutableStateOf(0) }
+    /** Set only for the folder menu, which drops under its tab instead of the right edge. */
+    var menuAnchorX by remember { mutableStateOf<Int?>(null) }
 
-    // Local order while dragging; resync from [profiles] when idle.
-    var ordered by remember { mutableStateOf(profiles) }
+    // --- folders (v2rayNG-style groups) -------------------------------------------------
+    // Folder 0 is always the user's own profiles; one folder per subscription after it.
+    // With no subscriptions there is a single folder and the tab row hides itself.
+    // A real pager, not a hand-rolled gesture: it tracks the finger while dragging and settles
+    // itself. The previous version only acted on drag-end, which is why a swipe showed nothing
+    // until it completed and then jumped.
+    /**
+     * Subscription whose folder tab was long-pressed. [folderMenu] keeps the rows populated
+     * while the panel fades out; only [folderMenuOpen] is cleared on dismiss.
+     */
+    var folderMenu by remember { mutableStateOf<Subscription?>(null) }
+    var folderMenuOpen by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<Subscription?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deletingFolder by remember { mutableStateOf<Subscription?>(null) }
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { subscriptions.size + 1 })
+    val folderIndex = pagerState.currentPage
+    val folderNames = remember(subscriptions) {
+        listOf(t(S.HOME_FOLDER)) + subscriptions.map { it.name.ifBlank { it.url } }
+    }
+    val currentSubscription = subscriptions.getOrNull(folderIndex - 1)
+    val folderProfiles = remember(profiles, folderIndex, subscriptions) {
+        if (currentSubscription == null) {
+            profiles.filter { it.subscriptionId == null }
+        } else {
+            profiles.filter { it.subscriptionId == currentSubscription.id }
+        }
+    }
+
+    // `ordered` is ONLY the drag-time override. Displaying it unconditionally meant the list
+    // still held the previous folder for one frame — LaunchedEffect runs after composition, so
+    // switching folders flashed the old contents.
+    var ordered by remember { mutableStateOf(folderProfiles) }
     var draggingId by remember { mutableStateOf<String?>(null) }
     var dragFromIndex by remember { mutableStateOf(-1) }
     var dragOffsetY by remember { mutableStateOf(0f) }
     var gapTargetIndex by remember { mutableStateOf(-1) }
 
-    LaunchedEffect(profiles, draggingId) {
-        if (draggingId == null) ordered = profiles
+    /**
+     * What the list actually renders. Straight from the folder unless a drag is in progress —
+     * routing it through [ordered] meant a folder switch showed the previous folder for one frame,
+     * because the effect that refills [ordered] only runs after composition.
+     */
+    val displayed = if (draggingId == null) folderProfiles else ordered
+
+    LaunchedEffect(folderProfiles, draggingId) {
+        if (draggingId == null) ordered = folderProfiles
     }
 
     // The menus are plain overlays, not focusable Popup windows, so back has to be
     // handled here — otherwise it would fall through and close the app.
-    PlatformBackHandler(enabled = addMenu || moreFor != null) {
+    PlatformBackHandler(enabled = addMenu || moreFor != null || folderMenuOpen) {
         addMenu = false
         moreFor = null
+        folderMenuOpen = false
     }
 
+    val nowMs = app.vaydns.platform.PlatformTime.currentTimeMillis()
     val density = LocalDensity.current
+    val tick = rememberTickHaptic()
     // Card height (~56 content) + bottom padding 8 ≈ slot pitch used for gap math.
     val slotPitchPx = with(density) { 72.dp.toPx() }
 
@@ -115,20 +185,95 @@ fun HomeScreen(
                 onMenu = onMenu,
                 onAdd = {
                     menuAnchorY = addAnchor[0]
+                    menuAnchorX = null
                     moreFor = null
+                    folderMenuOpen = false
                     addMenu = true
                 },
                 onAddAnchor = { addAnchor[0] = it }
             )
-            Column(
-                Modifier
-                    .weight(1f)
-                    .padding(horizontal = 10.dp)
-                    .verticalScroll(rememberScrollState(), enabled = draggingId == null)
-                    // Space for bar (56) + half button (~33) sitting above the bar.
-                    .padding(bottom = 96.dp)
-            ) {
-                ordered.forEachIndexed { index, profile ->
+            FolderTabs(
+                names = folderNames,
+                selectedIndex = folderIndex,
+                onSelect = { scope.launch { pagerState.animateScrollToPage(it) } },
+                onMenu = { index, x, y ->
+                    // Folder 0 is "Home" and has nothing to manage.
+                    subscriptions.getOrNull(index - 1)?.let { sub ->
+                        menuAnchorY = y
+                        menuAnchorX = x
+                        addMenu = false
+                        moreFor = null
+                        folderMenu = sub
+                        folderMenuOpen = true
+                    }
+                }
+            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f),
+                // A drag inside a profile row is a reorder, not a page change.
+                userScrollEnabled = draggingId == null,
+                beyondViewportPageCount = 0
+            ) { page ->
+                val pageSubscription = subscriptions.getOrNull(page - 1)
+                val pageProfiles = if (pageSubscription == null) {
+                    profiles.filter { it.subscriptionId == null }
+                } else {
+                    profiles.filter { it.subscriptionId == pageSubscription.id }
+                }
+                // Only the visible page owns the drag state, so a half-swiped neighbour never
+                // renders a drag in progress.
+                val live = page == folderIndex
+                val pageDisplayed = if (live && draggingId != null) ordered else pageProfiles
+
+                if (pageDisplayed.isEmpty() && pageSubscription == null) {
+                    Box(
+                        Modifier.fillMaxSize().padding(horizontal = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = t(S.NO_PROFILES_HINT),
+                            color = SlipnetTextSecondary,
+                            fontSize = 15.sp,
+                            lineHeight = 20.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp)
+                            .verticalScroll(rememberScrollState(), enabled = draggingId == null)
+                            // Space for bar (56) + half button (~33) sitting above the bar.
+                            .padding(bottom = 96.dp)
+                    ) {
+                        pageSubscription?.let { sub ->
+                            SubscriptionCard(
+                                subscription = sub,
+                                nowMs = nowMs,
+                                onRefresh = { onRefreshSubscription(sub.id) },
+                                refreshing = refreshingSubscriptionId == sub.id
+                            )
+                        }
+                        // Only reachable with a subscription on this page — the profiles-empty
+                        // Home folder took the branch above. "Здесь", not "У вас": the user does
+                        // have configurations, this folder just came back without any.
+                        if (pageDisplayed.isEmpty()) {
+                            Box(
+                                Modifier.fillMaxWidth().padding(top = 48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = t(S.NO_PROFILES_IN_FOLDER_HINT),
+                                    color = SlipnetTextSecondary,
+                                    fontSize = 15.sp,
+                                    lineHeight = 20.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                pageDisplayed.forEachIndexed { index, profile ->
                     val isDragging = profile.id == draggingId
                     val gapOffset = when {
                         draggingId == null || isDragging || dragFromIndex < 0 || gapTargetIndex < 0 -> 0f
@@ -146,10 +291,18 @@ fun HomeScreen(
                         subtitle = if (sub.isBlank()) "" else maskDomain(sub),
                         selected = profile.id == activeId,
                         onClick = { if (draggingId == null) onSelect(profile) },
-                        onDelete = { onDelete(profile) },
+                        // Servers in a subscription folder are replaced wholesale on refresh, so
+                        // deleting one individually would just come back — hide the button.
+                        onDelete = if (pageSubscription == null) {
+                            { onDelete(profile) }
+                        } else {
+                            null
+                        },
                         onMoreClick = {
                             menuAnchorY = cardAnchors[profile.id] ?: 0
+                            menuAnchorX = null
                             addMenu = false
+                            folderMenuOpen = false
                             menuProfile = profile
                             moreFor = profile
                         },
@@ -157,7 +310,7 @@ fun HomeScreen(
                         dragOffsetY = if (isDragging) dragOffsetY else 0f,
                         isDragging = isDragging,
                         gapOffsetY = gapOffset,
-                        enableReorder = ordered.size > 1,
+                        enableReorder = pageSubscription == null && pageDisplayed.size > 1,
                         onLongPressDragStart = {
                             moreFor = null
                             draggingId = profile.id
@@ -169,8 +322,13 @@ fun HomeScreen(
                             if (draggingId != profile.id) return@ProfileCard
                             dragOffsetY += dy
                             val shiftSlots = (dragOffsetY / slotPitchPx).toInt()
-                            val target = (dragFromIndex + shiftSlots).coerceIn(0, ordered.lastIndex)
-                            if (target != gapTargetIndex) gapTargetIndex = target
+                            val target = (dragFromIndex + shiftSlots).coerceIn(0, pageDisplayed.lastIndex)
+                            if (target != gapTargetIndex) {
+                                gapTargetIndex = target
+                                // A neighbour just moved out of the way — one light tick per slot
+                                // crossed, so the new position is felt without watching the list.
+                                tick()
+                            }
                         },
                         onLongPressDragEnd = {
                             if (draggingId != profile.id) return@ProfileCard
@@ -195,9 +353,12 @@ fun HomeScreen(
                             dragOffsetY = 0f
                         }
                     )
+                    }
+                    }
                 }
             }
         }
+
         BottomConnectBar(
             status = connect.statusText.ifBlank { t(S.STATUS_NOT_CONNECTED) },
             traffic = connect.trafficText,
@@ -207,6 +368,35 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
+        renaming?.let { sub ->
+            AnimatedModalCard(
+                visible = true,
+                onDismissRequest = { renaming = null },
+                modifier = Modifier.widthIn(max = 360.dp)
+            ) {
+                Text(t(S.RENAME_FOLDER), color = SlipnetTextPrimary, fontSize = 16.sp)
+                Spacer(Modifier.height(10.dp))
+                SlipnetTextField(renameText, { renameText = it })
+                Spacer(Modifier.height(12.dp))
+                PrimaryButton(t(S.SAVE_BTN), {
+                    onRenameSubscription(sub.id, renameText.trim())
+                    renaming = null
+                })
+            }
+        }
+        ConfirmDialog(
+            visible = deletingFolder != null,
+            title = t(S.DELETE_FOLDER_TITLE),
+            message = t(S.DELETE_FOLDER_MESSAGE),
+            confirmLabel = t(S.DELETE_BTN),
+            cancelLabel = t(S.CANCEL_BTN),
+            onConfirm = {
+                deletingFolder?.let { onDeleteSubscription(it.id) }
+                deletingFolder = null
+            },
+            onDismiss = { deletingFolder = null }
+        )
+
         // Menus last so they paint over the list and the bottom bar.
         MenuLayer(
             visible = addMenu,
@@ -214,6 +404,8 @@ fun HomeScreen(
             onDismiss = { addMenu = false }
         ) {
             MenuRow(t(S.MENU_NEW_PROFILE)) { addMenu = false; onAddNew() }
+            // Both of these take a single config *or* a subscription link — they used to have
+            // separate "import subscription" twins that did the exact same thing.
             MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
             MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
         }
@@ -227,6 +419,26 @@ fun HomeScreen(
             ) {
                 MenuRow(t(S.CD_EDIT_PROFILE)) { moreFor = null; onEdit(p) }
                 MenuRow(t(S.MENU_EXPORT_PROFILE)) { moreFor = null; onExport(p) }
+            }
+        }
+        // Folder management: the same dropdown as + / ⋮, dropped under the tab that was
+        // long-pressed. Rename and delete still open their own dialogs from here.
+        folderMenu?.let { sub ->
+            MenuLayer(
+                visible = folderMenuOpen,
+                anchorY = menuAnchorY,
+                anchorX = menuAnchorX,
+                onDismiss = { folderMenuOpen = false }
+            ) {
+                MenuRow(t(S.RENAME_FOLDER)) {
+                    folderMenuOpen = false
+                    renameText = sub.name
+                    renaming = sub
+                }
+                MenuRow(t(S.SUBSCRIPTION_DELETE)) {
+                    folderMenuOpen = false
+                    deletingFolder = sub
+                }
             }
         }
     }
