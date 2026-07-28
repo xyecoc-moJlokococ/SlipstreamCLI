@@ -3,11 +3,13 @@ package app.vaydns.ui.components
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -550,6 +552,9 @@ fun SlipnetCheckbox(checked: Boolean, label: String, onCheckedChange: (Boolean) 
 /** Hold-shrink while reordering — matches original PROFILE_DRAG_SCALE = 0.96f. */
 private const val ProfileDragScale = 0.96f
 
+/** How long the card that just lost selection takes to go dark. Selecting itself is instant. */
+private const val SelectFadeOutMs = 350
+
 @Composable
 fun ProfileCard(
     name: String,
@@ -574,10 +579,15 @@ fun ProfileCard(
 ) {
     val shape = RoundedCornerShape(12.dp)
     val haptics = LocalHapticFeedback.current
-    // Selection border / marker cross-fade onto the new card (snappy, not a hard cut).
-    val selectAnim = tween<Color>(durationMillis = 200, easing = FastOutSlowInEasing)
-    val selectFloatAnim = tween<Float>(durationMillis = 200, easing = FastOutSlowInEasing)
-    val selectDpAnim = tween<androidx.compose.ui.unit.Dp>(durationMillis = 200, easing = FastOutSlowInEasing)
+    // Asymmetric on purpose: the card the user just tapped lights up on the same frame as the
+    // tap, and only the one losing selection fades, over 150ms. Animating both directions made
+    // the highlight look like it was sliding between rows instead of following the finger.
+    val selectAnim: AnimationSpec<Color> =
+        if (selected) snap() else tween(SelectFadeOutMs, easing = FastOutSlowInEasing)
+    val selectFloatAnim: AnimationSpec<Float> =
+        if (selected) snap() else tween(SelectFadeOutMs, easing = FastOutSlowInEasing)
+    val selectDpAnim: AnimationSpec<androidx.compose.ui.unit.Dp> =
+        if (selected) snap() else tween(SelectFadeOutMs, easing = FastOutSlowInEasing)
     val borderColor by animateColorAsState(
         targetValue = if (selected) SlipnetAccent else Color.Transparent,
         animationSpec = selectAnim,
@@ -977,6 +987,41 @@ fun AnimatedModalCard(
                     content = content
                 )
             }
+        }
+    }
+}
+
+/**
+ * Blocking spinner, centred over a dimmed screen.
+ *
+ * For work that has nothing on screen to attach a spinner to: importing a subscription is a network
+ * round trip that happens *before* its folder tab exists, so there is no card to spin an icon on and
+ * the app would otherwise look frozen until the toast lands. Deliberately not dismissible — the
+ * request is already in flight and there is nothing to cancel.
+ */
+@Composable
+fun LoadingOverlay(visible: Boolean, message: String) {
+    AnimatedModalCard(
+        visible = visible,
+        onDismissRequest = {},
+        modifier = Modifier.widthIn(max = 260.dp)
+    ) {
+        Column(
+            Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(34.dp),
+                color = SlipnetAccent,
+                strokeWidth = 3.dp
+            )
+            Spacer(Modifier.height(14.dp))
+            Text(
+                text = message,
+                color = SlipnetTextPrimary,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }

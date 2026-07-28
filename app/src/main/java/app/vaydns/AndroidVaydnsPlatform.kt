@@ -475,8 +475,10 @@ class AndroidVaydnsPlatform(
                 override fun newId(): String = java.util.UUID.randomUUID().toString()
                 override fun nowMs(): Long = System.currentTimeMillis()
 
+                // Parse only. importProfilesFromText also *stores* what it parses, which turned
+                // every refresh into "add one more copy of each server to the Home folder".
                 override fun profileFromLink(uri: String, name: String): ConfigProfile? =
-                    ConfigStore.importProfilesFromText(activity, uri).lastOrNull()
+                    ConfigStore.parseProfileFromLink(activity, uri)
 
                 /**
                  * Always try **both** ways round: the panel may be blocked in this country (so it

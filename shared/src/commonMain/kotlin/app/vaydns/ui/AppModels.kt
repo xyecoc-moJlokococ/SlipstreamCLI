@@ -133,18 +133,17 @@ fun emptyDraft(base: Config = defaultConfig(mode = Config.Mode.PROXY)): EditorDr
         config = base
     )
 
+/**
+ * The grey line under a profile's name: which tunnel it runs on.
+ *
+ * Deliberately not the domain / login any more — those are per-profile trivia, while the thing
+ * worth scanning a list of profiles for is how each one connects. Xray says "Xray-core" rather
+ * than plain "Xray" because that is the component actually carrying the traffic.
+ */
 fun profileSubtitle(profile: ConfigProfile): String = when (profile.config.protocol) {
-    Config.TunnelProtocol.S3FU ->
-        profile.config.s3Login.ifBlank { profile.config.s3Bucket }.ifBlank { "s3fu" }
-    // Xray JSON is not a readable one-liner — show nothing under the name.
-    Config.TunnelProtocol.XRAY -> ""
-    else ->
-        profile.config.domain.ifBlank { profile.config.resolverHost }.ifBlank { "—" }
-}
-
-fun maskDomain(value: String): String {
-    if (value.length <= 18) return value
-    return value.take(8) + "…" + value.takeLast(6)
+    Config.TunnelProtocol.S3FU -> t(S.PROTOCOL_S3FU)
+    Config.TunnelProtocol.XRAY -> t(S.PROTOCOL_XRAY_CORE)
+    Config.TunnelProtocol.SLIPSTREAM -> t(S.PROTOCOL_SLIPSTREAM)
 }
 
 fun defaultGlobalSettings(mode: Config.Mode = Config.Mode.PROXY): GlobalSettings =

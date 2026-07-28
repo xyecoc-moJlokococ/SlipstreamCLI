@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -129,24 +130,33 @@ fun SubscriptionCard(
             }
         }
 
-        // A subscription that has never loaded has no numbers to show — printing "0 B used"
-        // next to an error just looks broken.
+        // Two separate reasons to have no traffic line: never loaded (printing "0 B used" next to
+        // an error just looks broken), or loaded from a plain config list that carries no
+        // subscription-userinfo at all. Expiry stands on its own — a plan can announce one without
+        // reporting any bytes.
         val loaded = subscription.lastUpdatedMs > 0
-        if (loaded) Row(
+        val showTraffic = loaded && info.hasTraffic
+        val expiry = expiryText(subscription, nowMs)
+        if (showTraffic || expiry != null) Row(
             Modifier.fillMaxWidth().padding(top = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = trafficText(subscription),
-                color = SlipnetTextPrimary,
-                fontSize = 13.sp,
-                maxLines = 1
-            )
-            expiryText(subscription, nowMs)?.let { expiry ->
+            if (showTraffic) {
                 Text(
-                    text = expiry,
-                    color = if (info.daysLeft(nowMs)?.let { it < 0 } == true) SlipnetAccent else SlipnetTextSecondary,
+                    text = trafficText(subscription),
+                    color = SlipnetTextPrimary,
+                    fontSize = 13.sp,
+                    maxLines = 1
+                )
+            } else {
+                // Keeps the expiry on the right where it always sits.
+                Spacer(Modifier.weight(1f))
+            }
+            expiry?.let {
+                Text(
+                    text = it,
+                    color = if (info.daysLeft(nowMs)?.let { d -> d < 0 } == true) SlipnetAccent else SlipnetTextSecondary,
                     fontSize = 13.sp,
                     maxLines = 1
                 )

@@ -311,6 +311,36 @@ object ConfigStore {
     }
 
     /**
+     * Parse one config link into a profile **without storing it**.
+     *
+     * Every other entry point here persists as it parses, which is right for a clipboard paste and
+     * badly wrong for a subscription refresh: the repository only wants the parsed object and
+     * writes the whole group itself. Going through the persisting path meant each refresh quietly
+     * left one extra copy of every server behind in the Home folder — a 148-server list grew Home
+     * by 148 profiles every single time it updated.
+     *
+     * The returned profile has a blank id; the caller assigns one.
+     */
+    fun parseProfileFromLink(context: Context, raw: String): ConfigProfile? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        val base = effectiveConfig(context)
+        VlessLinkParser.parse(trimmed)?.let { link ->
+            return ConfigProfile(
+                id = "",
+                name = link.remarks,
+                config = base.copy(
+                    protocol = Config.TunnelProtocol.XRAY,
+                    xrayConfigJson = XrayConfigBuilder.build(link, base.listenPort)
+                )
+            )
+        }
+        val uri = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return null
+        val imported = parseProfileLink(uri, base) ?: return null
+        return ConfigProfile(id = "", name = imported.name, config = imported.config)
+    }
+
+    /**
      * Import everything [text] contains. A vless:// paste (one link or a whole
      * subscription) yields one profile per link; anything else falls back to the
      * single-profile path in [importProfileFromText].
@@ -382,6 +412,11 @@ object ConfigStore {
         }
 
         // 3) Raw payload (base64 config=... or key=value query) via the import endpoint.
+        // Not for a link belonging to a protocol this app cannot run. Such a URI otherwise walks
+        // into the legacy query-param branch below and comes back out as a *Slipstream* profile
+        // named after the host — which is how a trojan:// link ended up in the list looking like a
+        // working DNS-tunnel profile. Refusing it is the honest answer.
+        if (UNSUPPORTED_LINK_SCHEME.containsMatchIn(trimmed)) return null
         val payloadUri = Uri.parse("slipstream://import").buildUpon()
             .appendQueryParameter("config", trimmed)
             .build()
@@ -391,6 +426,16 @@ object ConfigStore {
 
     private val PROFILE_URI_IN_TEXT =
         Regex("(?:slipstream|s3fu|xray):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+
+    /**
+     * Schemes other clients use for protocols this app does not speak. `vless://` is absent on
+     * purpose — it is handled earlier and reaching the fallback with one means it failed to parse,
+     * which deserves the same refusal.
+     */
+    private val UNSUPPORTED_LINK_SCHEME = Regex(
+        "^\\s*(trojan|vmess|vless|ss|ssr|hysteria2?|hy2|tuic|wireguard|snell|juicity|anytls|socks5?)://",
+        RegexOption.IGNORE_CASE
+    )
 
     /**
      * Parse a slipstream://, s3fu:// or xray:// deep link into a name + config.

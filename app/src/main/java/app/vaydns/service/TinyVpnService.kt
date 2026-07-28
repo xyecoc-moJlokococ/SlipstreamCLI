@@ -379,6 +379,9 @@ class TinyVpnService : VpnService() {
             require(config.xrayConfigJson.isNotBlank()) { "Xray config is empty" }
             XrayBridge.init(this)
             require(XrayBridge.isLoaded()) { "libxray failed to load" }
+            // Already a worker thread, so it is safe to wait here: a config with geoip: /
+            // geosite: routing rules will not even parse until those files are on disk.
+            XrayBridge.ensureGeoAssets(this)
             resetTrafficBase()
 
             // The stored JSON may have been written when the local port was something

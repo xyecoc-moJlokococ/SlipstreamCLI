@@ -59,6 +59,16 @@ data class SubscriptionInfo(
     val hasQuota: Boolean get() = totalBytes > 0
     val hasExpiry: Boolean get() = expiresAtSeconds > 0
 
+    /**
+     * True when the panel actually said something about traffic.
+     *
+     * A list that ships no `subscription-userinfo` header at all leaves every counter at 0, which
+     * is indistinguishable from a fresh plan — and "0 B used" under a plain config list is a number
+     * we do not have, so the card shows nothing instead. Any real quota or any consumed byte turns
+     * the line back on.
+     */
+    val hasTraffic: Boolean get() = usedBytes > 0 || totalBytes > 0
+
     /** 0..1 of the quota consumed, or null when the plan is unlimited. */
     fun usedFraction(): Float? {
         if (totalBytes <= 0) return null

@@ -48,6 +48,8 @@ enum class S(val en: String, val ru: String) {
     PROTOCOL_SLIPSTREAM("Slipstream (DNS)", "Slipstream (DNS)"),
     PROTOCOL_S3FU("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
     PROTOCOL_XRAY("Xray", "Xray"),
+    /** Profile-card subtitle: the component actually carrying the traffic. */
+    PROTOCOL_XRAY_CORE("Xray-core", "Xray-core"),
     S3_SECTION("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
     S3_ENDPOINT("S3 endpoint", "S3 endpoint"),
     S3_BUCKET("Bucket", "Бакет"),
@@ -258,6 +260,8 @@ enum class S(val en: String, val ru: String) {
     SUBSCRIPTION_UPDATED_JUST_NOW("updated just now", "обновлено только что"),
     SUBSCRIPTION_AUTO_UPDATE("auto", "автообновление"),
     SUBSCRIPTION_REFRESH("Refresh subscription", "Обновить подписку"),
+    /** Blocking overlay while a brand-new subscription is being fetched. */
+    SUBSCRIPTION_IMPORTING("Importing subscription…", "Импорт подписки…"),
     SUBSCRIPTION_DELETE("Delete subscription", "Удалить подписку"),
     TOAST_SUBSCRIPTION_ADDED("Subscription imported", "Подписка импортирована"),
     TOAST_SUBSCRIPTION_UPDATED("Subscription updated", "Подписка обновлена"),

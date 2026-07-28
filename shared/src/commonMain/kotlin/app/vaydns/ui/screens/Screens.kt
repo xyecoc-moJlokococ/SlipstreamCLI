@@ -13,6 +13,7 @@ import app.vaydns.ui.components.AnimatedModalCard
 import app.vaydns.ui.components.ConfirmDialog
 import app.vaydns.ui.theme.SlipnetTextPrimary
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,7 +25,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -70,7 +73,6 @@ import app.vaydns.ui.components.FolderTabs
 import app.vaydns.ui.components.SubscriptionCard
 import app.vaydns.ui.components.SlipnetTextField
 import app.vaydns.ui.components.TopBar
-import app.vaydns.ui.maskDomain
 import app.vaydns.ui.profileSubtitle
 import app.vaydns.ui.theme.SlipnetBg
 import app.vaydns.ui.theme.SlipnetCard
@@ -195,7 +197,20 @@ fun HomeScreen(
             FolderTabs(
                 names = folderNames,
                 selectedIndex = folderIndex,
-                onSelect = { scope.launch { pagerState.animateScrollToPage(it) } },
+                onSelect = { target ->
+                    scope.launch {
+                        // Always exactly one page of travel. Animating the whole distance would
+                        // scroll through every folder in between and compose each on the way,
+                        // which is what made a far tab feel like the app had hung; jumping
+                        // outright lost the sense of direction. So land next to the target
+                        // first, then slide the last page in.
+                        val from = pagerState.currentPage
+                        if (abs(target - from) > 1) {
+                            pagerState.scrollToPage(if (target > from) target - 1 else target + 1)
+                        }
+                        pagerState.animateScrollToPage(target)
+                    }
+                },
                 onMenu = { index, x, y ->
                     // Folder 0 is "Home" and has nothing to manage.
                     subscriptions.getOrNull(index - 1)?.let { sub ->
@@ -216,10 +231,15 @@ fun HomeScreen(
                 beyondViewportPageCount = 0
             ) { page ->
                 val pageSubscription = subscriptions.getOrNull(page - 1)
-                val pageProfiles = if (pageSubscription == null) {
-                    profiles.filter { it.subscriptionId == null }
-                } else {
-                    profiles.filter { it.subscriptionId == pageSubscription.id }
+                // Remembered, not filtered inline: this runs for every visible page on every
+                // recomposition, and a fresh list each time would make the LazyColumn re-diff
+                // its items for nothing.
+                val pageProfiles = remember(profiles, pageSubscription?.id) {
+                    if (pageSubscription == null) {
+                        profiles.filter { it.subscriptionId == null }
+                    } else {
+                        profiles.filter { it.subscriptionId == pageSubscription.id }
+                    }
                 }
                 // Only the visible page owns the drag state, so a half-swiped neighbour never
                 // renders a drag in progress.
@@ -240,40 +260,56 @@ fun HomeScreen(
                         )
                     }
                 } else {
-                    Column(
-                        Modifier
+                    // Lazy on purpose. A folder can hold a hundred servers and a plain Column
+                    // composes every one of them — each ProfileCard carries eight animation states
+                    // — on the single frame the folder becomes visible, which is exactly what made
+                    // switching to a big folder stall. Only the cards actually on screen are built
+                    // now. (This is the opposite call from ProfileEditorScreen, where LazyColumn
+                    // lost: that is a fixed ~25 heterogeneous rows, this is an unbounded list of
+                    // identical ones.)
+                    LazyColumn(
+                        modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 10.dp)
-                            .verticalScroll(rememberScrollState(), enabled = draggingId == null)
-                            // Space for bar (56) + half button (~33) sitting above the bar.
-                            .padding(bottom = 96.dp)
+                            .padding(horizontal = 10.dp),
+                        state = rememberLazyListState(),
+                        userScrollEnabled = draggingId == null,
+                        // Space for bar (56) + half button (~33) sitting above the bar.
+                        contentPadding = PaddingValues(bottom = 96.dp)
                     ) {
                         pageSubscription?.let { sub ->
-                            SubscriptionCard(
-                                subscription = sub,
-                                nowMs = nowMs,
-                                onRefresh = { onRefreshSubscription(sub.id) },
-                                refreshing = refreshingSubscriptionId == sub.id
-                            )
+                            item(key = "subscription") {
+                                SubscriptionCard(
+                                    subscription = sub,
+                                    nowMs = nowMs,
+                                    onRefresh = { onRefreshSubscription(sub.id) },
+                                    refreshing = refreshingSubscriptionId == sub.id
+                                )
+                            }
                         }
                         // Only reachable with a subscription on this page — the profiles-empty
                         // Home folder took the branch above. "Здесь", not "У вас": the user does
                         // have configurations, this folder just came back without any.
                         if (pageDisplayed.isEmpty()) {
-                            Box(
-                                Modifier.fillMaxWidth().padding(top = 48.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = t(S.NO_PROFILES_IN_FOLDER_HINT),
-                                    color = SlipnetTextSecondary,
-                                    fontSize = 15.sp,
-                                    lineHeight = 20.sp,
-                                    textAlign = TextAlign.Center
-                                )
+                            item(key = "empty") {
+                                Box(
+                                    Modifier.fillMaxWidth().padding(top = 48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = t(S.NO_PROFILES_IN_FOLDER_HINT),
+                                        color = SlipnetTextSecondary,
+                                        fontSize = 15.sp,
+                                        lineHeight = 20.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
-                pageDisplayed.forEachIndexed { index, profile ->
+                // The index is in the key on purpose. A lazy list throws outright on a repeated
+                // key, and profile ids are storage data we do not fully control — an older
+                // subscription refresh could mint two profiles sharing one id. A corrupt list
+                // should look wrong, not take the whole screen down.
+                itemsIndexed(pageDisplayed, key = { index, p -> "${p.id}:$index" }) { index, profile ->
                     val isDragging = profile.id == draggingId
                     val gapOffset = when {
                         draggingId == null || isDragging || dragFromIndex < 0 || gapTargetIndex < 0 -> 0f
@@ -285,10 +321,9 @@ fun HomeScreen(
                             index in gapTargetIndex until dragFromIndex -> slotPitchPx
                         else -> 0f
                     }
-                    val sub = profileSubtitle(profile)
                     ProfileCard(
                         name = profile.name.ifBlank { t(S.PROFILE_NAME_FALLBACK) },
-                        subtitle = if (sub.isBlank()) "" else maskDomain(sub),
+                        subtitle = profileSubtitle(profile),
                         selected = profile.id == activeId,
                         onClick = { if (draggingId == null) onSelect(profile) },
                         // Servers in a subscription folder are replaced wholesale on refresh, so

@@ -26,6 +26,11 @@ object XrayBridge {
     @Volatile private var lastError: String? = null
     @Volatile private var controller: libxray.CoreController? = null
 
+    /** Files Xray resolves `geoip:` / `geosite:` routing rules from. */
+    private val GEO_ASSETS = listOf("geoip.dat", "geosite.dat")
+    @Volatile private var geoAssetsReady = false
+    private val geoLock = Any()
+
     init {
         try {
             // gomobile's Seq loads libgojni.so from its own static initializer.
@@ -62,9 +67,55 @@ object XrayBridge {
             })
             initialized = true
             AppLog.i(TAG, "xray env initialized assetDir=${assetDir.absolutePath}")
+            // ~28 MB of copying on first run and this is called from Application.onCreate, so
+            // never inline. Anything that actually needs the files calls ensureGeoAssets and
+            // blocks on the same lock.
+            Thread({ ensureGeoAssets(context.applicationContext) }, "xray-geo-seed")
+                .apply { isDaemon = true }
+                .start()
         }.onFailure {
             AppLog.e(TAG, "xray env init failed", it)
             lastError = it.message ?: it.toString()
+        }
+    }
+
+    /**
+     * Make sure geoip.dat / geosite.dat are real files in the on-disk asset dir.
+     *
+     * libxray's `InitEnv` installs a file reader that falls back to the APK's bundled assets, but
+     * that only covers Xray's own filesystem helper. Routing rules take a different path: parsing
+     * `geoip:private` or `geosite:category-ru` resolves the asset directory directly and dies with
+     * "failed to open geosite.dat > stat …/files/xray/geosite.dat: no such file or directory" —
+     * which is why every subscription config failed to start while hand-made ones (no routing
+     * rules) worked. Panels use those rules routinely, so the files have to exist on disk.
+     *
+     * Only fills in what is missing, so a user-supplied .dat dropped into the dir still wins.
+     * Blocks for the length of the copy — call it off the main thread.
+     */
+    fun ensureGeoAssets(context: Context) {
+        if (geoAssetsReady) return
+        synchronized(geoLock) {
+            if (geoAssetsReady) return
+            val dir = File(context.filesDir, "xray").apply { mkdirs() }
+            for (name in GEO_ASSETS) {
+                val target = File(dir, name)
+                if (target.length() > 0) continue
+                runCatching {
+                    // Through a temp file: a copy cut short by a kill would otherwise leave a
+                    // truncated .dat that looks present and then fails to parse forever.
+                    val tmp = File(dir, "$name.part")
+                    context.assets.open(name).use { input ->
+                        tmp.outputStream().use { input.copyTo(it) }
+                    }
+                    check(tmp.renameTo(target)) { "could not rename ${tmp.name}" }
+                    AppLog.i(TAG, "seeded $name (${target.length()} bytes)")
+                }.onFailure {
+                    // A build made with XRAY_NO_GEO=1 has no such asset; Xray then reports the
+                    // missing file itself, which is the same story the user would get anyway.
+                    AppLog.e(TAG, "could not seed $name", it)
+                }
+            }
+            geoAssetsReady = true
         }
     }
 

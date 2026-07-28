@@ -226,24 +226,30 @@ class DesktopPlatform(
     }
 
     override fun importFromText(text: String): List<ConfigProfile> {
+        val parsed = parseProfileFromText(text) ?: return emptyList()
+        return listOf(addProfile(parsed.name, parsed.config))
+    }
+
+    /**
+     * Parse without storing — the subscription repository writes its group itself and only needs
+     * the parsed object. Minimal JSON profile import for desktop (Android has the full
+     * ConfigStore parser). The returned profile's id is a placeholder; callers assign one.
+     */
+    private fun parseProfileFromText(text: String): ConfigProfile? {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return emptyList()
-        // Minimal JSON profile import for desktop (Android still has full ConfigStore import).
-        if (trimmed.startsWith("{")) {
-            return runCatching {
-                val json = JSONObject(trimmed)
-                val profile = when {
-                    json.has("config") -> ConfigJson.profileFromJson(json)
-                    else -> ConfigProfile(
-                        id = System.currentTimeMillis().toString(36),
-                        name = json.optString("name").ifBlank { "Imported" },
-                        config = ConfigJson.configFromJson(json)
-                    )
-                }
-                listOf(addProfile(profile.name, profile.config))
-            }.getOrDefault(emptyList())
-        }
-        return emptyList()
+        if (trimmed.isEmpty() || !trimmed.startsWith("{")) return null
+        return runCatching {
+            val json = JSONObject(trimmed)
+            if (json.has("config")) {
+                ConfigJson.profileFromJson(json)
+            } else {
+                ConfigProfile(
+                    id = "",
+                    name = json.optString("name").ifBlank { "Imported" },
+                    config = ConfigJson.configFromJson(json)
+                )
+            }
+        }.getOrNull()
     }
 
     override fun exportProfileLink(profile: ConfigProfile): String {
@@ -411,8 +417,10 @@ class DesktopPlatform(
                 }
                 override fun newId(): String = java.util.UUID.randomUUID().toString()
                 override fun nowMs(): Long = System.currentTimeMillis()
+                // Parse only — importFromText persists what it parses, which would leave one
+                // extra Home copy of every server behind on each refresh.
                 override fun profileFromLink(uri: String, name: String): ConfigProfile? =
-                    importFromText(uri).firstOrNull()
+                    parseProfileFromText(uri)
 
                 override fun fetchRoutes(): List<app.vaydns.subscription.SubscriptionFetcher.ProxySpec?> =
                     buildList {

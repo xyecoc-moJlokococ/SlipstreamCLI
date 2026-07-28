@@ -134,9 +134,18 @@ class SubscriptionRepository(private val storage: Storage) {
      */
     private fun replaceGroup(subscriptionId: String, fresh: List<ConfigProfile>) {
         val all = storage.loadProfiles()
-        val oldById = all.filter { it.subscriptionId == subscriptionId }.associateBy { it.name }
+        // Each old id may be claimed by at most one fresh server. Public lists routinely carry
+        // several servers under the identical name (three "🇩🇪 Germany | 🌐 [*CIDR]" in a row),
+        // and the previous `associateBy { it.name }` handed that one old id to every one of them
+        // — minting profiles that shared an id, so selecting one lit up all of them and the lazy
+        // list refused to render the folder at all.
+        val unclaimed = all
+            .filter { it.subscriptionId == subscriptionId }
+            .groupByTo(mutableMapOf(), { it.name }, { it.id })
         val reconciled = fresh.map { profile ->
-            oldById[profile.name]?.let { profile.copy(id = it.id) } ?: profile
+            val queue = unclaimed[profile.name]
+            val claimed = if (queue.isNullOrEmpty()) null else queue.removeAt(0)
+            if (claimed != null) profile.copy(id = claimed) else profile
         }
         val firstIndex = all.indexOfFirst { it.subscriptionId == subscriptionId }
         val others = all.filterNot { it.subscriptionId == subscriptionId }
@@ -146,7 +155,26 @@ class SubscriptionRepository(private val storage: Storage) {
             val head = others.take(firstIndex)
             head + reconciled + others.drop(firstIndex)
         }
-        storage.writeProfiles(merged)
+        storage.writeProfiles(withUniqueIds(merged))
+    }
+
+    /**
+     * Last word on the invariant every id-keyed thing depends on: the active selection, the
+     * per-profile menu, and the lazy list, which refuses to render a repeated key at all.
+     *
+     * Enforced rather than trusted, because a group written by an older build can already contain
+     * repeats — inheriting an id by name faithfully carries those forward, so reassigning here is
+     * what actually repairs an existing list on its next refresh.
+     */
+    private fun withUniqueIds(profiles: List<ConfigProfile>): List<ConfigProfile> {
+        val seen = mutableSetOf<String>()
+        return profiles.map { profile ->
+            if (profile.id.isNotBlank() && seen.add(profile.id)) {
+                profile
+            } else {
+                profile.copy(id = storage.newId()).also { seen.add(it.id) }
+            }
+        }
     }
 
     private fun toProfile(entry: SubscriptionContent.Entry, subscriptionId: String): ConfigProfile? {
