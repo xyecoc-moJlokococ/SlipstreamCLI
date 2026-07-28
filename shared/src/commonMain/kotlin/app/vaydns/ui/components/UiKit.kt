@@ -71,6 +71,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -195,11 +197,10 @@ fun MenuLayer(
                             scaleY = 0.94f + 0.06f * p
                             transformOrigin = TransformOrigin(1f, 0f)
                         }
-                        // Square corners, panel painted in the app background, and only a light
-                        // drop shadow to lift it off the content underneath.
+                        // Square corners, panel painted in the app background, no outline —
+                        // only a light drop shadow lifts it off the content underneath.
                         .shadow(6.dp, RectangleShape)
                         .background(SlipnetBg)
-                        .border(1.dp, SlipnetStroke, RectangleShape)
                         .padding(vertical = 4.dp),
                     content = content
                 )
@@ -564,6 +565,7 @@ fun ProfileCard(
     enableReorder: Boolean = true
 ) {
     val shape = RoundedCornerShape(12.dp)
+    val haptics = LocalHapticFeedback.current
     // Selection border / marker cross-fade onto the new card (snappy, not a hard cut).
     val selectAnim = tween<Color>(durationMillis = 200, easing = FastOutSlowInEasing)
     val selectFloatAnim = tween<Float>(durationMillis = 200, easing = FastOutSlowInEasing)
@@ -630,7 +632,12 @@ fun ProfileCard(
                 if (enableReorder) {
                     Modifier.pointerInput(Unit) {
                         detectDragGesturesAfterLongPress(
-                            onDragStart = { onLongPressDragStart() },
+                            onDragStart = {
+                                // One tick the moment the card is picked up, so reordering is
+                                // confirmed by feel rather than by watching the card move.
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onLongPressDragStart()
+                            },
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 onLongPressDrag(dragAmount.y)

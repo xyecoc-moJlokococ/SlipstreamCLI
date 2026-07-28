@@ -9,6 +9,19 @@
 # scratch. That is what makes the first click on a menu item — which pulls in a whole screen's worth
 # of Compose classes — stop being noticeably slower than the rest.
 #
+# skiko.renderApi is deliberately NOT passed here. DesktopMain defaults it to SOFTWARE, and leaving
+# the property unset on the command line is what keeps that overridable:
+#   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D
+# Measured trade-off — SOFTWARE 121-136 MB working set, DIRECT3D 223 MB, OPENGL 234 MB. GPU buys
+# smoother animation; for a UI this static it was not worth ~90 MB.
+#
+# Memory flags are sized from what the app actually uses, not guessed. Measured with
+# `jcmd <pid> GC.heap_info` on a 16 GB machine: the JVM had committed a 254 MB heap (the default
+# initial size is 1/16 of RAM, and the max 1/4) while only ~23 MB was live. Capping the heap and
+# using SerialGC — G1 alone runs ~10 refinement/concurrent threads for a heap this small — is where
+# the footprint drop comes from. 256 MB still leaves large headroom: the proxy's worst case is
+# maxActiveClients x 128 KB of relay buffers.
+#
 # `--generate-cds-archive` in the jlink options is what makes that possible at all: jpackage's
 # default runtime has no base CDS archive, and a dynamic archive cannot be built without one
 # ("-XX:ArchiveClassesAtExit is unsupported when base CDS archive is not loaded"). Dropping
@@ -69,7 +82,6 @@ $cliProps = Join-Path $env:TEMP 'vaydns-cli-launcher.properties'
     --main-class app.vaydns.desktop.MainKt `
     --dest $dest `
     --jlink-options '--strip-debug --no-man-pages --no-header-files --generate-cds-archive' `
-    --java-options '-Dskiko.renderApi=DIRECT3D' `
     --java-options '-Dskiko.vsync.enabled=true' `
     --java-options '-Dsun.java2d.d3d=true' `
     --java-options '-Dsun.awt.noerasebackground=true' `
@@ -77,6 +89,11 @@ $cliProps = Join-Path $env:TEMP 'vaydns-cli-launcher.properties'
     --java-options '-Dfile.encoding=UTF-8' `
     --java-options '-XX:+AutoCreateSharedArchive' `
     --java-options '-XX:SharedArchiveFile=$APPDIR\vaydns.jsa' `
+    --java-options '-Xms16m' `
+    --java-options '-Xmx256m' `
+    --java-options '-XX:+UseSerialGC' `
+    --java-options '-XX:MaxMetaspaceSize=192m' `
+    --java-options '-XX:ReservedCodeCacheSize=96m' `
     --add-launcher "Vaydns-cli=$cliProps"
 
 if ($LASTEXITCODE -ne 0) { throw "jpackage failed ($LASTEXITCODE)" }

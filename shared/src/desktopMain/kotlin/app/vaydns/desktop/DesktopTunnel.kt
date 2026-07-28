@@ -92,15 +92,14 @@ object DesktopTunnel {
                 error("${spec.name} did not start listening on $enginePort.\n$tail")
             }
 
-            val localAuth = settings.localSocksAuthEnabled &&
-                settings.localSocksUsername.isNotBlank() && settings.localSocksPassword.isNotBlank()
+            // No local auth on desktop by design: the listener is loopback-only, and the system
+            // proxy setting has nowhere to carry credentials, so requiring them would just turn
+            // every system-routed request into a 407 nobody can answer.
             val server = MixedProxyServer(
                 listenHost = "127.0.0.1",
                 listenPort = listenPort,
                 upstreamHost = "127.0.0.1",
                 upstreamPort = enginePort,
-                localUser = if (localAuth) settings.localSocksUsername else null,
-                localPass = if (localAuth) settings.localSocksPassword else null,
                 maxActiveClients = config.maxActiveClients.coerceAtLeast(16)
             )
             server.start().getOrThrow()
@@ -108,14 +107,6 @@ object DesktopTunnel {
 
             var warning: String? = null
             var applied = false
-            // Windows has nowhere to put proxy credentials in its proxy setting, so apps routed by
-            // it would just get a 407 they cannot answer. On a loopback-only listener the auth buys
-            // almost nothing anyway, so say so plainly rather than let it look like a broken tunnel.
-            if (localAuth && WindowsSystemProxy.isWindows && !systemProxyDisabled()) {
-                warning = "local SOCKS/HTTP auth is on: Windows cannot pass proxy credentials, so " +
-                    "system-wide traffic will be rejected with 407. Turn it off in Settings for " +
-                    "system-proxy mode."
-            }
             if (WindowsSystemProxy.isWindows && !systemProxyDisabled()) {
                 val previous = WindowsSystemProxy.apply("127.0.0.1:$listenPort").getOrElse {
                     // The tunnel itself is up; only the system-wide switch failed. Keep running so

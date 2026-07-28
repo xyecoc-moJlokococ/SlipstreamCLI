@@ -46,6 +46,12 @@ class TinyVpnService : VpnService() {
     @Volatile private var stopping = false
     @Volatile private var starting = false
     @Volatile private var lifecycleGeneration = 0
+
+    /**
+     * Signalled when a stop's native cleanup has finished. A restart waits on this instead of
+     * racing it — see [startTunnel].
+     */
+    @Volatile private var teardownDone: java.util.concurrent.CountDownLatch? = null
     @Volatile private var resolverOptimizerRunning = false
     private var rxBase = 0L
     private var txBase = 0L
@@ -123,17 +129,27 @@ class TinyVpnService : VpnService() {
             AppLog.w(TAG, "VPN start ignored starting=$starting active=$tunnelActive")
             return
         }
-        val generation = ++lifecycleGeneration
-        stopping = false
         starting = true
         if (ConfigStore.loadGlobalSettings(this).trafficNotification) {
             startForeground(1, notification(t(S.STATUS_STARTING), "↓ 0 B (0 B/s)   ↑ 0 B (0 B/s)"))
         }
+        val pendingTeardown = teardownDone
         Thread({
+            var generation = -1
             try {
+                // A profile switch is stop-then-start, and the stop's native cleanup runs on its
+                // own thread. Bumping lifecycleGeneration before that cleanup finishes makes the
+                // cleanup skip itself ("newer lifecycle generation active"), leaving the previous
+                // hev tunnel, TUN fd and engine alive underneath the new one — traffic trickles and
+                // then dies, and only killing the process clears it. So: wait first, bump after.
+                if (pendingTeardown != null && !pendingTeardown.await(TEARDOWN_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    AppLog.w(TAG, "previous teardown still running after ${TEARDOWN_WAIT_MS}ms; starting anyway")
+                }
+                generation = ++lifecycleGeneration
+                stopping = false
                 startTunnelWorker(generation)
             } finally {
-                if (lifecycleGeneration == generation) {
+                if (generation == -1 || lifecycleGeneration == generation) {
                     starting = false
                 }
             }
@@ -596,6 +612,8 @@ class TinyVpnService : VpnService() {
         transportSwitchesThisEpisode = 0
         readyFalseSince = 0
         handler.removeCallbacks(diagnostics)
+        val done = java.util.concurrent.CountDownLatch(1)
+        teardownDone = done
         Thread({
             try {
                 if (lifecycleGeneration == generation) {
@@ -618,6 +636,9 @@ class TinyVpnService : VpnService() {
                     AppLog.i(TAG, "VPN stop cleanup skipped: newer lifecycle generation active")
                 }
             } finally {
+                // Release a waiting restart before stopSelf: when a restart is pending the block
+                // below is skipped (its generation is stale), so this must not depend on it.
+                done.countDown()
                 handler.post {
                     if (lifecycleGeneration == generation) {
                         stopping = false
@@ -1715,6 +1736,8 @@ class TinyVpnService : VpnService() {
         private const val DETACHED_RESTART_WINDOW_MS = 120_000L
         private const val PROCESS_RESTART_DELAY_MS = 1_500L
         private const val RESTART_REQUEST_CODE = 4711
+        /** How long a restart waits for the previous tunnel's native cleanup to finish. */
+        private const val TEARDOWN_WAIT_MS = 10_000L
         private const val S3FU_SOCKS_READY_TIMEOUT_MS = 8_000L
         private const val XRAY_SOCKS_READY_TIMEOUT_MS = 8_000L
     }

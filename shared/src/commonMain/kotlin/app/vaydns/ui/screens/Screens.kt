@@ -238,6 +238,8 @@ fun SettingsScreen(
     supportsVpn: Boolean,
     /** Android status-bar traffic notification; hidden on desktop/iOS. */
     showTrafficNotification: Boolean = false,
+    /** Local proxy username/password; hidden where the platform cannot use it (desktop). */
+    showLocalSocksAuth: Boolean = true,
     onMenu: () -> Unit,
     onChange: (GlobalSettings) -> Unit
 ) {
@@ -304,21 +306,24 @@ fun SettingsScreen(
                     onChange(settings.copy(trafficNotification = it))
                 }
             }
-            // Local SOCKS auth is meaningful for desktop proxy clients.
-            SlipnetCheckbox(settings.localSocksAuthEnabled, t(S.PROTECT_LOCAL_SOCKS)) {
-                onChange(settings.copy(localSocksAuthEnabled = it))
-            }
-            if (settings.localSocksAuthEnabled) {
-                Spacer(Modifier.height(4.dp))
-                LabeledField(t(S.SOCKS_USERNAME)) {
-                    SlipnetTextField(settings.localSocksUsername, { onChange(settings.copy(localSocksUsername = it)) })
+            // Local SOCKS auth only where the platform can actually use it — see
+            // HostPlatform.supportsLocalProxyAuth().
+            if (showLocalSocksAuth) {
+                SlipnetCheckbox(settings.localSocksAuthEnabled, t(S.PROTECT_LOCAL_SOCKS)) {
+                    onChange(settings.copy(localSocksAuthEnabled = it))
                 }
-                LabeledField(t(S.SOCKS_PASSWORD)) {
-                    SlipnetTextField(
-                        settings.localSocksPassword,
-                        { onChange(settings.copy(localSocksPassword = it)) },
-                        password = true
-                    )
+                if (settings.localSocksAuthEnabled) {
+                    Spacer(Modifier.height(4.dp))
+                    LabeledField(t(S.SOCKS_USERNAME)) {
+                        SlipnetTextField(settings.localSocksUsername, { onChange(settings.copy(localSocksUsername = it)) })
+                    }
+                    LabeledField(t(S.SOCKS_PASSWORD)) {
+                        SlipnetTextField(
+                            settings.localSocksPassword,
+                            { onChange(settings.copy(localSocksPassword = it)) },
+                            password = true
+                        )
+                    }
                 }
             }
             LabeledField(t(S.DNS_RESOLVER_POOL)) {

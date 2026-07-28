@@ -39,6 +39,7 @@ import app.vaydns.S
 import app.vaydns.Strings
 import app.vaydns.currentHostPlatform
 import app.vaydns.defaultConfig
+import app.vaydns.supportsLocalProxyAuth
 import app.vaydns.supportsTrafficNotification
 import app.vaydns.t
 import app.vaydns.ui.components.AppDrawerItem
@@ -405,6 +406,7 @@ fun VaydnsApp(platform: VaydnsPlatform, shortcuts: AppShortcuts? = null) {
                             settings = settings,
                             supportsVpn = ui.supportsSystemVpn(),
                             showTrafficNotification = currentHostPlatform().supportsTrafficNotification(),
+                            showLocalSocksAuth = currentHostPlatform().supportsLocalProxyAuth(),
                             onMenu = { openDrawer() },
                             onChange = { next ->
                                 val fixed = if (ui.supportsSystemVpn()) next

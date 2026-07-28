@@ -17,6 +17,7 @@ import androidx.core.content.FileProvider
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.MiniSlipstreamSocksBridge
 import app.slipnet.tunnel.ResolverListConfig
+import app.slipnet.tunnel.S3fuBridge
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.XrayBridge
 import app.slipnet.util.AppLog
@@ -32,6 +33,11 @@ import org.json.JSONObject
  * Android bridge for the shared Compose UI — ConfigStore + VPN/proxy start paths.
  * UI itself lives in `:shared` (Compose Multiplatform).
  */
+private const val TAG_PLATFORM = "AndroidVaydnsPlatform"
+
+/** How long a profile switch waits for the old tunnel to go away before starting the new one. */
+private const val RECONNECT_STOP_TIMEOUT_MS = 12_000L
+
 class AndroidVaydnsPlatform(
     private val activity: ComponentActivity
 ) : VaydnsPlatform {
@@ -232,21 +238,24 @@ class AndroidVaydnsPlatform(
         if (stopping) return
         stopping = true
         connecting = false
+        // Only the proxy path is ours to tear down; VPN mode and the S3fu/Xray protocols are owned
+        // by TinyVpnService, which stops them in its own cleanup. Doing it from here as well meant
+        // two threads closing the same native clients at once.
+        val ownedByProxyPath = proxyStarted
         proxyStarted = false
         ResolverSelector.cancelActiveProbes(if (reconnect) "profile_switch" else "disconnect")
         activity.startService(
             Intent(activity, TinyVpnService::class.java).setAction(TinyVpnService.ACTION_STOP)
         )
         Thread({
-            runCatching { MiniSlipstreamSocksBridge.stop() }
-            runCatching { SlipstreamBridge.stopClient() }
-            runCatching { HevSocks5Tunnel.stop() }
-            // Brief settle so sockets release before restart.
+            if (ownedByProxyPath) {
+                runCatching { MiniSlipstreamSocksBridge.stop() }
+                runCatching { SlipstreamBridge.stopClient() }
+            }
+            // Wait for the service to finish its teardown rather than guessing with a sleep: a
+            // restart that overlaps the previous cleanup is what left the old engine running.
             if (reconnect) {
-                try {
-                    Thread.sleep(250)
-                } catch (_: InterruptedException) {
-                }
+                awaitTunnelStopped(RECONNECT_STOP_TIMEOUT_MS)
             }
             stopping = false
             publish()
@@ -257,8 +266,37 @@ class AndroidVaydnsPlatform(
         publish()
     }
 
+    /**
+     * Block until every engine really is down, so a profile switch never starts the new tunnel on
+     * top of the previous one. Returns false on timeout, in which case we start anyway rather than
+     * leaving the user with nothing.
+     */
+    private fun awaitTunnelStopped(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!isRunning()) return true
+            try {
+                Thread.sleep(50)
+            } catch (_: InterruptedException) {
+                return false
+            }
+        }
+        AppLog.w(TAG_PLATFORM, "tunnel still up after ${timeoutMs}ms; reconnecting anyway")
+        return false
+    }
+
+    /**
+     * Every engine counts, not just Slipstream: this also decides whether picking another profile
+     * reconnects, and when [awaitTunnelStopped] considers the teardown complete. Missing S3fu/Xray
+     * here meant switching away from one of them looked like "nothing was running", so the active
+     * profile changed while the old tunnel stayed up.
+     */
     private fun isRunning(): Boolean =
-        proxyStarted || SlipstreamBridge.isRunning() || HevSocks5Tunnel.isRunning()
+        proxyStarted ||
+            SlipstreamBridge.isRunning() ||
+            S3fuBridge.isRunning() ||
+            XrayBridge.isRunning() ||
+            HevSocks5Tunnel.isRunning()
 
     override fun observeConnect(onChange: (ConnectUiState) -> Unit): () -> Unit {
         listeners += onChange

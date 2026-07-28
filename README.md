@@ -101,7 +101,7 @@ bash _wsl_build_desktop_windows.sh
 Then either run from the staged jars via `run-desktop-windows.cmd`, or build a real launcher:
 
 ```powershell
-.uild-windows-exe.ps1        # jpackage --type app-image -> dist\Vaydns\Vaydns.exe
+.\build-windows-exe.ps1        # jpackage --type app-image -> dist\Vaydns\Vaydns.exe
 ```
 
 That produces a self-contained folder (launcher + trimmed JRE + jars + engines, ~275 MB) with no
@@ -111,7 +111,7 @@ WiX toolset installed. Two launchers are generated:
 - `Vaydns.exe` — the GUI, windowless
 - `Vaydns-cli.exe` — same binary with a console attached, so the flags below print output
 
-Engines are looked up in `VAYDNS_ENGINE_DIR`, next to the app (`dist\Vaydnspp\engines`), in
+Engines are looked up in `VAYDNS_ENGINE_DIR`, next to the app (`dist\Vaydns\app\engines`), in
 `engines/`, or in `%USERPROFILE%\.vaydns\engines`.
 
 ### System proxy safety
@@ -123,8 +123,8 @@ The proxy keys under `HKCU\...\Internet Settings` are shared with every other pr
   on window close, and on JVM shutdown;
 - the existing bypass list (Steam CDNs and friends) is preserved, never replaced;
 - if another tool held the proxy, connecting says so instead of silently taking over;
-- **local SOCKS/HTTP auth must be off** for system-proxy mode — Windows has nowhere to put proxy
-  credentials, so everything would come back 407. Connecting warns when it is on.
+- local SOCKS/HTTP auth is **not offered on desktop** and is forced off: Windows has nowhere to
+  put proxy credentials, so every system-routed request would come back 407.
 
 A *force-kill* (Task Manager, power loss) is the one case a shutdown hook cannot cover. It is
 handled on the next launch, and can be fixed without the GUI:
@@ -146,3 +146,21 @@ run-desktop-windows.cmd --restore-system-proxy    # undo a hijack left by a forc
 
 Set `VAYDNS_NO_SYSTEM_PROXY=1` to run as a plain local proxy and leave the machine's proxy
 settings alone — useful when another tool owns them.
+
+### Rendering / memory
+
+The desktop app renders with Skia's **software** backend by default. Creating a GPU device is the
+single biggest allocation in the process, and this UI does not need it:
+
+| `skiko.renderApi` | working set | committed |
+|---|---|---|
+| SOFTWARE (default) | 121–136 MB | 124–139 MB |
+| DIRECT3D | 223 MB | 279 MB |
+| OPENGL | 234 MB | 253 MB |
+
+GPU rendering buys smoother animation; switch back without rebuilding via
+`set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D`.
+
+The JVM itself accounts for ~85 MB of that (heap, metaspace, code cache, the CDS archive). The heap
+is capped at 256 MB with SerialGC — by default the JVM committed a 254 MB heap for ~23 MB of live
+objects, since the initial size is 1/16 of physical RAM.

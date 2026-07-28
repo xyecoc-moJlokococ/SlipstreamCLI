@@ -132,7 +132,13 @@ class DesktopPlatform(
     override fun addProfile(name: String, config: Config): ConfigProfile = store.addProfile(name, config)
     override fun deleteProfile(id: String): ConfigProfile = store.deleteProfile(id)
     override fun reorderProfiles(orderedIds: List<String>) = store.reorderProfiles(orderedIds)
-    override fun loadGlobalSettings(): GlobalSettings = store.loadGlobalSettings()
+    /**
+     * Local proxy auth is forced off on desktop — the setting is not offered here (see
+     * [app.vaydns.supportsLocalProxyAuth]), and a value left over from an imported/older config
+     * would otherwise silently make every system-proxied request fail with 407.
+     */
+    override fun loadGlobalSettings(): GlobalSettings =
+        store.loadGlobalSettings().copy(localSocksAuthEnabled = false)
     override fun saveGlobalSettings(settings: GlobalSettings) {
         store.saveGlobalSettings(settings)
         PlatformLog.fileLoggingEnabled = settings.fileLogging
@@ -172,7 +178,7 @@ class DesktopPlatform(
         lastError = ""
         publish()
         Thread({
-            val result = DesktopTunnel.start(config, store.loadGlobalSettings())
+            val result = DesktopTunnel.start(config, loadGlobalSettings())
             connecting = false
             result
                 .onSuccess { outcome ->

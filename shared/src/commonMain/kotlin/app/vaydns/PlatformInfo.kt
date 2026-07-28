@@ -29,3 +29,12 @@ fun HostPlatform.supportsSystemVpn(): Boolean = this == HostPlatform.ANDROID || 
 
 /** Android status-bar traffic notification — not used on desktop / iOS. */
 fun HostPlatform.supportsTrafficNotification(): Boolean = this == HostPlatform.ANDROID
+
+/**
+ * Whether username/password on the local proxy listener is worth offering.
+ *
+ * Not on desktop: the listener is bound to loopback only, and the whole point there is the Windows
+ * system proxy setting, which has nowhere to carry credentials — every routed request would come
+ * back 407. On Android the local SOCKS port is reachable by other apps on the device, so it stays.
+ */
+fun HostPlatform.supportsLocalProxyAuth(): Boolean = !isDesktop()

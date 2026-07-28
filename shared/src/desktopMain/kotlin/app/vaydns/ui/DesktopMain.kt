@@ -39,18 +39,17 @@ import javax.swing.Timer
 fun main() {
     installDesktopCrashHandler()
 
-    // GPU backends only. SOFTWARE feels like ~20–30 FPS. Must be set before any Skiko/Window init.
+    // Software rendering by default — a deliberate memory-over-smoothness choice.
+    //
+    // Measured on Windows: creating a GPU device costs ~90 MB of working set and ~145 MB of
+    // committed memory (DIRECT3D 223/279 MB, OPENGL 234/253 MB, SOFTWARE 133/135 MB), which
+    // dwarfs the JVM's own ~85 MB for a UI this simple. The cost is animation smoothness.
+    //
+    // Set the property to switch back without rebuilding, e.g.
+    //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D
+    // (DIRECT3D resizes more reliably than ANGLE on some Windows GPUs; macOS wants METAL.)
     if (System.getProperty("skiko.renderApi").isNullOrBlank()) {
-        val os = System.getProperty("os.name").orEmpty().lowercase()
-        System.setProperty(
-            "skiko.renderApi",
-            when {
-                // DIRECT3D resizes more reliably than ANGLE on some Win GPUs (no white dead zone).
-                os.contains("win") -> "DIRECT3D"
-                os.contains("mac") -> "METAL"
-                else -> "OPENGL"
-            }
-        )
+        System.setProperty("skiko.renderApi", "SOFTWARE")
     }
     System.setProperty("skiko.vsync.enabled", "true")
     System.setProperty("sun.java2d.d3d", "true")
@@ -115,7 +114,7 @@ fun main() {
             ) {
                 DisposableEffect(window) {
                     paintWindowDark(window)
-                    window.minimumSize = Dimension(360, 560)
+                    fitWindowToScreen(window)
 
                     // Debounce: one light paint after resize settles (~80ms).
                     // Live drag used to call setSize+revalidate+repaint twice per event → freeze.
@@ -139,6 +138,10 @@ fun main() {
                     val onWindow = object : WindowAdapter() {
                         override fun windowOpened(e: WindowEvent?) {
                             paintWindowDark(window)
+                            // Clamp here, not only in DisposableEffect: at composition time the
+                            // frame has not been given its final size yet, so anything decided
+                            // then gets overwritten when the window is realised.
+                            fitWindowToScreen(window)
                         }
 
                         override fun windowStateChanged(e: WindowEvent?) {
@@ -167,6 +170,37 @@ fun main() {
         writeDesktopCrash("main", t)
         throw t
     }
+}
+
+/**
+ * Keep the window inside the screen's usable area.
+ *
+ * The preferred size (420x780 dp) is taller than the work area on small or heavily scaled displays,
+ * and AWT will happily place a window that runs under the taskbar and off the bottom of the screen.
+ * Clamping in AWT coordinates avoids any dp/DPI conversion: `graphicsConfiguration.bounds` minus
+ * `getScreenInsets` is already the taskbar-free area in the same units as `window.size`.
+ */
+private fun fitWindowToScreen(window: java.awt.Window) {
+    val gc = window.graphicsConfiguration ?: return
+    val screen = gc.bounds
+    val insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc)
+    val maxWidth = screen.width - insets.left - insets.right
+    val maxHeight = screen.height - insets.top - insets.bottom
+    if (maxWidth <= 0 || maxHeight <= 0) return
+
+    // The floor must fit too — a 560-tall minimum on a 500-tall work area would re-break it.
+    window.minimumSize = Dimension(minOf(360, maxWidth), minOf(560, maxHeight))
+
+    val width = minOf(window.width, maxWidth)
+    val height = minOf(window.height, maxHeight)
+    if (width != window.width || height != window.height) {
+        window.setSize(width, height)
+    }
+    // Re-centre in the work area so a clamped window never starts partly off-screen.
+    window.setLocation(
+        screen.x + insets.left + (maxWidth - width) / 2,
+        screen.y + insets.top + (maxHeight - height) / 2
+    )
 }
 
 private fun installDesktopCrashHandler() {
