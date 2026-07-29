@@ -24,6 +24,7 @@ object ConfigStore {
     private const val KEY_GLOBAL_LOCAL_SOCKS_USERNAME = "globalLocalSocksUsername"
     private const val KEY_GLOBAL_LOCAL_SOCKS_PASSWORD = "globalLocalSocksPassword"
     private const val KEY_GLOBAL_LANGUAGE = "globalLanguage"
+    private const val KEY_GLOBAL_HOME_FOLDER_INDEX = "globalHomeFolderIndex"
     private const val KEY_GLOBAL_DNS_RESOLVER_POOL = "globalDnsResolverPool"
 
     fun load(context: Context): Config {
@@ -232,7 +233,8 @@ object ConfigStore {
             dnsResolverPool = DnsResolverPool.normalize(
                 p.getString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.DEFAULT_RAW)
                     ?: DnsResolverPool.DEFAULT_RAW
-            )
+            ),
+            homeFolderIndex = p.getInt(KEY_GLOBAL_HOME_FOLDER_INDEX, 0)
         )
     }
 
@@ -247,6 +249,7 @@ object ConfigStore {
             .putString(KEY_GLOBAL_LOCAL_SOCKS_PASSWORD, settings.localSocksPassword.ifBlank { randomPassword() })
             .putString(KEY_GLOBAL_LANGUAGE, settings.language.name)
             .putString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.normalize(settings.dnsResolverPool))
+            .putInt(KEY_GLOBAL_HOME_FOLDER_INDEX, settings.homeFolderIndex)
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()

@@ -244,6 +244,16 @@ enum class S(val en: String, val ru: String) {
         "Здесь нет VPN-конфигураций"
     ),
     RENAME_FOLDER("Rename", "Переименовать"),
+    EDIT_FOLDER("Edit", "Редактировать"),
+    FOLDER_NEW_TITLE("New folder", "Новая папка"),
+    FOLDER_EDIT_TITLE("Folder settings", "Настройки папки"),
+    FOLDER_NAME("Folder name", "Название папки"),
+    FOLDER_URL("Subscription link", "Ссылка на подписку"),
+    FOLDER_UPDATES_ENABLED("Allow updating", "Разрешить обновление"),
+    FOLDER_AUTO_UPDATE("Update automatically", "Обновлять автоматически"),
+    FOLDER_ALLOW_REORDER("Allow reordering profiles", "Разрешить перетаскивание профилей"),
+    FOLDER_SHOW_INFO("Show info block", "Показывать блок с информацией"),
+    MENU_NEW_FOLDER("New folder (subscription)", "Новая папка (подписка)"),
     DELETE_FOLDER_TITLE("Delete", "Удалить"),
     DELETE_FOLDER_MESSAGE(
         "The subscription and all its servers will be removed.",
@@ -261,7 +271,7 @@ enum class S(val en: String, val ru: String) {
     SUBSCRIPTION_AUTO_UPDATE("auto", "автообновление"),
     SUBSCRIPTION_REFRESH("Refresh subscription", "Обновить подписку"),
     /** Blocking overlay while a brand-new subscription is being fetched. */
-    SUBSCRIPTION_IMPORTING("Importing subscription…", "Импорт подписки…"),
+    SUBSCRIPTION_IMPORTING("Importing...", "Импортируем…"),
     SUBSCRIPTION_DELETE("Delete subscription", "Удалить подписку"),
     TOAST_SUBSCRIPTION_ADDED("Subscription imported", "Подписка импортирована"),
     TOAST_SUBSCRIPTION_UPDATED("Subscription updated", "Подписка обновлена"),

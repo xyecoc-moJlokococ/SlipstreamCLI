@@ -74,6 +74,61 @@ class SubscriptionRepository(private val storage: Storage) {
         return refresh(subscription.id)
     }
 
+    /**
+     * Create or update a folder from the editor.
+     *
+     * [id] null creates one. A changed (or new) URL forces a fetch, since the group's contents are
+     * defined by it; editing only the name or the switches just persists and leaves the servers
+     * alone. Returns an error message, or null when it worked.
+     */
+    fun save(
+        id: String?,
+        name: String,
+        rawUrl: String,
+        enabled: Boolean,
+        updateIntervalMinutes: Long,
+        allowReorder: Boolean,
+        showInfo: Boolean
+    ): String? {
+        val url = SubscriptionManager.normalizeSubscriptionUrl(rawUrl)
+            ?: return "not a subscription URL"
+        val existing = id?.let { find(it) }
+            // Re-adding a URL that is already here edits that folder instead of making a twin.
+            ?: storage.loadSubscriptions().firstOrNull { it.url == url }
+        val updated = (existing ?: Subscription(
+            id = storage.newId(),
+            name = name,
+            url = url,
+            addedAtMs = storage.nowMs()
+        )).copy(
+            name = name,
+            url = url,
+            enabled = enabled,
+            updateIntervalMinutes = updateIntervalMinutes,
+            allowReorder = allowReorder,
+            showInfo = showInfo
+        )
+        val urlChanged = existing == null || existing.url != url
+        if (existing == null) {
+            storage.saveSubscriptions(storage.loadSubscriptions() + updated)
+        } else {
+            persist(updated)
+        }
+        return if (urlChanged) refresh(updated.id).error else null
+    }
+
+    /**
+     * Reorder the folder tabs. Ids not mentioned keep their relative order at the end, so a list
+     * built from a stale UI snapshot can never drop a subscription.
+     */
+    fun reorder(orderedIds: List<String>) {
+        val all = storage.loadSubscriptions()
+        val byId = all.associateBy { it.id }
+        val moved = orderedIds.mapNotNull { byId[it] }
+        val movedIds = moved.map { it.id }.toSet()
+        storage.saveSubscriptions(moved + all.filterNot { it.id in movedIds })
+    }
+
     fun refresh(id: String): ImportResult {
         val existing = find(id)
             ?: return ImportResult(Subscription(id = id, name = "", url = ""), 0, "unknown subscription")

@@ -130,7 +130,8 @@ class FileProfileStore(
             }.getOrDefault(app.vaydns.AppLanguage.SYSTEM),
             dnsResolverPool = DnsResolverPool.normalize(
                 json.optString("dnsResolverPool", DnsResolverPool.DEFAULT_RAW)
-            )
+            ),
+            homeFolderIndex = json.optInt("homeFolderIndex", 0)
         )
     }
 
@@ -145,6 +146,7 @@ class FileProfileStore(
             .put("localSocksPassword", settings.localSocksPassword)
             .put("language", settings.language.name)
             .put("dnsResolverPool", settings.dnsResolverPool)
+            .put("homeFolderIndex", settings.homeFolderIndex)
         settingsFile.writeText(json.toString(2))
     }
 }

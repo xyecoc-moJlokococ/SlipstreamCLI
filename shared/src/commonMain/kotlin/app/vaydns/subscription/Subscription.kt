@@ -24,6 +24,13 @@ data class Subscription(
     val userAgent: String = "",
     /** Metadata from the most recent successful fetch. */
     val info: SubscriptionInfo = SubscriptionInfo(),
+    /**
+     * Whether profiles in this folder may be dragged into a different order. Off by default for a
+     * subscription: a refresh replaces the group wholesale, so a hand-made order would not survive.
+     */
+    val allowReorder: Boolean = false,
+    /** Whether the traffic / expiry card is drawn above the folder's servers. */
+    val showInfo: Boolean = true,
     /** Message from the last failed refresh; blank when the last refresh worked. */
     val lastError: String = ""
 ) {

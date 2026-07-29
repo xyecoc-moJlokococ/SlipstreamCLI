@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -437,33 +438,60 @@ fun PillSelector(
     modifier: Modifier = Modifier,
     onSelected: (Int) -> Unit,
 ) {
-    Row(
+    // One pill that slides between the options, rather than one pill per option fading in and
+    // out: the highlight is a single object travelling to where you tapped. Options are equal
+    // width, so the pill's own width is the whole travel arithmetic — translationX inside
+    // graphicsLayer measures in the layer's own size.
+    val slide by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = tween(PillSwitchMs, easing = FastOutSlowInEasing),
+        label = "pillSlide"
+    )
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(SlipnetCard)
-            .padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+            .padding(3.dp)
     ) {
-        options.forEachIndexed { index, label ->
-            val selected = index == selectedIndex
+        Box(Modifier.matchParentSize()) {
             Box(
-                modifier = Modifier
-                    .weight(1f)
+                Modifier
+                    .fillMaxWidth(1f / options.size.coerceAtLeast(1))
+                    .fillMaxHeight()
+                    .graphicsLayer { translationX = slide * size.width }
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (selected) SlipnetAccent else SlipnetCard)
-                    .handClickable { onSelected(index) }
-                    .padding(vertical = 10.dp, horizontal = 4.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = label,
-                    color = if (selected) SlipnetButtonTextPrimary else SlipnetTextSecondary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    .background(SlipnetAccent)
+            )
+        }
+        Row(Modifier.fillMaxWidth()) {
+            options.forEachIndexed { index, label ->
+                // Only the text cross-fades — it has to, since the pill arrives underneath it.
+                val textColor by animateColorAsState(
+                    targetValue = if (index == selectedIndex) {
+                        SlipnetButtonTextPrimary
+                    } else {
+                        SlipnetTextSecondary
+                    },
+                    animationSpec = tween(PillSwitchMs, easing = FastOutSlowInEasing),
+                    label = "pillText"
                 )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .handClickable { onSelected(index) }
+                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        color = textColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -554,6 +582,9 @@ private const val ProfileDragScale = 0.96f
 
 /** How long the card that just lost selection takes to go dark. Selecting itself is instant. */
 private const val SelectFadeOutMs = 350
+
+/** How long the pill takes to slide to the option you tapped. */
+private const val PillSwitchMs = 250
 
 @Composable
 fun ProfileCard(
@@ -758,7 +789,9 @@ fun BottomConnectBar(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val barHeight = 56.dp
+    // Taller than a plain 56dp strip, matching the original Android View UI — the status and
+    // traffic lines were cramped against the edges at that height.
+    val barHeight = 72.dp
     val buttonSize = 66.dp
     val totalHeight = barHeight + buttonSize / 2
     Box(
@@ -772,12 +805,12 @@ fun BottomConnectBar(
                 .height(barHeight)
                 .align(Alignment.BottomCenter)
                 .background(SlipnetCard)
-                .padding(start = 16.dp, end = 100.dp, top = 6.dp, bottom = 6.dp),
+                .padding(start = 16.dp, end = 100.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(1.dp)
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
                     status,
@@ -973,10 +1006,11 @@ fun AnimatedModalCard(
                 Column(
                     modifier = modifier
                         .fillMaxWidth()
-                        .shadow(12.dp, RoundedCornerShape(14.dp))
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(SlipnetCard)
-                        .border(1.dp, SlipnetStroke, RoundedCornerShape(14.dp))
+                        // Same skin as MenuLayer: app background, square corners, no outline,
+                        // only a drop shadow lifting it off the content. A rounded, lighter card
+                        // read as a different design language from the rest of the app.
+                        .shadow(12.dp, RectangleShape)
+                        .background(SlipnetBg)
                         // Don't dismiss when tapping the card itself.
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },

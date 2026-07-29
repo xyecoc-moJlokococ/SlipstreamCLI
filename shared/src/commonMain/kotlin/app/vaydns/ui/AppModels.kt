@@ -122,6 +122,23 @@ interface VaydnsPlatform {
     fun deleteSubscription(id: String) {}
     fun renameSubscription(id: String, name: String) {}
 
+    /**
+     * Create ([id] null) or update a folder from the editor. Networked when the URL is new or
+     * changed — call off the UI thread. Returns an error message, or null on success.
+     */
+    fun saveSubscription(
+        id: String?,
+        name: String,
+        url: String,
+        enabled: Boolean,
+        updateIntervalMinutes: Long,
+        allowReorder: Boolean,
+        showInfo: Boolean
+    ): String? = "subscriptions are not supported on this platform"
+
+    /** Persist a new folder-tab order (subscription ids only; Home's slot is a global setting). */
+    fun reorderSubscriptions(orderedIds: List<String>) {}
+
     /** True when [text] should be treated as a subscription rather than a single config. */
     fun looksLikeSubscription(text: String): Boolean = false
 }

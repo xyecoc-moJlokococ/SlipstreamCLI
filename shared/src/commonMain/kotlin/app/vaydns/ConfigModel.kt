@@ -83,7 +83,13 @@ data class GlobalSettings(
     val localSocksUsername: String,
     val localSocksPassword: String,
     val language: AppLanguage = AppLanguage.SYSTEM,
-    val dnsResolverPool: String = DnsResolverPool.DEFAULT_RAW
+    val dnsResolverPool: String = DnsResolverPool.DEFAULT_RAW,
+    /**
+     * Where the "Home" folder sits among the tabs. Subscriptions carry their own order in the
+     * subscription list, but Home is not one of them and still has to be draggable, so its slot
+     * lives here.
+     */
+    val homeFolderIndex: Int = 0
 )
 
 enum class AppLanguage { SYSTEM, EN, RU }

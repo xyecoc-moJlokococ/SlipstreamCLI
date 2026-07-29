@@ -35,6 +35,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +70,8 @@ import app.vaydns.ui.components.ProfileCard
 import app.vaydns.ui.components.SecondaryButton
 import app.vaydns.ui.components.SectionTitle
 import app.vaydns.ui.components.SlipnetCheckbox
+import app.vaydns.ui.components.FolderDraft
+import app.vaydns.ui.components.FolderEditorDialog
 import app.vaydns.ui.components.FolderTabs
 import app.vaydns.ui.components.SubscriptionCard
 import app.vaydns.ui.components.SlipnetTextField
@@ -100,7 +103,18 @@ fun HomeScreen(
     /** Id of the subscription currently being fetched, if any. */
     refreshingSubscriptionId: String? = null,
     onDeleteSubscription: (String) -> Unit = {},
-    onRenameSubscription: (String, String) -> Unit = { _, _ -> }
+    onRenameSubscription: (String, String) -> Unit = { _, _ -> },
+    /**
+     * True while the folder pager sits on the first folder. Past it a rightward swipe means "back
+     * one folder", so whoever owns the drawer needs to stand down.
+     */
+    onFirstFolder: (Boolean) -> Unit = {},
+    /** Where the Home tab sits among the folders. */
+    homeFolderIndex: Int = 0,
+    /** Create ([FolderDraft.id] null) or update a folder. */
+    onSaveFolder: (FolderDraft) -> Unit = {},
+    /** New tab order: subscription ids in order, plus the slot Home ended up in. */
+    onReorderFolders: (subscriptionIds: List<String>, homeIndex: Int) -> Unit = { _, _ -> }
 ) {
     var addMenu by remember { mutableStateOf(false) }
     var moreFor by remember { mutableStateOf<ConfigProfile?>(null) }
@@ -127,16 +141,28 @@ fun HomeScreen(
      */
     var folderMenu by remember { mutableStateOf<Subscription?>(null) }
     var folderMenuOpen by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf<Subscription?>(null) }
-    var renameText by remember { mutableStateOf("") }
+    /** Folder being created or edited; kept while the dialog animates out. */
+    var folderDraft by remember { mutableStateOf<FolderDraft?>(null) }
+    var folderEditorOpen by remember { mutableStateOf(false) }
     var deletingFolder by remember { mutableStateOf<Subscription?>(null) }
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(pageCount = { subscriptions.size + 1 })
     val folderIndex = pagerState.currentPage
-    val folderNames = remember(subscriptions) {
-        listOf(t(S.HOME_FOLDER)) + subscriptions.map { it.name.ifBlank { it.url } }
+    /** Tab the user just tapped, held until the pager finishes travelling to it. */
+    var pendingTab by remember { mutableStateOf<Int?>(null) }
+    /** True while a folder tab is being held / dragged. */
+    var tabDragging by remember { mutableStateOf(false) }
+    // Tab slots in display order; null is the Home folder. Home is not a subscription, so its
+    // position cannot live in the subscription list — it comes from settings and is spliced in.
+    val slots = remember(subscriptions, homeFolderIndex) {
+        subscriptions.toMutableList<Subscription?>()
+            .also { it.add(homeFolderIndex.coerceIn(0, subscriptions.size), null) }
+            .toList()
     }
-    val currentSubscription = subscriptions.getOrNull(folderIndex - 1)
+    val folderNames = remember(slots) {
+        slots.map { sub -> sub?.let { it.name.ifBlank { it.url } } ?: t(S.HOME_FOLDER) }
+    }
+    val currentSubscription = slots.getOrNull(folderIndex)
     val folderProfiles = remember(profiles, folderIndex, subscriptions) {
         if (currentSubscription == null) {
             profiles.filter { it.subscriptionId == null }
@@ -164,6 +190,14 @@ fun HomeScreen(
     LaunchedEffect(folderProfiles, draggingId) {
         if (draggingId == null) ordered = folderProfiles
     }
+
+    // Who may own a horizontal drag right now. Past the first folder it is the pager's; while a
+    // tab is held it is the tab's — otherwise dragging a tab rightwards pulled the drawer out
+    // from under it. Handed back when this screen goes away.
+    LaunchedEffect(folderIndex, tabDragging) {
+        onFirstFolder(folderIndex == 0 && !tabDragging)
+    }
+    DisposableEffect(Unit) { onDispose { onFirstFolder(true) } }
 
     // The menus are plain overlays, not focusable Popup windows, so back has to be
     // handled here — otherwise it would fall through and close the app.
@@ -196,8 +230,12 @@ fun HomeScreen(
             )
             FolderTabs(
                 names = folderNames,
-                selectedIndex = folderIndex,
+                // The tab the user tapped lights up on the tap, not when the pager gets there:
+                // the one-page approach below parks on the neighbour first, and following
+                // currentPage made the *middle* tab flash before the target.
+                selectedIndex = pendingTab ?: folderIndex,
                 onSelect = { target ->
+                    pendingTab = target
                     scope.launch {
                         // Always exactly one page of travel. Animating the whole distance would
                         // scroll through every folder in between and compose each on the way,
@@ -209,11 +247,32 @@ fun HomeScreen(
                             pagerState.scrollToPage(if (target > from) target - 1 else target + 1)
                         }
                         pagerState.animateScrollToPage(target)
+                        pendingTab = null
+                    }
+                },
+                onMenuDismiss = { folderMenuOpen = false },
+                onDragActive = { tabDragging = it },
+                onMove = { from, to ->
+                    // A move is expressed as the resulting slot order; whether Home moved or a
+                    // subscription did falls out of where the null lands.
+                    val next = slots.toMutableList().apply { add(to, removeAt(from)) }
+                    // Follow the folder that was open, not the slot number it used to have —
+                    // otherwise reordering silently swaps which folder you are looking at.
+                    val open = slots.getOrNull(folderIndex)
+                    val openNow = next.indexOfFirst { it?.id == open?.id }.coerceAtLeast(0)
+                    onReorderFolders(
+                        next.filterNotNull().map { it.id },
+                        next.indexOfFirst { it == null }.coerceAtLeast(0)
+                    )
+                    pendingTab = openNow
+                    scope.launch {
+                        pagerState.scrollToPage(openNow)
+                        pendingTab = null
                     }
                 },
                 onMenu = { index, x, y ->
-                    // Folder 0 is "Home" and has nothing to manage.
-                    subscriptions.getOrNull(index - 1)?.let { sub ->
+                    // The Home slot has nothing to manage.
+                    slots.getOrNull(index)?.let { sub ->
                         menuAnchorY = y
                         menuAnchorX = x
                         addMenu = false
@@ -230,7 +289,7 @@ fun HomeScreen(
                 userScrollEnabled = draggingId == null,
                 beyondViewportPageCount = 0
             ) { page ->
-                val pageSubscription = subscriptions.getOrNull(page - 1)
+                val pageSubscription = slots.getOrNull(page)
                 // Remembered, not filtered inline: this runs for every visible page on every
                 // recomposition, and a fresh list each time would make the LazyColumn re-diff
                 // its items for nothing.
@@ -273,10 +332,10 @@ fun HomeScreen(
                             .padding(horizontal = 10.dp),
                         state = rememberLazyListState(),
                         userScrollEnabled = draggingId == null,
-                        // Space for bar (56) + half button (~33) sitting above the bar.
-                        contentPadding = PaddingValues(bottom = 96.dp)
+                        // Space for bar (72) + half button (~33) sitting above the bar.
+                        contentPadding = PaddingValues(bottom = 112.dp)
                     ) {
-                        pageSubscription?.let { sub ->
+                        pageSubscription?.takeIf { it.showInfo }?.let { sub ->
                             item(key = "subscription") {
                                 SubscriptionCard(
                                     subscription = sub,
@@ -345,7 +404,10 @@ fun HomeScreen(
                         dragOffsetY = if (isDragging) dragOffsetY else 0f,
                         isDragging = isDragging,
                         gapOffsetY = gapOffset,
-                        enableReorder = pageSubscription == null && pageDisplayed.size > 1,
+                        // A subscription group is replaced wholesale on refresh, so a hand-made
+                        // order only survives if the folder is set to keep one.
+                        enableReorder = pageDisplayed.size > 1 &&
+                            (pageSubscription == null || pageSubscription.allowReorder),
                         onLongPressDragStart = {
                             moreFor = null
                             draggingId = profile.id
@@ -369,17 +431,29 @@ fun HomeScreen(
                             if (draggingId != profile.id) return@ProfileCard
                             val from = dragFromIndex
                             val to = gapTargetIndex
-                            if (from >= 0 && to >= 0 && from != to && from in ordered.indices) {
-                                val next = ordered.toMutableList()
-                                val item = next.removeAt(from)
-                                next.add(to.coerceIn(0, next.size), item)
-                                ordered = next
-                                onReorder(next.map { it.id })
+                            scope.launch {
+                                // Ride the card down into its slot rather than teleporting it
+                                // there: clearing the offset in one frame read as a snap-back.
+                                Animatable(dragOffsetY).animateTo(
+                                    targetValue = if (from >= 0 && to >= 0) {
+                                        (to - from) * slotPitchPx
+                                    } else {
+                                        0f
+                                    },
+                                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                ) { dragOffsetY = value }
+                                if (from >= 0 && to >= 0 && from != to && from in ordered.indices) {
+                                    val next = ordered.toMutableList()
+                                    val item = next.removeAt(from)
+                                    next.add(to.coerceIn(0, next.size), item)
+                                    ordered = next
+                                    onReorder(next.map { it.id })
+                                }
+                                draggingId = null
+                                dragFromIndex = -1
+                                gapTargetIndex = -1
+                                dragOffsetY = 0f
                             }
-                            draggingId = null
-                            dragFromIndex = -1
-                            gapTargetIndex = -1
-                            dragOffsetY = 0f
                         },
                         onLongPressDragCancel = {
                             draggingId = null
@@ -403,21 +477,19 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
-        renaming?.let { sub ->
-            AnimatedModalCard(
-                visible = true,
-                onDismissRequest = { renaming = null },
-                modifier = Modifier.widthIn(max = 360.dp)
-            ) {
-                Text(t(S.RENAME_FOLDER), color = SlipnetTextPrimary, fontSize = 16.sp)
-                Spacer(Modifier.height(10.dp))
-                SlipnetTextField(renameText, { renameText = it })
-                Spacer(Modifier.height(12.dp))
-                PrimaryButton(t(S.SAVE_BTN), {
-                    onRenameSubscription(sub.id, renameText.trim())
-                    renaming = null
-                })
-            }
+        // [folderDraft] holds the content and is never cleared on dismiss — clearing it dropped the
+        // card out of composition on the same frame, so its exit animation never got to run and
+        // the dialog just vanished. Only [folderEditorOpen] flips, like the delete dialog.
+        folderDraft?.let { draft ->
+            FolderEditorDialog(
+                visible = folderEditorOpen,
+                draft = draft,
+                onDismiss = { folderEditorOpen = false },
+                onSave = {
+                    onSaveFolder(it)
+                    folderEditorOpen = false
+                }
+            )
         }
         ConfirmDialog(
             visible = deletingFolder != null,
@@ -443,6 +515,11 @@ fun HomeScreen(
             // separate "import subscription" twins that did the exact same thing.
             MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
             MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
+            MenuRow(t(S.MENU_NEW_FOLDER)) {
+                addMenu = false
+                folderDraft = FolderDraft()
+                folderEditorOpen = true
+            }
         }
         // [menuProfile] keeps the rows populated while the panel fades out; only
         // [moreFor] is cleared on dismiss.
@@ -465,10 +542,10 @@ fun HomeScreen(
                 anchorX = menuAnchorX,
                 onDismiss = { folderMenuOpen = false }
             ) {
-                MenuRow(t(S.RENAME_FOLDER)) {
+                MenuRow(t(S.EDIT_FOLDER)) {
                     folderMenuOpen = false
-                    renameText = sub.name
-                    renaming = sub
+                    folderDraft = FolderDraft.of(sub)
+                    folderEditorOpen = true
                 }
                 MenuRow(t(S.SUBSCRIPTION_DELETE)) {
                     folderMenuOpen = false
@@ -671,8 +748,8 @@ fun ProfileEditorScreen(
     onSave: () -> Unit,
     onDelete: (() -> Unit)?,
     onLocalDns: () -> Unit,
-    onFormatXray: () -> Unit,
-    onValidateXray: () -> Unit
+    /** Pretty-printer for a pasted Xray config; returns null when the text is not JSON. */
+    formatXray: (String) -> String? = { null }
 ) {
     val c = draft.config
     val protocolIndex = when (c.protocol) {
@@ -723,8 +800,7 @@ fun ProfileEditorScreen(
                 Config.TunnelProtocol.XRAY -> XrayEditor(
                     c,
                     onChange = { onChange(draft.copy(config = it)) },
-                    onFormat = onFormatXray,
-                    onValidate = onValidateXray
+                    formatJson = formatXray
                 )
             }
 
@@ -937,22 +1013,24 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
 private fun XrayEditor(
     c: Config,
     onChange: (Config) -> Unit,
-    onFormat: () -> Unit,
-    onValidate: () -> Unit
+    /** Pretty-printer; returns null when the text is not JSON. */
+    formatJson: (String) -> String?
 ) {
-    // Only Format/Validate + bare JSON field — no "Xray configuration" / hint labels.
-    Row(Modifier.fillMaxWidth()) {
-        SecondaryButton(t(S.XRAY_FORMAT_BTN), onFormat, Modifier.weight(1f))
-        Spacer(Modifier.width(8.dp))
-        SecondaryButton(t(S.XRAY_VALIDATE_BTN), onValidate, Modifier.weight(1f))
-    }
-    Spacer(Modifier.height(8.dp))
+    // Bare JSON field, nothing else. Formatting happens on paste and validation on save, so
+    // there is nothing left for a "Format" / "Check" button to do that the user must remember.
     SlipnetTextField(
         value = c.xrayConfigJson,
-        onValueChange = { onChange(c.copy(xrayConfigJson = it)) },
+        onValueChange = { typed ->
+            // More than one character arriving at once is a paste, not typing — that is the
+            // moment to tidy it up. Formatting on every keystroke would fight the caret.
+            val pasted = typed.length - c.xrayConfigJson.length > 1
+            val next = if (pasted) formatJson(typed) ?: typed else typed
+            onChange(c.copy(xrayConfigJson = next))
+        },
         singleLine = false,
         minLines = 16,
         monospace = true,
-        hint = ""
+        // Says what belongs here without a label taking up a line.
+        hint = "{}"
     )
 }

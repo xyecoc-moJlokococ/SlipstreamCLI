@@ -254,6 +254,14 @@ object XrayConfigBuilder {
             val inbound = inbounds.optJSONObject(i) ?: continue
             if (!inbound.optString("protocol").equals("socks", ignoreCase = true)) continue
             inbound.put("listen", "127.0.0.1").put("port", socksPort)
+            // Force no-auth too. Panel configs routinely ship this inbound with
+            // `auth: "password"` + accounts for desktop clients, and the TUN bridge that dials it
+            // is ours and offers no credentials — Xray then rejects every single connection with
+            // "proxy/socks: no matching auth method", so the tunnel comes up and carries nothing.
+            val settings = inbound.optJSONObject("settings")
+                ?: JSONObject().also { inbound.put("settings", it) }
+            settings.put("auth", "noauth")
+            settings.remove("accounts")
             return root.toString(2)
         }
         inbounds.put(socksInbound(socksPort))

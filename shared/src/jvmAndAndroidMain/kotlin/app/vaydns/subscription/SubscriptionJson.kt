@@ -16,6 +16,8 @@ object SubscriptionJson {
         .put("updateIntervalMinutes", sub.updateIntervalMinutes)
         .put("userAgent", sub.userAgent)
         .put("lastError", sub.lastError)
+        .put("allowReorder", sub.allowReorder)
+        .put("showInfo", sub.showInfo)
         .put(
             "info",
             JSONObject()
@@ -48,6 +50,8 @@ object SubscriptionJson {
             ),
             userAgent = json.optString("userAgent"),
             lastError = json.optString("lastError"),
+            allowReorder = json.optBoolean("allowReorder", false),
+            showInfo = json.optBoolean("showInfo", true),
             info = SubscriptionInfo(
                 uploadBytes = info.optLong("uploadBytes", 0),
                 downloadBytes = info.optLong("downloadBytes", 0),

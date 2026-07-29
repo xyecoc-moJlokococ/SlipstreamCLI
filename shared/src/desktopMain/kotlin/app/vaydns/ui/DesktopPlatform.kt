@@ -468,6 +468,20 @@ class DesktopPlatform(
 
     override fun renameSubscription(id: String, name: String) = subscriptions.rename(id, name)
 
+    override fun saveSubscription(
+        id: String?,
+        name: String,
+        url: String,
+        enabled: Boolean,
+        updateIntervalMinutes: Long,
+        allowReorder: Boolean,
+        showInfo: Boolean
+    ): String? = subscriptions.save(
+        id, name, url, enabled, updateIntervalMinutes, allowReorder, showInfo
+    )
+
+    override fun reorderSubscriptions(orderedIds: List<String>) = subscriptions.reorder(orderedIds)
+
     override fun looksLikeSubscription(text: String): Boolean =
         app.vaydns.subscription.SubscriptionManager.looksLikeSubscription(text)
 }
