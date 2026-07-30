@@ -54,7 +54,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="sub" />
-                <data android:scheme="vaydns" />
+                <data android:scheme="smugly" />
             </intent-filter>
         </activity>
 

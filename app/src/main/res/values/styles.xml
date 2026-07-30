@@ -4,10 +4,10 @@
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
-        <item name="android:windowBackground">@color/slipnet_bg</item>
-        <item name="android:colorAccent">@color/slipnet_accent</item>
-        <item name="android:textColorPrimary">@color/slipnet_text_primary</item>
-        <item name="android:textColorSecondary">@color/slipnet_text_secondary</item>
+        <item name="android:windowBackground">@color/smugly_bg</item>
+        <item name="android:colorAccent">@color/smugly_accent</item>
+        <item name="android:textColorPrimary">@color/smugly_text_primary</item>
+        <item name="android:textColorSecondary">@color/smugly_text_secondary</item>
         <!-- Android 15+ (targetSdk 35) forces edge-to-edge and ignores statusBarColor /
              navigationBarColor / setDecorFitsSystemWindows(true) unless this is set. The UI here
              is built around solid system bar backgrounds (see MainActivity#screenRoot), so opt

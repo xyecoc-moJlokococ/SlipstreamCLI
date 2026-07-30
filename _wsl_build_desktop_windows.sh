@@ -7,19 +7,19 @@
 set -euo pipefail
 
 SRC=/mnt/c/Users/newbie/Documents/vphysics-compile/SlipstreamCLI
-DST=/home/reil/SlipstreamCLI-ui
+DST=/home/reil/Smugly-ui
 
+mkdir -p "$DST"
 if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
     --exclude '.gradle' --exclude 'desktop/build' --exclude 'shared/build' \
     --exclude 'app/build' --exclude 'build/' --exclude '.git' --exclude 'engines' \
     "$SRC/" "$DST/"
 else
-  rm -rf "$DST/shared/src" "$DST/desktop/src"
-  cp -a "$SRC/shared/src" "$DST/shared/"
-  cp -a "$SRC/desktop/src" "$DST/desktop/"
-  cp -a "$SRC/shared/build.gradle.kts" "$DST/shared/"
-  cp -a "$SRC/desktop/build.gradle.kts" "$DST/desktop/"
+  rm -rf "$DST"
+  mkdir -p "$DST"
+  cp -a "$SRC/." "$DST/"
+  rm -rf "$DST/app/build" "$DST/shared/build" "$DST/desktop/build" "$DST/build" "$DST/.gradle" "$DST/engines" 2>/dev/null || true
 fi
 
 echo "sdk.dir=/home/reil/android-sdk" > "$DST/local.properties"

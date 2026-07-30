@@ -1,16 +1,16 @@
 <resources>
     <!-- Palette aligned with vpn-bot miniapp: dark red accent on near-black surfaces. -->
-    <color name="slipnet_bg">#111111</color>
-    <color name="slipnet_card">#1C1C1C</color>
-    <color name="slipnet_card_soft">#242424</color>
-    <color name="slipnet_input">#181818</color>
-    <color name="slipnet_stroke">#2E2E2E</color>
+    <color name="smugly_bg">#111111</color>
+    <color name="smugly_card">#1C1C1C</color>
+    <color name="smugly_card_soft">#242424</color>
+    <color name="smugly_input">#181818</color>
+    <color name="smugly_stroke">#2E2E2E</color>
     <!-- Brighter red for controls (miniapp accent2); pressed uses deeper accent. -->
-    <color name="slipnet_accent">#C0392B</color>
-    <color name="slipnet_accent_pressed">#9B1B1B</color>
-    <color name="slipnet_text_primary">#E0E0E0</color>
-    <color name="slipnet_text_secondary">#B0B0B0</color>
-    <color name="slipnet_text_muted">#7A7A7A</color>
+    <color name="smugly_accent">#C0392B</color>
+    <color name="smugly_accent_pressed">#9B1B1B</color>
+    <color name="smugly_text_primary">#E0E0E0</color>
+    <color name="smugly_text_secondary">#B0B0B0</color>
+    <color name="smugly_text_muted">#7A7A7A</color>
     <!-- On dark-red primary buttons. -->
-    <color name="slipnet_button_text_primary">#FFFFFF</color>
+    <color name="smugly_button_text_primary">#FFFFFF</color>
 </resources>

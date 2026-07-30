@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Vaydns"
+rootProject.name = "Smugly"
 include(":shared")
 include(":app")
 include(":desktop")

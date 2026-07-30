@@ -5,7 +5,7 @@ rem Nothing is installed: it uses whatever JDK is already on the machine.
 
 set "APPDIR=%~dp0"
 set "LIB=%APPDIR%desktop\build\windows-runtime\lib"
-set "VAYDNS_ENGINE_DIR=%APPDIR%engines"
+set "SMUGLY_ENGINE_DIR=%APPDIR%engines"
 
 if not exist "%LIB%" (
   echo Runtime not staged. Run this first, from WSL:
@@ -30,5 +30,5 @@ if not defined JAVA_EXE (
   -Dsun.awt.noerasebackground=true ^
   -Dsun.awt.erasebackgroundonresize=false ^
   -Dfile.encoding=UTF-8 ^
-  -cp "%LIB%\*" app.vaydns.ui.DesktopMainKt %*
+  -cp "%LIB%\*" app.smugly.ui.DesktopMainKt %*
 endlocal

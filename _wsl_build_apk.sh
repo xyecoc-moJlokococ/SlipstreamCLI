@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SRC=/mnt/c/Users/newbie/Documents/vphysics-compile/SlipstreamCLI
-DST=/home/reil/SlipstreamCLI-ui
+DST=/home/reil/Smugly-ui
 mkdir -p "$DST"
 # Prefer rsync; fall back to cp (no rsync in minimal images).
 if command -v rsync >/dev/null 2>&1; then

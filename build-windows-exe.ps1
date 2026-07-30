@@ -1,10 +1,10 @@
-# Build a real, double-clickable Vaydns.exe.
+# Build a real, double-clickable Smugly.exe.
 #
 # Uses jpackage --type app-image: a self-contained folder with the launcher, a trimmed JRE and all
 # jars. No installer, no admin rights, nothing registered with Windows — the folder can be copied
 # or deleted freely. (An .msi would additionally need the WiX toolset installed.)
 #
-# The launchers enable AppCDS (-XX:+AutoCreateSharedArchive): the first run writes vaydns.jsa next
+# The launchers enable AppCDS (-XX:+AutoCreateSharedArchive): the first run writes smugly.jsa next
 # to the jars, every later run memory-maps the already-parsed classes instead of loading them from
 # scratch. That is what makes the first click on a menu item — which pulls in a whole screen's worth
 # of Compose classes — stop being noticeably slower than the rest.
@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $lib  = Join-Path $root 'desktop\build\windows-runtime\lib'
 $dest = Join-Path $root 'dist'
-$image = Join-Path $dest 'Vaydns'
+$image = Join-Path $dest 'Smugly'
 $engines = Join-Path $root 'engines'
 
 if (-not (Test-Path $lib)) {
@@ -63,23 +63,23 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 # It deliberately gets its own java-options with **no** shared archive: AutoCreateSharedArchive
 # writes the archive from whatever the first clean exit happened to load, and a short CLI run loads
 # almost none of the UI. Letting it win would leave the GUI with a near-useless archive.
-$cliProps = Join-Path $env:TEMP 'vaydns-cli-launcher.properties'
+$cliProps = Join-Path $env:TEMP 'smugly-cli-launcher.properties'
 @(
     'win-console=true',
-    'main-class=app.vaydns.desktop.MainKt',
+    'main-class=app.smugly.desktop.MainKt',
     'main-jar=desktop.jar',
     'java-options=-Dfile.encoding=UTF-8'
 ) | Set-Content -Path $cliProps -Encoding ascii
 
 & $jpackage `
     --type app-image `
-    --name Vaydns `
+    --name Smugly `
     --app-version 1.0.0 `
-    --vendor Vaydns `
-    --description 'Slipstream / S3 / Xray client' `
+    --vendor Smugly `
+    --description 'Smugly multi-protocol client' `
     --input $lib `
     --main-jar desktop.jar `
-    --main-class app.vaydns.desktop.MainKt `
+    --main-class app.smugly.desktop.MainKt `
     --dest $dest `
     --jlink-options '--strip-debug --no-man-pages --no-header-files --generate-cds-archive' `
     --java-options '-Dskiko.vsync.enabled=true' `
@@ -88,13 +88,13 @@ $cliProps = Join-Path $env:TEMP 'vaydns-cli-launcher.properties'
     --java-options '-Dsun.awt.erasebackgroundonresize=false' `
     --java-options '-Dfile.encoding=UTF-8' `
     --java-options '-XX:+AutoCreateSharedArchive' `
-    --java-options '-XX:SharedArchiveFile=$APPDIR\vaydns.jsa' `
+    --java-options '-XX:SharedArchiveFile=$APPDIR\smugly.jsa' `
     --java-options '-Xms16m' `
     --java-options '-Xmx256m' `
     --java-options '-XX:+UseSerialGC' `
     --java-options '-XX:MaxMetaspaceSize=192m' `
     --java-options '-XX:ReservedCodeCacheSize=96m' `
-    --add-launcher "Vaydns-cli=$cliProps"
+    --add-launcher "Smugly-cli=$cliProps"
 
 if ($LASTEXITCODE -ne 0) { throw "jpackage failed ($LASTEXITCODE)" }
 
@@ -110,6 +110,6 @@ if (Test-Path $engines) {
 }
 
 Write-Host ''
-Write-Host "BUILT: $(Join-Path $image 'Vaydns.exe')"
-Write-Host "  GUI : Vaydns.exe"
-Write-Host "  CLI : Vaydns-cli.exe --engines | --show-system-proxy | --restore-system-proxy | --connect"
+Write-Host "BUILT: $(Join-Path $image 'Smugly.exe')"
+Write-Host "  GUI : Smugly.exe"
+Write-Host "  CLI : Smugly-cli.exe --engines | --show-system-proxy | --restore-system-proxy | --connect"

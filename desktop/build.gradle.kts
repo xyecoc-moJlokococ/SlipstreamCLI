@@ -65,7 +65,7 @@ tasks.register<Sync>("stageWindowsRuntime") {
 
 compose.desktop {
     application {
-        mainClass = "app.vaydns.ui.DesktopMainKt"
+        mainClass = "app.smugly.ui.DesktopMainKt"
         // GPU Skiko + kill Windows white erase on resize (AWT default bg is white).
         jvmArgs += listOf(
             "-Dskiko.renderApi=DIRECT3D",
@@ -80,7 +80,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi,
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb
             )
-            packageName = "Vaydns"
+            packageName = "Smugly"
             packageVersion = "1.0.0"
         }
     }

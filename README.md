@@ -1,10 +1,10 @@
-# Vaydns / SlipstreamCLI
+# Smugly
 
 Multiplatform client around Slipstream DNS tunnel, S3 dead-drop (s3fu), and Xray.
 
 ## Shared UI (Compose Multiplatform)
 
-**One Compose UI** (`VaydnsApp`) for Android, Windows/desktop, and iOS — same dark palette,
+**One Compose UI** (`SmuglyApp`) for Android, Windows/desktop, and iOS — same dark palette,
 Home / Settings / Diagnostics / Profile editor, drawer, connect bar.
 
 | Target | Module | UI | Tunnel |
@@ -30,7 +30,7 @@ iosApp/     Notes for Xcode embedding
 - `Config`, profiles, strings (`S` / `t`)
 - SOCKS / reaper / recovery watches
 - Compose screens + theme (`ui/`)
-- `VaydnsPlatform` bridge (profiles, connect, clipboard, …)
+- `SmuglyPlatform` bridge (profiles, connect, clipboard, …)
 
 ## Build
 
@@ -53,7 +53,7 @@ iosApp/     Notes for Xcode embedding
 
 ```bash
 ./gradlew :shared:linkReleaseFrameworkIosArm64
-# Embed VaydnsShared.framework and call MainViewController()
+# Embed SmuglyShared.framework and call MainViewController()
 ```
 
 See `iosApp/README.md`.
@@ -101,18 +101,18 @@ bash _wsl_build_desktop_windows.sh
 Then either run from the staged jars via `run-desktop-windows.cmd`, or build a real launcher:
 
 ```powershell
-.\build-windows-exe.ps1        # jpackage --type app-image -> dist\Vaydns\Vaydns.exe
+.\build-windows-exe.ps1        # jpackage --type app-image -> dist\Smugly\Smugly.exe
 ```
 
 That produces a self-contained folder (launcher + trimmed JRE + jars + engines, ~275 MB) with no
 installer and no admin rights — copy or delete it freely. An `.msi` would additionally need the
 WiX toolset installed. Two launchers are generated:
 
-- `Vaydns.exe` — the GUI, windowless
-- `Vaydns-cli.exe` — same binary with a console attached, so the flags below print output
+- `Smugly.exe` — the GUI, windowless
+- `Smugly-cli.exe` — same binary with a console attached, so the flags below print output
 
-Engines are looked up in `VAYDNS_ENGINE_DIR`, next to the app (`dist\Vaydns\app\engines`), in
-`engines/`, or in `%USERPROFILE%\.vaydns\engines`.
+Engines are looked up in `SMUGLY_ENGINE_DIR`, next to the app (`dist\Smugly\app\engines`), in
+`engines/`, or in `%USERPROFILE%\.smugly\engines`.
 
 ### System proxy safety
 
@@ -133,7 +133,7 @@ handled on the next launch, and can be fixed without the GUI:
 run-desktop-windows.cmd --restore-system-proxy
 ```
 
-An engine orphaned the same way is reaped on the next connect via `%USERPROFILE%\.vaydns\engines\<name>.pid`.
+An engine orphaned the same way is reaped on the next connect via `%USERPROFILE%\.smugly\engines\<name>.pid`.
 
 ### Headless / diagnostics
 
@@ -144,7 +144,7 @@ run-desktop-windows.cmd --show-system-proxy       # current setting + whether a 
 run-desktop-windows.cmd --restore-system-proxy    # undo a hijack left by a force-kill
 ```
 
-Set `VAYDNS_NO_SYSTEM_PROXY=1` to run as a plain local proxy and leave the machine's proxy
+Set `SMUGLY_NO_SYSTEM_PROXY=1` to run as a plain local proxy and leave the machine's proxy
 settings alone — useful when another tool owns them.
 
 ### Rendering / memory

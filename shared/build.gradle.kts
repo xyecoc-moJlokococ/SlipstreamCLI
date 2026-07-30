@@ -36,7 +36,7 @@ kotlin {
         iosSimulatorArm64()
     ).forEach { target ->
         target.binaries.framework {
-            baseName = "VaydnsShared"
+            baseName = "SmuglyShared"
             isStatic = true
         }
     }
@@ -106,7 +106,7 @@ kotlin {
 }
 
 android {
-    namespace = "app.vaydns.shared"
+    namespace = "app.smugly.shared"
     compileSdk = 36
     defaultConfig {
         minSdk = 24
@@ -122,7 +122,7 @@ android {
 
 compose.resources {
     publicResClass = true
-    packageOfResClass = "app.vaydns.shared.generated.resources"
+    packageOfResClass = "app.smugly.shared.generated.resources"
     generateResClass = always
 }
 

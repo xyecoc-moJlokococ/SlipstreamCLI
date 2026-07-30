@@ -22,11 +22,11 @@ fun abiFromTarget(target: String): String = when {
 }
 
 android {
-    namespace = "app.vaydns"
+    namespace = "app.smugly"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.vaydns"
+        applicationId = "app.smugly"
         minSdk = minSdkVersion
         targetSdk = 35
         versionCode = 1

@@ -3,18 +3,18 @@
 # Use this build to judge real UI performance; assembleDebug is 2-3x slower by nature.
 set -euo pipefail
 SRC=/mnt/c/Users/newbie/Documents/vphysics-compile/SlipstreamCLI
-DST=/home/reil/SlipstreamCLI-ui
+DST=/home/reil/Smugly-ui
+mkdir -p "$DST"
 if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
     --exclude '.gradle' --exclude 'desktop/build' --exclude 'shared/build' \
     --exclude 'app/build' --exclude 'build/' --exclude '.git' "$SRC/" "$DST/"
 else
-  rm -rf "$DST/app/src" "$DST/shared" "$DST/desktop" 2>/dev/null || true
-  cp -a "$SRC/app/src" "$DST/app/"
-  cp -a "$SRC/shared" "$SRC/desktop" "$DST/" 2>/dev/null || true
-  cp -a "$SRC/app/build.gradle.kts" "$DST/app/build.gradle.kts"
-  cp -a "$SRC/build.gradle.kts" "$SRC/settings.gradle.kts" "$SRC/gradle.properties" "$DST/"
-  rm -rf "$DST/shared/build" "$DST/desktop/build" 2>/dev/null || true
+  # Full tree copy when rsync is unavailable (keep native libs staging below).
+  rm -rf "$DST"
+  mkdir -p "$DST"
+  cp -a "$SRC/." "$DST/"
+  rm -rf "$DST/app/build" "$DST/shared/build" "$DST/desktop/build" "$DST/build" "$DST/.gradle" 2>/dev/null || true
 fi
 if [ -f "$SRC/app/build/rustJniLibs/android/arm64-v8a/libslipstream.so" ]; then
   mkdir -p "$DST/app/build/rustJniLibs/android/arm64-v8a"

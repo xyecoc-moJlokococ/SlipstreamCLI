@@ -1,6 +1,6 @@
 # iOS target
 
-Shared module `:shared` builds `VaydnsShared.framework` with:
+Shared module `:shared` builds `SmuglyShared.framework` with:
 
 - Pure core (`Config`, SOCKS, recovery watches, …)
 - **Compose Multiplatform UI** — call `MainViewController()` from Swift/UIKit
@@ -17,13 +17,13 @@ cd SlipstreamCLI
 Typical output:
 
 ```
-shared/build/bin/iosArm64/releaseFramework/VaydnsShared.framework
+shared/build/bin/iosArm64/releaseFramework/SmuglyShared.framework
 ```
 
 ### Host app
 
 ```swift
-import VaydnsShared
+import SmuglyShared
 import UIKit
 
 @main
