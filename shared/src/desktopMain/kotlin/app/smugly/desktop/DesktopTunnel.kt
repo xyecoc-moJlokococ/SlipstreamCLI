@@ -167,7 +167,9 @@ object DesktopTunnel {
         }
         Config.TunnelProtocol.XRAY -> {
             val exe = EngineBinaries.require("xray")
+            ensureXrayGeodata(exe.parentFile)
             val cfg = writeXrayConfig(config, socksPort)
+            // workingDir = engines/: xray resolves geoip.dat / geosite.dat relative to cwd.
             EngineSpec("xray", listOf(exe.absolutePath, "run", "-c", cfg.absolutePath), exe.parentFile)
         }
         Config.TunnelProtocol.SLIPSTREAM -> error(
@@ -239,6 +241,42 @@ object DesktopTunnel {
 
     private fun tomlString(value: String): String =
         "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /**
+     * Profiles from panels almost always use `geoip:` / `geosite:` routing tags. Xray loads
+     * `geoip.dat` and `geosite.dat` from its working directory (the engines folder). Missing
+     * files used to fail start with exit 23 and a hard-to-read geodata path error.
+     *
+     * If they are absent next to the binary, copy from the repo assets / known locations so a
+     * fresh install or an incomplete package still works once.
+     */
+    private fun ensureXrayGeodata(enginesDir: File?) {
+        if (enginesDir == null) return
+        enginesDir.mkdirs()
+        for (name in listOf("geoip.dat", "geosite.dat")) {
+            val dest = File(enginesDir, name)
+            if (dest.isFile && dest.length() > 1024L) continue
+            val src = EngineBinaries.findAsset(name) ?: continue
+            runCatching {
+                src.copyTo(dest, overwrite = true)
+                PlatformLog.log(
+                    app.smugly.platform.LogLevel.INFO,
+                    "DesktopTunnel",
+                    "seeded $name -> ${dest.absolutePath}"
+                )
+            }
+        }
+        val missing = listOf("geoip.dat", "geosite.dat")
+            .filter { !File(enginesDir, it).isFile }
+        if (missing.isNotEmpty()) {
+            PlatformLog.log(
+                app.smugly.platform.LogLevel.WARN,
+                "DesktopTunnel",
+                "Xray geodata missing in ${enginesDir.absolutePath}: ${missing.joinToString()}. " +
+                    "Profiles with geoip:/geosite: rules will fail until these files are placed next to xray.exe."
+            )
+        }
+    }
 }
 
 /**
@@ -269,6 +307,30 @@ object EngineBinaries {
             ?: candidates.firstOrNull { it.isFile }
     }
 
+    /**
+     * Locate a non-executable asset that rides next to the engines (geoip.dat, geosite.dat).
+     * Same search order as [find], plus the repo's `xray-mobile/assets/` for local builds.
+     */
+    fun findAsset(fileName: String): File? {
+        val candidates = buildList {
+            System.getenv("SMUGLY_ENGINE_DIR")?.let { add(File(it, fileName)) }
+            appDir()?.let {
+                add(File(it, fileName))
+                add(File(File(it, "engines"), fileName))
+            }
+            add(File(File(AppPaths.filesDir(), "engines"), fileName))
+            add(File(System.getProperty("user.dir"), "engines/$fileName"))
+            // Checked out alongside the project.
+            add(File(System.getProperty("user.dir"), "xray-mobile/assets/$fileName"))
+            // jpackage layout: app/ is cwd-ish; sources live two levels up only in the repo.
+            appDir()?.parentFile?.parentFile?.let {
+                add(File(it, "xray-mobile/assets/$fileName"))
+                add(File(it, "engines/$fileName"))
+            }
+        }
+        return candidates.firstOrNull { it.isFile && it.length() > 1024L }
+    }
+
     fun require(name: String): File = find(name) ?: throw IllegalStateException(
         "engine '$name${exeSuffix}' not found. Put it in ${File(AppPaths.filesDir(), "engines")} " +
             "or set SMUGLY_ENGINE_DIR."
@@ -281,8 +343,15 @@ object EngineBinaries {
     }.getOrNull()
 
     /** Engines present right now — used by Diagnostics so a missing binary is obvious. */
-    fun report(): String = listOf("s3fu", "xray").joinToString("\n") { name ->
-        val f = find(name)
-        if (f != null) "$name: ${f.absolutePath}" else "$name: NOT FOUND"
+    fun report(): String = buildString {
+        listOf("s3fu", "xray").forEach { name ->
+            val f = find(name)
+            appendLine(if (f != null) "$name: ${f.absolutePath}" else "$name: NOT FOUND")
+        }
+        listOf("geoip.dat", "geosite.dat").forEach { name ->
+            val f = findAsset(name)
+            append(if (f != null) "$name: ${f.absolutePath}" else "$name: NOT FOUND")
+            appendLine()
+        }
     }
 }

@@ -51,7 +51,7 @@ enum class S(val en: String, val ru: String) {
     PROTOCOL_CDNFU("CDN (cdn-fuckup)", "CDN (cdn-fuckup)"),
     CDN_URL("CDN URL", "CDN URL"),
     CDN_PSK("PSK", "PSK"),
-    CDN_PSK_HINT("passphrase (blank = VLESS)", "парольная фраза (пусто = VLESS)"),
+    CDN_PSK_HINT("passphrase", "парольная фраза"),
     CDN_MIMIC("Path mimicry", "Мимикрия путей"),
     /** Profile-card subtitle: the component actually carrying the traffic. */
     PROTOCOL_XRAY_CORE("Xray-core", "Xray-core"),
@@ -258,7 +258,7 @@ enum class S(val en: String, val ru: String) {
     FOLDER_AUTO_UPDATE("Update automatically", "Обновлять автоматически"),
     FOLDER_ALLOW_REORDER("Allow reordering profiles", "Разрешить перетаскивание профилей"),
     FOLDER_SHOW_INFO("Show info block", "Показывать блок с информацией"),
-    MENU_NEW_FOLDER("New folder (subscription)", "Новая папка (подписка)"),
+    MENU_NEW_FOLDER("New folder", "Новая папка"),
     DELETE_FOLDER_TITLE("Delete", "Удалить"),
     DELETE_FOLDER_MESSAGE(
         "The subscription and all its servers will be removed.",

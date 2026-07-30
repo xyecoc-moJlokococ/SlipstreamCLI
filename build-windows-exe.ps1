@@ -104,12 +104,26 @@ if (Test-Path $engines) {
     $target = Join-Path $image 'app\engines'
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     Copy-Item (Join-Path $engines '*.exe') $target -Force
-    Write-Host "engines copied: $((Get-ChildItem $target -Filter *.exe).Name -join ', ')"
+    # Xray routing (geoip:/geosite:) needs these next to xray.exe (working dir = engines/).
+    foreach ($dat in @('geoip.dat', 'geosite.dat')) {
+        $src = Join-Path $engines $dat
+        if (-not (Test-Path $src)) {
+            $fallback = Join-Path $root "xray-mobile\assets\$dat"
+            if (Test-Path $fallback) { $src = $fallback }
+        }
+        if (Test-Path $src) {
+            Copy-Item $src $target -Force
+        } else {
+            Write-Warning "missing $dat - Xray geoip/geosite routing will fail to start"
+        }
+    }
+    $names = (Get-ChildItem $target -File | ForEach-Object { $_.Name }) -join ', '
+    Write-Host "engines copied: $names"
 } else {
     Write-Warning "no engines\ folder - the app will start but cannot connect until engines are built"
 }
 
 Write-Host ''
 Write-Host "BUILT: $(Join-Path $image 'Smugly.exe')"
-Write-Host "  GUI : Smugly.exe"
-Write-Host "  CLI : Smugly-cli.exe --engines | --show-system-proxy | --restore-system-proxy | --connect"
+Write-Host '  GUI : Smugly.exe'
+Write-Host '  CLI : Smugly-cli.exe --engines | --show-system-proxy | --restore-system-proxy | --connect'

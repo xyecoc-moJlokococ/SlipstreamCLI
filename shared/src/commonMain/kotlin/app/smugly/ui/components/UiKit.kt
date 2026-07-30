@@ -723,13 +723,14 @@ fun ProfileCard(
             )
         }
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
-            Text(
-                name,
+            // Flag emojis in profile titles (🇪🇸 Испания) become letter-pairs on Windows;
+            // ProfileNameText draws a real flag image on desktop and keeps emoji elsewhere.
+            ProfileNameText(
+                name = name,
                 color = SmuglyTextPrimary,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = 1
             )
             // Xray and empty subtitles: no second line (avoids "{..." junk).
             if (subtitle.isNotBlank()) {

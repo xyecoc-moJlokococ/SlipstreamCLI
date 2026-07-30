@@ -109,6 +109,11 @@ fun HomeScreen(
      * one folder", so whoever owns the drawer needs to stand down.
      */
     onFirstFolder: (Boolean) -> Unit = {},
+    /**
+     * True while a modal / dropdown on Home owns the pointer (folder editor, confirm, menus).
+     * The host disables full-screen drawer-swipe so long-press text selection is not stolen.
+     */
+    onBlockDrawerGestures: (Boolean) -> Unit = {},
     /** Where the Home tab sits among the folders. */
     homeFolderIndex: Int = 0,
     /** Create ([FolderDraft.id] null) or update a folder. */
@@ -196,6 +201,26 @@ fun HomeScreen(
     // from under it. Handed back when this screen goes away.
     LaunchedEffect(folderIndex, tabDragging) {
         onFirstFolder(folderIndex == 0 && !tabDragging)
+    }
+    // Drawer swipe runs on the Initial pass of the ancestor and would otherwise steal
+    // long-press + horizontal drag inside dialog text fields (opens the side drawer).
+    LaunchedEffect(
+        folderEditorOpen,
+        folderMenuOpen,
+        addMenu,
+        moreFor != null,
+        deletingFolder != null
+    ) {
+        onBlockDrawerGestures(
+            folderEditorOpen ||
+                folderMenuOpen ||
+                addMenu ||
+                moreFor != null ||
+                deletingFolder != null
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onBlockDrawerGestures(false) }
     }
     DisposableEffect(Unit) { onDispose { onFirstFolder(true) } }
 
@@ -511,15 +536,16 @@ fun HomeScreen(
             onDismiss = { addMenu = false }
         ) {
             MenuRow(t(S.MENU_NEW_PROFILE)) { addMenu = false; onAddNew() }
-            // Both of these take a single config *or* a subscription link — they used to have
-            // separate "import subscription" twins that did the exact same thing.
-            MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
-            MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
             MenuRow(t(S.MENU_NEW_FOLDER)) {
                 addMenu = false
                 folderDraft = FolderDraft()
                 folderEditorOpen = true
             }
+
+            // Both of these take a single config *or* a subscription link — they used to have
+            // separate "import subscription" twins that did the exact same thing.
+            MenuRow(t(S.MENU_IMPORT_CLIPBOARD)) { addMenu = false; onImportClipboard() }
+            MenuRow(t(S.MENU_IMPORT_FILE)) { addMenu = false; onImportFile() }
         }
         // [menuProfile] keeps the rows populated while the panel fades out; only
         // [moreFor] is cleared on dismiss.

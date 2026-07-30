@@ -12,12 +12,11 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -268,6 +267,12 @@ private fun subtitle(subscription: Subscription, nowMs: Long): String {
  * than a highlight appearing in a new place. Tabs keep their natural width (folder names run long)
  * and the row scrolls sideways when they do not fit, so the indicator has to be measured rather
  * than computed from an equal-width grid.
+ *
+ * Gestures:
+ * - Tap / LMB click → select tab
+ * - Long-press + drag (touch **and** mouse) → reorder tabs
+ * - Long-press on touch → also opens the folder menu (dismissed once the tab moves)
+ * - Right-click on desktop → folder menu (Edit / Delete subscription)
  */
 @Composable
 fun FolderTabs(
@@ -294,8 +299,8 @@ fun FolderTabs(
 ) {
     if (names.size <= 1) return
     val haptics = LocalHapticFeedback.current
-    // Desktop has a second mouse button, so holding the first one down means nothing there.
-    val useRightClick = remember { currentHostPlatform().isDesktop() }
+    // Desktop: menu via right-click; long-press still reorders (same as phone).
+    val isDesktop = remember { currentHostPlatform().isDesktop() }
     val density = LocalDensity.current
     // Where each tab sits inside the row, in px. Snapshot state because the indicator animates
     // off it; written only when a value actually changes, so a layout pass that moves nothing
@@ -323,7 +328,7 @@ fun FolderTabs(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(rememberScrollState(), enabled = dragFrom < 0)
             .padding(horizontal = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -345,71 +350,75 @@ fun FolderTabs(
                         if (index < spans.size && spans[index] != span) spans[index] = span
                     }
                     .pointerHoverIcon(PointerIcon.Hand)
-                    .pointerInput(index, useRightClick) {
-                        if (useRightClick) {
-                            // awaitEachGesture drains the rest of the gesture itself, so opening
-                            // the menu on the press and returning is enough.
-                            awaitEachGesture {
-                                val down = awaitFirstDown()
-                                if (currentEvent.buttons.isSecondaryPressed) {
-                                    // Consume so the press cannot also read as a folder switch.
-                                    down.consume()
-                                    onMenu(index, anchor[0], anchor[1])
-                                } else if (waitForUpOrCancellation() != null) {
-                                    onSelect(index)
+                    // Desktop right-click: intercept on the Initial pass so it never becomes a
+                    // select, and so the system context menu does not steal the event.
+                    .then(
+                        if (isDesktop) {
+                            Modifier.pointerInput(index) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        if (event.type == PointerEventType.Press &&
+                                            event.buttons.isSecondaryPressed
+                                        ) {
+                                            event.changes.forEach { it.consume() }
+                                            onMenu(index, anchor[0], anchor[1])
+                                        }
+                                    }
                                 }
                             }
-                        } else {
-                            detectTapGestures(onTap = { onSelect(index) })
-                        }
-                    }
-                    .then(
-                        if (useRightClick) Modifier else Modifier.pointerInput(index, names.size) {
-                            val slop = viewConfiguration.touchSlop
-                            var moved = false
-                            // Long press does double duty, the way a home-screen icon does: the
-                            // menu opens straight away, and it gets out of the way the moment the
-                            // finger actually starts carrying the tab somewhere.
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    dragFrom = index
-                                    dragDx = 0f
-                                    moved = false
-                                    onDragActive(true)
-                                    onMenu(index, anchor[0], anchor[1])
-                                },
-                                onDrag = { change, delta ->
-                                    change.consume()
-                                    dragDx += delta.x
-                                    if (!moved && abs(dragDx) > slop) {
-                                        moved = true
-                                        onMenuDismiss()
-                                    }
-                                },
-                                onDragEnd = {
-                                    val target = if (moved) slotAt(spans, index, dragDx) else index
-                                    settle(
-                                        scope, spans, index, target, dragDx,
-                                        onOffset = { dragDx = it },
-                                        onFinished = {
-                                            dragFrom = -1
-                                            if (target != index) onMove(index, target)
-                                        }
-                                    )
-                                    onDragActive(false)
-                                },
-                                onDragCancel = {
-                                    settle(
-                                        scope, spans, index, index, dragDx,
-                                        onOffset = { dragDx = it },
-                                        onFinished = { dragFrom = -1 }
-                                    )
-                                    onDragActive(false)
-                                }
-                            )
-                        }
+                        } else Modifier
                     )
+                    .pointerInput(index) {
+                        detectTapGestures(onTap = { onSelect(index) })
+                    }
+                    // Long-press + drag reorders on every platform (phone and mouse).
+                    .pointerInput(index, names.size, isDesktop) {
+                        val slop = viewConfiguration.touchSlop
+                        var moved = false
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                dragFrom = index
+                                dragDx = 0f
+                                moved = false
+                                onDragActive(true)
+                                // Touch: open the folder menu on pick-up (home-screen style).
+                                // Desktop: menu is right-click only — holding LMB is for drag.
+                                if (!isDesktop) {
+                                    onMenu(index, anchor[0], anchor[1])
+                                }
+                            },
+                            onDrag = { change, delta ->
+                                change.consume()
+                                dragDx += delta.x
+                                if (!moved && abs(dragDx) > slop) {
+                                    moved = true
+                                    onMenuDismiss()
+                                }
+                            },
+                            onDragEnd = {
+                                val drop = if (moved) slotAt(spans, index, dragDx) else index
+                                settle(
+                                    scope, spans, index, drop, dragDx,
+                                    onOffset = { dragDx = it },
+                                    onFinished = {
+                                        dragFrom = -1
+                                        if (drop != index) onMove(index, drop)
+                                    }
+                                )
+                                onDragActive(false)
+                            },
+                            onDragCancel = {
+                                settle(
+                                    scope, spans, index, index, dragDx,
+                                    onOffset = { dragDx = it },
+                                    onFinished = { dragFrom = -1 }
+                                )
+                                onDragActive(false)
+                            }
+                        )
+                    }
                     .zIndex(if (dragFrom == index) 1f else 0f)
                     .graphicsLayer { if (dragFrom == index) translationX = dragDx }
                     .padding(horizontal = 14.dp, vertical = 10.dp)
