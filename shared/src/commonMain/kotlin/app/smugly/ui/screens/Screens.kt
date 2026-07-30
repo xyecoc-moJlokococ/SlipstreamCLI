@@ -15,9 +15,15 @@ import app.smugly.ui.theme.SmuglyTextPrimary
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,16 +31,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.relocation.BringIntoViewResponder
+import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,10 +51,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.smugly.ui.theme.SmuglyAccent
+import app.smugly.ui.theme.SmuglyInput
+import app.smugly.ui.theme.SmuglyStroke
+import app.smugly.ui.theme.SmuglyTextMuted
 import app.smugly.AppLanguage
 import app.smugly.Config
 import app.smugly.ConfigProfile
@@ -62,6 +81,11 @@ import app.smugly.ui.components.AccentLinkButton
 import app.smugly.ui.components.BottomConnectBar
 import app.smugly.ui.components.HintText
 import app.smugly.ui.components.LabeledField
+import app.smugly.ui.components.DropdownField
+import app.smugly.ui.components.FolderDraft
+import app.smugly.ui.components.FolderEditorDialog
+import app.smugly.ui.components.FolderTabs
+import app.smugly.ui.components.JsonSyntaxHighlightTransformation
 import app.smugly.ui.components.MenuLayer
 import app.smugly.ui.components.MenuRow
 import app.smugly.ui.components.PillSelector
@@ -71,11 +95,8 @@ import app.smugly.ui.components.ProfileNameField
 import app.smugly.ui.components.SecondaryButton
 import app.smugly.ui.components.SectionTitle
 import app.smugly.ui.components.SmuglyCheckbox
-import app.smugly.ui.components.FolderDraft
-import app.smugly.ui.components.FolderEditorDialog
-import app.smugly.ui.components.FolderTabs
-import app.smugly.ui.components.SubscriptionCard
 import app.smugly.ui.components.SmuglyTextField
+import app.smugly.ui.components.SubscriptionCard
 import app.smugly.ui.components.TopBar
 import app.smugly.ui.profileSubtitle
 import app.smugly.ui.theme.SmuglyBg
@@ -332,8 +353,13 @@ fun HomeScreen(
                 val pageDisplayed = if (live && draggingId != null) ordered else pageProfiles
 
                 if (pageDisplayed.isEmpty() && pageSubscription == null) {
+                    // BottomConnectBar is drawn as an overlay (not in this Column), so centering
+                    // in raw fillMaxSize sits too low. Same 112.dp clearance LazyColumn uses.
                     Box(
-                        Modifier.fillMaxSize().padding(horizontal = 32.dp),
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 32.dp)
+                            .padding(bottom = 112.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -341,7 +367,8 @@ fun HomeScreen(
                             color = SmuglyTextSecondary,
                             fontSize = 15.sp,
                             lineHeight = 20.sp,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 } else {
@@ -376,8 +403,13 @@ fun HomeScreen(
                         // have configurations, this folder just came back without any.
                         if (pageDisplayed.isEmpty()) {
                             item(key = "empty") {
+                                // Match LazyColumn viewport: tall enough that Center lands mid-list
+                                // area above the floating connect bar.
                                 Box(
-                                    Modifier.fillMaxWidth().padding(top = 48.dp),
+                                    Modifier
+                                        .fillParentMaxSize()
+                                        .padding(horizontal = 32.dp)
+                                        .padding(bottom = 112.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
@@ -385,7 +417,8 @@ fun HomeScreen(
                                         color = SmuglyTextSecondary,
                                         fontSize = 15.sp,
                                         lineHeight = 20.sp,
-                                        textAlign = TextAlign.Center
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
                                     )
                                 }
                             }
@@ -779,37 +812,152 @@ fun ProfileEditorScreen(
     formatXray: (String) -> String? = { null }
 ) {
     val c = draft.config
+    val protocolOptions = listOf(
+        t(S.PROTOCOL_SLIPSTREAM),
+        t(S.PROTOCOL_S3FU),
+        t(S.PROTOCOL_XRAY),
+        t(S.PROTOCOL_CDNFU)
+    )
     val protocolIndex = when (c.protocol) {
         Config.TunnelProtocol.SLIPSTREAM -> 0
         Config.TunnelProtocol.S3FU -> 1
         Config.TunnelProtocol.XRAY -> 2
         Config.TunnelProtocol.CDNFU -> 3
     }
-    Column(Modifier.fillMaxSize().background(SmuglyBg)) {
-        TopBar(
-            title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
-            onBack = onBack
-        )
-        // Always scroll the form. Xray JSON is a fixed-height box with its own inner scroll so
-        // focus does not jerk the page, and single-line fields never steal the remaining height.
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(horizontal = 10.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 12.dp)
-        ) {
-            LabeledField(t(S.PROFILE_NAME)) {
-                ProfileNameField(
-                    name = draft.name,
-                    onNameChange = { onChange(draft.copy(name = it)) }
+    // Protocol list uses the same overlay as the + menu — never expands layout / pushes fields.
+    var protocolMenuOpen by remember { mutableStateOf(false) }
+    var protocolAnchorX by remember { mutableStateOf(0) }
+    var protocolAnchorY by remember { mutableStateOf(0) }
+    var protocolFieldWidth by remember { mutableStateOf(0) }
+
+    PlatformBackHandler(enabled = protocolMenuOpen) { protocolMenuOpen = false }
+
+    val isXray = c.protocol == Config.TunnelProtocol.XRAY
+
+    Box(Modifier.fillMaxSize().background(SmuglyBg)) {
+        Column(Modifier.fillMaxSize()) {
+            TopBar(
+                title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
+                onBack = onBack
+            )
+            // Xray: name/protocol stay fixed; JSON fills remaining height and scrolls only inside
+            // the field. Nested verticalScroll+focus bring-into-view used to yank the page to top
+            // when the user scrolled the form then tapped the JSON box.
+            // Other protocols: short form in a single page scroll.
+            if (isXray) {
+                Column(
+                    Modifier
+                        .padding(horizontal = 10.dp)
+                        .padding(bottom = 8.dp)
+                ) {
+                    LabeledField(t(S.PROFILE_NAME)) {
+                        ProfileNameField(
+                            name = draft.name,
+                            onNameChange = { onChange(draft.copy(name = it)) }
+                        )
+                    }
+                    LabeledField(t(S.PROTOCOL)) {
+                        DropdownField(
+                            label = protocolOptions[protocolIndex],
+                            open = protocolMenuOpen,
+                            onClick = { protocolMenuOpen = !protocolMenuOpen },
+                            onAnchor = { x, y, w ->
+                                protocolAnchorX = x
+                                protocolAnchorY = y
+                                protocolFieldWidth = w
+                            }
+                        )
+                    }
+                }
+                XrayEditor(
+                    c = c,
+                    onChange = { onChange(draft.copy(config = it)) },
+                    formatJson = formatXray,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp)
+                        .padding(bottom = 8.dp)
+                )
+                if (onDelete != null) {
+                    SecondaryButton(
+                        t(S.DELETE_PROFILE_BTN),
+                        onDelete,
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp)
+                            .padding(bottom = 8.dp)
+                    )
+                }
+            } else {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .padding(horizontal = 10.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(bottom = 12.dp)
+                ) {
+                    LabeledField(t(S.PROFILE_NAME)) {
+                        ProfileNameField(
+                            name = draft.name,
+                            onNameChange = { onChange(draft.copy(name = it)) }
+                        )
+                    }
+                    LabeledField(t(S.PROTOCOL)) {
+                        DropdownField(
+                            label = protocolOptions[protocolIndex],
+                            open = protocolMenuOpen,
+                            onClick = { protocolMenuOpen = !protocolMenuOpen },
+                            onAnchor = { x, y, w ->
+                                protocolAnchorX = x
+                                protocolAnchorY = y
+                                protocolFieldWidth = w
+                            }
+                        )
+                    }
+                    when (c.protocol) {
+                        Config.TunnelProtocol.SLIPSTREAM -> SlipstreamEditor(
+                            c = c,
+                            onChange = { onChange(draft.copy(config = it)) },
+                            onLocalDns = onLocalDns
+                        )
+                        Config.TunnelProtocol.S3FU -> S3fuEditor(c) {
+                            onChange(draft.copy(config = it))
+                        }
+                        Config.TunnelProtocol.XRAY -> { /* handled above */ }
+                        Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) {
+                            onChange(draft.copy(config = it))
+                        }
+                    }
+                    if (onDelete != null) {
+                        Spacer(Modifier.height(12.dp))
+                        SecondaryButton(t(S.DELETE_PROFILE_BTN), onDelete, Modifier.fillMaxWidth())
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(SmuglyCard)
+                    .padding(horizontal = 10.dp, vertical = 10.dp)
+            ) {
+                PrimaryButton(
+                    text = if (draft.profileId == null) t(S.CREATE_PROFILE_BTN) else t(S.SAVE_PROFILE_BTN),
+                    onClick = onSave
                 )
             }
-            LabeledField(t(S.PROTOCOL)) {
-                PillSelector(
-                    listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY), t(S.PROTOCOL_CDNFU)),
-                    protocolIndex
-                ) { idx ->
+        }
+
+        MenuLayer(
+            visible = protocolMenuOpen,
+            anchorY = protocolAnchorY,
+            anchorX = protocolAnchorX,
+            panelWidthPx = protocolFieldWidth,
+            onDismiss = { protocolMenuOpen = false }
+        ) {
+            protocolOptions.forEachIndexed { idx, label ->
+                MenuRow(label) {
+                    protocolMenuOpen = false
                     val p = when (idx) {
                         1 -> Config.TunnelProtocol.S3FU
                         2 -> Config.TunnelProtocol.XRAY
@@ -819,37 +967,6 @@ fun ProfileEditorScreen(
                     onChange(draft.copy(config = c.copy(protocol = p)))
                 }
             }
-
-            when (c.protocol) {
-                Config.TunnelProtocol.SLIPSTREAM -> SlipstreamEditor(
-                    c = c,
-                    onChange = { onChange(draft.copy(config = it)) },
-                    onLocalDns = onLocalDns
-                )
-                Config.TunnelProtocol.S3FU -> S3fuEditor(c) { onChange(draft.copy(config = it)) }
-                Config.TunnelProtocol.XRAY -> XrayEditor(
-                    c,
-                    onChange = { onChange(draft.copy(config = it)) },
-                    formatJson = formatXray
-                )
-                Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) { onChange(draft.copy(config = it)) }
-            }
-
-            if (onDelete != null) {
-                Spacer(Modifier.height(12.dp))
-                SecondaryButton(t(S.DELETE_PROFILE_BTN), onDelete, Modifier.fillMaxWidth())
-            }
-        }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .background(SmuglyCard)
-                .padding(horizontal = 10.dp, vertical = 10.dp)
-        ) {
-            PrimaryButton(
-                text = if (draft.profileId == null) t(S.CREATE_PROFILE_BTN) else t(S.SAVE_PROFILE_BTN),
-                onClick = onSave
-            )
         }
     }
 }
@@ -1033,7 +1150,7 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
         SmuglyTextField(c.s3Prefix, { onChange(c.copy(s3Prefix = it)) }, hint = t(S.S3_PREFIX_HINT))
     }
     LabeledField(t(S.S3_LOGIN)) {
-        SmuglyTextField(c.s3Login, { onChange(c.copy(s3Login = it)) }, hint = t(S.S3_LOGIN_HINT))
+        SmuglyTextField(c.s3Login, { onChange(c.copy(s3Login = it)) })
     }
     LabeledField(t(S.S3_PSK)) {
         SmuglyTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
@@ -1055,36 +1172,101 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     }
 }
 
+/**
+ * Scrollables honour this for "bring focused child into view". Returning 0 never moves the
+ * viewport — required for the Xray JSON box: wheel-scroll leaves the caret at 0, then the first
+ * focus runs bring-into-view for offset 0 and yanks the scroller to the top.
+ */
+private val NoOpBringIntoViewSpec = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(
+        offset: Float,
+        size: Float,
+        containerSize: Float
+    ): Float = 0f
+}
+
+private val NoOpBringIntoViewResponder = object : BringIntoViewResponder {
+    override fun calculateRectForParent(localRect: Rect): Rect = Rect.Zero
+    override suspend fun bringChildIntoView(localRect: () -> Rect?) {
+        // Swallow the request entirely — do not scroll on focus.
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun XrayEditor(
     c: Config,
     onChange: (Config) -> Unit,
     /** Pretty-printer; returns null when the text is not JSON. */
-    formatJson: (String) -> String?
+    formatJson: (String) -> String?,
+    modifier: Modifier = Modifier
 ) {
-    // Bare JSON field. Formatting on paste, validation on save.
-    //
-    // Fixed height + inner scroll: unbounded growth makes the page jump on focus; weight(1f)
-    // on the field (or fillMaxHeight in decoration) made *every* text field eat the screen.
-    // ~18 visible lines is enough to edit without dominating the form.
-    SmuglyTextField(
-        value = c.xrayConfigJson,
-        onValueChange = { typed ->
-            // More than one character arriving at once is a paste, not typing — that is the
-            // moment to tidy it up. Formatting on every keystroke would fight the caret.
-            val pasted = typed.length - c.xrayConfigJson.length > 1
-            val next = if (pasted) formatJson(typed) ?: typed else typed
-            onChange(c.copy(xrayConfigJson = next))
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(360.dp),
-        singleLine = false,
-        minLines = 1,
-        maxLines = Int.MAX_VALUE,
-        monospace = true,
-        fillContainer = true,
-        // Says what belongs here without a label taking up a line.
-        hint = "{}"
-    )
+    var field by remember {
+        mutableStateOf(TextFieldValue(c.xrayConfigJson, TextRange(0)))
+    }
+    LaunchedEffect(c.xrayConfigJson) {
+        if (c.xrayConfigJson != field.text) {
+            val sel = field.selection
+            val max = c.xrayConfigJson.length
+            field = TextFieldValue(
+                c.xrayConfigJson,
+                TextRange(sel.start.coerceIn(0, max), sel.end.coerceIn(0, max))
+            )
+        }
+    }
+    val scroll = rememberScrollState()
+    val shape = RoundedCornerShape(10.dp)
+
+    // Disable focus-driven auto-scroll for everything inside this editor.
+    CompositionLocalProvider(LocalBringIntoViewSpec provides NoOpBringIntoViewSpec) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(SmuglyInput)
+                .border(1.dp, SmuglyStroke, shape)
+                .bringIntoViewResponder(NoOpBringIntoViewResponder)
+        ) {
+            // Outer scroll of full text height (not BTF internal scroller). Auto bring-into-view
+            // is disabled above so wheel position is preserved on first focus/click.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scroll)
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
+            ) {
+                BasicTextField(
+                    value = field,
+                    onValueChange = { next ->
+                        val pasted = next.text.length - field.text.length > 1
+                        val text = if (pasted) formatJson(next.text) ?: next.text else next.text
+                        field = if (text != next.text) {
+                            TextFieldValue(text, TextRange(text.length))
+                        } else {
+                            next
+                        }
+                        onChange(c.copy(xrayConfigJson = field.text))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewResponder(NoOpBringIntoViewResponder),
+                    textStyle = TextStyle(
+                        color = SmuglyTextPrimary,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    ),
+                    cursorBrush = SolidColor(SmuglyAccent),
+                    visualTransformation = JsonSyntaxHighlightTransformation,
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxWidth()) {
+                            if (field.text.isEmpty()) {
+                                Text("{}", color = SmuglyTextMuted, fontSize = 12.sp)
+                            }
+                            inner()
+                        }
+                    }
+                )
+            }
+        }
+    }
 }

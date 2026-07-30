@@ -64,7 +64,7 @@ enum class S(val en: String, val ru: String) {
     S3_PREFIX("Prefix (server)", "Префикс (сервер)"),
     S3_PREFIX_HINT("s3fu", "s3fu"),
     S3_LOGIN("Login", "Логин"),
-    S3_LOGIN_HINT("login issued by the bot", "логин от бота"),
+    S3_LOGIN_HINT("", ""),
     S3_PSK("PSK", "PSK"),
     S3_PSK_HINT("64 hex chars", "64 hex-символа"),
 

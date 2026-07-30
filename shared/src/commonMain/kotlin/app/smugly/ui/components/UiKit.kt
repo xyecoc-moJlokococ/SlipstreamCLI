@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Checkbox
@@ -158,9 +159,15 @@ fun MenuLayer(
     onDismiss: () -> Unit,
     /**
      * Panel's left edge in root coordinates, for anchors that do not sit on the right edge
-     * (a folder tab). Null keeps the right-aligned placement the + and ⋮ buttons use.
+     * (a folder tab / protocol field). Null keeps the right-aligned placement the + and ⋮
+     * buttons use.
      */
     anchorX: Int? = null,
+    /**
+     * Preferred panel width in px (e.g. match the field that opened it). Clamped to the
+     * screen; ignored when null.
+     */
+    panelWidthPx: Int? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     // One float drives fade + scale, so showing/hiding is a layer property change
@@ -180,7 +187,10 @@ fun MenuLayer(
     }
     if (!mounted) return
 
-    val gutterPx = with(LocalDensity.current) { 8.dp.roundToPx() }
+    val density = LocalDensity.current
+    val gutterPx = with(density) { 8.dp.roundToPx() }
+    val minW = with(density) { 168.dp.toPx() }.toInt()
+    val defaultMaxW = with(density) { 280.dp.toPx() }.toInt()
     Box(Modifier.fillMaxSize()) {
         // Outside tap closes the menu (same as a Popup's dismiss-on-outside-touch).
         Box(
@@ -196,12 +206,11 @@ fun MenuLayer(
             content = {
                 Column(
                     modifier = Modifier
-                        .widthIn(min = 168.dp, max = 280.dp)
                         .graphicsLayer {
                             val p = anim.value
                             alpha = p
                             // Grow out of the control that opened it: the + / ⋮ on the right
-                            // edge, or the left edge of a folder tab.
+                            // edge, or the left edge of a folder tab / dropdown field.
                             scaleX = 0.94f + 0.06f * p
                             scaleY = 0.94f + 0.06f * p
                             transformOrigin = TransformOrigin(if (anchorX == null) 1f else 0f, 0f)
@@ -215,8 +224,15 @@ fun MenuLayer(
                 )
             }
         ) { measurables, constraints ->
+            val preferW = panelWidthPx?.coerceIn(minW, constraints.maxWidth) ?: 0
+            val maxW = if (preferW > 0) preferW else defaultMaxW.coerceAtMost(constraints.maxWidth)
+            val minMeasureW = if (preferW > 0) preferW else minW.coerceAtMost(maxW)
             val panel = measurables.first().measure(
-                constraints.copy(minWidth = 0, minHeight = 0)
+                constraints.copy(
+                    minWidth = minMeasureW.coerceAtMost(constraints.maxWidth),
+                    maxWidth = maxW.coerceAtLeast(minMeasureW).coerceAtMost(constraints.maxWidth),
+                    minHeight = 0
+                )
             )
             layout(constraints.maxWidth, constraints.maxHeight) {
                 val maxX = (constraints.maxWidth - panel.width).coerceAtLeast(0)
@@ -396,7 +412,9 @@ fun SmuglyTextField(
      * When the field has a fixed height (e.g. Xray JSON box), paint the chrome edge-to-edge.
      * Must stay false for single-line fields — fillMaxHeight in a tall Column blows them up.
      */
-    fillContainer: Boolean = false
+    fillContainer: Boolean = false,
+    /** Extra display transform (e.g. [JsonSyntaxHighlightTransformation]); ignored when [password]. */
+    visualTransformation: VisualTransformation = VisualTransformation.None
 ) {
     val shape = RoundedCornerShape(10.dp)
     // External modifier (e.g. fixed height) must sit on BasicTextField itself — not only on
@@ -408,7 +426,10 @@ fun SmuglyTextField(
         singleLine = singleLine,
         minLines = if (singleLine) 1 else minLines.coerceAtLeast(1),
         maxLines = if (singleLine) 1 else maxLines.coerceAtLeast(1),
-        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+        visualTransformation = when {
+            password -> PasswordVisualTransformation()
+            else -> visualTransformation
+        },
         keyboardOptions = KeyboardOptions(
             keyboardType = when {
                 number -> KeyboardType.Number
@@ -506,6 +527,57 @@ fun PillSelector(
                 }
             }
         }
+    }
+}
+
+/**
+ * Closed field for a dropdown. The open list is drawn with [MenuLayer] (same overlay as the
+ * + menu) so it does **not** push content below — host owns [open] / anchors / panel.
+ */
+@Composable
+fun DropdownField(
+    label: String,
+    open: Boolean,
+    onClick: () -> Unit,
+    /** Bottom-left of the field in root coordinates + width, for [MenuLayer] placement. */
+    onAnchor: (x: Int, y: Int, width: Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                val pos = coords.positionInRoot()
+                onAnchor(
+                    pos.x.toInt(),
+                    (pos.y + coords.size.height).toInt(),
+                    coords.size.width
+                )
+            }
+            .clip(shape)
+            .background(SmuglyInput)
+            .border(1.dp, if (open) SmuglyAccent else SmuglyStroke, shape)
+            .handClickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = SmuglyTextPrimary,
+            fontSize = 15.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            imageVector = Icons.Default.KeyboardArrowDown,
+            contentDescription = null,
+            tint = SmuglyTextSecondary,
+            modifier = Modifier
+                .size(22.dp)
+                .graphicsLayer { rotationZ = if (open) 180f else 0f }
+        )
     }
 }
 
@@ -691,26 +763,32 @@ fun ProfileCard(
             .border(1.dp, borderColor, shape)
             .then(
                 if (enableReorder) {
-                    Modifier.pointerInput(Unit) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = {
-                                // One tick the moment the card is picked up, so reordering is
-                                // confirmed by feel rather than by watching the card move.
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onLongPressDragStart()
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                onLongPressDrag(dragAmount.y)
-                            },
-                            onDragEnd = { onLongPressDragEnd() },
-                            onDragCancel = { onLongPressDragCancel() }
+                    Modifier
+                        // Open hand while hovering a reorderable card; closed/move while dragging.
+                        .pointerHoverIcon(
+                            if (isDragging) PointerIconGrabbing else PointerIconGrab,
+                            overrideDescendants = isDragging
                         )
-                    }
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    // One tick the moment the card is picked up, so reordering is
+                                    // confirmed by feel rather than by watching the card move.
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onLongPressDragStart()
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    onLongPressDrag(dragAmount.y)
+                                },
+                                onDragEnd = { onLongPressDragEnd() },
+                                onDragCancel = { onLongPressDragCancel() }
+                            )
+                        }
                 } else Modifier
             )
-            // The card is a selectable surface, not a button — arrow cursor. The delete and ⋮
-            // controls inside it still use handClickable and override the cursor themselves.
+            // The card is a selectable surface, not a button — arrow cursor unless reorder is on.
+            // Delete and ⋮ still use handClickable and override the cursor themselves.
             .surfaceClickable(onClick = onClick)
             .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
