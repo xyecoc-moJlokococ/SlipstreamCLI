@@ -385,18 +385,29 @@ fun SmuglyTextField(
     password: Boolean = false,
     number: Boolean = false,
     minLines: Int = 1,
-    monospace: Boolean = false
+    /**
+     * Cap for multi-line fields. Default is unlimited growth — fine for short notes, but a
+     * multi-KB Xray JSON would make the parent `verticalScroll` taller than the window and
+     * Compose's focus bring-into-view then jerks the page once on first focus.
+     */
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    monospace: Boolean = false,
+    /**
+     * When the field has a fixed height (e.g. Xray JSON box), paint the chrome edge-to-edge.
+     * Must stay false for single-line fields — fillMaxHeight in a tall Column blows them up.
+     */
+    fillContainer: Boolean = false
 ) {
     val shape = RoundedCornerShape(10.dp)
-    // External modifier (e.g. weight) must sit on BasicTextField itself — not only on
-    // decorationBox — otherwise Row.weight is ignored and layout blows up.
+    // External modifier (e.g. fixed height) must sit on BasicTextField itself — not only on
+    // decorationBox — otherwise layout constraints are ignored.
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier.fillMaxWidth(),
         singleLine = singleLine,
-        minLines = if (singleLine) 1 else minLines,
-        maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+        minLines = if (singleLine) 1 else minLines.coerceAtLeast(1),
+        maxLines = if (singleLine) 1 else maxLines.coerceAtLeast(1),
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
             keyboardType = when {
@@ -416,11 +427,12 @@ fun SmuglyTextField(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (fillContainer) Modifier.fillMaxHeight() else Modifier)
                     .clip(shape)
                     .background(SmuglyInput)
                     .border(1.dp, SmuglyStroke, shape)
                     .padding(horizontal = 12.dp, vertical = 12.dp),
-                contentAlignment = Alignment.CenterStart
+                contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
             ) {
                 if (value.isEmpty() && hint.isNotEmpty()) {
                     Text(hint, color = SmuglyTextMuted, fontSize = 15.sp)

@@ -40,7 +40,8 @@ actual fun CountryFlag(iso2: String, modifier: Modifier) {
             Image(
                 bitmap = bitmap,
                 contentDescription = code.uppercase(),
-                contentScale = ContentScale.Crop,
+                // Fit the full flag into the (rectangular) box — Crop made short flags look square.
+                contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
             )
         } else {

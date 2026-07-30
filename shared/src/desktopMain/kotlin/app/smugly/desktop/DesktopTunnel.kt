@@ -28,6 +28,13 @@ import org.json.JSONObject
 object DesktopTunnel {
     private const val TAG = "DesktopTunnel"
     private const val ENGINE_READY_TIMEOUT_MS = 20_000L
+    /**
+     * Concurrent client cap for the local mixed proxy when the engine is **not** Slipstream.
+     * `Config.maxActiveClients` (default 40) is a DNS-tunnel memory guard for Slipstream only —
+     * applying it to Xray/S3 made browsers hit "connection limit 40 reached; dropped" under
+     * normal multi-tab load (Throne/v2rayN do not cap local proxy like that).
+     */
+    private const val NON_SLIPSTREAM_MAX_CLIENTS = 4096
 
     /** Result of a connect attempt; [warning] is shown to the user but does not mean failure. */
     data class StartOutcome(
@@ -95,12 +102,20 @@ object DesktopTunnel {
             // No local auth on desktop by design: the listener is loopback-only, and the system
             // proxy setting has nowhere to carry credentials, so requiring them would just turn
             // every system-routed request into a 407 nobody can answer.
+            //
+            // maxActiveClients from the profile is Slipstream-only (DNS tunnel pressure). Xray /
+            // s3fu / cdnfu get a high local-proxy ceiling so multi-tab browsers are not dropped.
+            val proxyLimit = when (config.protocol) {
+                Config.TunnelProtocol.SLIPSTREAM ->
+                    config.maxActiveClients.coerceAtLeast(1)
+                else -> NON_SLIPSTREAM_MAX_CLIENTS
+            }
             val server = MixedProxyServer(
                 listenHost = "127.0.0.1",
                 listenPort = listenPort,
                 upstreamHost = "127.0.0.1",
                 upstreamPort = enginePort,
-                maxActiveClients = config.maxActiveClients.coerceAtLeast(16)
+                maxActiveClients = proxyLimit
             )
             server.start().getOrThrow()
             proxy = server

@@ -67,6 +67,7 @@ import app.smugly.ui.components.MenuRow
 import app.smugly.ui.components.PillSelector
 import app.smugly.ui.components.PrimaryButton
 import app.smugly.ui.components.ProfileCard
+import app.smugly.ui.components.ProfileNameField
 import app.smugly.ui.components.SecondaryButton
 import app.smugly.ui.components.SectionTitle
 import app.smugly.ui.components.SmuglyCheckbox
@@ -789,19 +790,20 @@ fun ProfileEditorScreen(
             title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
             onBack = onBack
         )
-        // Plain scrolling Column on purpose. A LazyColumn was measured here and came out
-        // ~40ms slower per open: its per-item subcomposition costs more than composing
-        // this many lightweight rows up front.
+        // Always scroll the form. Xray JSON is a fixed-height box with its own inner scroll so
+        // focus does not jerk the page, and single-line fields never steal the remaining height.
         Column(
             Modifier
                 .weight(1f)
                 .padding(horizontal = 10.dp)
                 .verticalScroll(rememberScrollState())
-                // Button bar is outside scroll — only a small end gap, not 90dp home-bar space.
                 .padding(bottom = 12.dp)
         ) {
             LabeledField(t(S.PROFILE_NAME)) {
-                SmuglyTextField(draft.name, { onChange(draft.copy(name = it)) })
+                ProfileNameField(
+                    name = draft.name,
+                    onNameChange = { onChange(draft.copy(name = it)) }
+                )
             }
             LabeledField(t(S.PROTOCOL)) {
                 PillSelector(
@@ -1060,8 +1062,11 @@ private fun XrayEditor(
     /** Pretty-printer; returns null when the text is not JSON. */
     formatJson: (String) -> String?
 ) {
-    // Bare JSON field, nothing else. Formatting happens on paste and validation on save, so
-    // there is nothing left for a "Format" / "Check" button to do that the user must remember.
+    // Bare JSON field. Formatting on paste, validation on save.
+    //
+    // Fixed height + inner scroll: unbounded growth makes the page jump on focus; weight(1f)
+    // on the field (or fillMaxHeight in decoration) made *every* text field eat the screen.
+    // ~18 visible lines is enough to edit without dominating the form.
     SmuglyTextField(
         value = c.xrayConfigJson,
         onValueChange = { typed ->
@@ -1071,9 +1076,14 @@ private fun XrayEditor(
             val next = if (pasted) formatJson(typed) ?: typed else typed
             onChange(c.copy(xrayConfigJson = next))
         },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(360.dp),
         singleLine = false,
-        minLines = 16,
+        minLines = 1,
+        maxLines = Int.MAX_VALUE,
         monospace = true,
+        fillContainer = true,
         // Says what belongs here without a label taking up a line.
         hint = "{}"
     )

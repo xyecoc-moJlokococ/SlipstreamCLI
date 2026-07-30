@@ -1211,7 +1211,10 @@ class MainActivity : android.app.Activity() {
         }
 
     private fun showProfileEditor(profile: ConfigProfile?) {
-        val config = profile?.config ?: activeConfig ?: ConfigStore.load(this)
+        // New profile starts blank — never clone the last/active VPN config into the form.
+        val global = ConfigStore.loadGlobalSettings(this)
+        val config = profile?.config
+            ?: defaultConfig(mode = global.mode).copy(listenPort = global.listenPort)
         editingBaseConfig = config
         editorVisible = true
         settingsVisible = false
