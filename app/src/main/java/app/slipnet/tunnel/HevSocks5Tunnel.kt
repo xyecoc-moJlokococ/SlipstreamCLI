@@ -84,7 +84,10 @@ object HevSocks5Tunnel {
 
         appendLine("  connect-timeout: 8000")
         appendLine("  tcp-read-write-timeout: 120000")
-        appendLine("  udp-read-write-timeout: 60000")
+        // Idle UDP associations are reaped after this; it also caps how long hev.stop() blocks
+        // draining them on teardown. 60s made protocol switches sit on "Disconnecting" for a
+        // minute; 15s still comfortably covers DNS and QUIC keepalive intervals.
+        appendLine("  udp-read-write-timeout: 15000")
         appendLine("  log-level: warn")
     }
 

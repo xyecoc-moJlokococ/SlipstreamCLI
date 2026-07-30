@@ -66,7 +66,10 @@ object ConfigStore {
             s3Prefix = p.getString("s3Prefix", "")?.takeIf { it.isNotBlank() } ?: "s3fu",
             s3Login = p.getString("s3Login", "") ?: "",
             s3Psk = p.getString("s3Psk", "") ?: "",
-            xrayConfigJson = p.getString("xrayConfigJson", "") ?: ""
+            xrayConfigJson = p.getString("xrayConfigJson", "") ?: "",
+            cdnUrl = p.getString("cdnUrl", "") ?: "",
+            cdnPsk = p.getString("cdnPsk", "") ?: "",
+            cdnMimic = p.getString("cdnMimic", "mixed") ?: "mixed"
         )
     }
 
@@ -635,6 +638,9 @@ object ConfigStore {
             .putString("s3Login", config.s3Login)
             .putString("s3Psk", config.s3Psk)
             .putString("xrayConfigJson", config.xrayConfigJson)
+            .putString("cdnUrl", config.cdnUrl)
+            .putString("cdnPsk", config.cdnPsk)
+            .putString("cdnMimic", config.cdnMimic)
             .apply()
     }
 
@@ -692,6 +698,9 @@ object ConfigStore {
             .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
+            .put("cdnUrl", config.cdnUrl)
+            .put("cdnPsk", config.cdnPsk)
+            .put("cdnMimic", config.cdnMimic)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -721,7 +730,10 @@ object ConfigStore {
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
             s3Login = json.optString("s3Login", ""),
             s3Psk = json.optString("s3Psk", ""),
-            xrayConfigJson = json.optString("xrayConfigJson", "")
+            xrayConfigJson = json.optString("xrayConfigJson", ""),
+            cdnUrl = json.optString("cdnUrl", ""),
+            cdnPsk = json.optString("cdnPsk", ""),
+            cdnMimic = json.optString("cdnMimic", "mixed")
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =

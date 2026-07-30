@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import app.slipnet.tunnel.CdnfuBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.MiniSlipstreamSocksBridge
 import app.slipnet.tunnel.ResolverListConfig
@@ -145,7 +146,8 @@ class AndroidVaydnsPlatform(
         publish()
         if (c.mode == Config.Mode.VPN ||
             c.protocol == Config.TunnelProtocol.S3FU ||
-            c.protocol == Config.TunnelProtocol.XRAY
+            c.protocol == Config.TunnelProtocol.XRAY ||
+            c.protocol == Config.TunnelProtocol.CDNFU
         ) {
             val prep = VpnService.prepare(activity)
             if (prep != null) {
@@ -293,9 +295,10 @@ class AndroidVaydnsPlatform(
      */
     private fun isRunning(): Boolean =
         proxyStarted ||
-            SlipstreamBridge.isRunning() ||
-            S3fuBridge.isRunning() ||
-            XrayBridge.isRunning() ||
+            runCatching { SlipstreamBridge.isRunning() }.getOrDefault(false) ||
+            runCatching { S3fuBridge.isRunning() }.getOrDefault(false) ||
+            runCatching { XrayBridge.isRunning() }.getOrDefault(false) ||
+            runCatching { CdnfuBridge.isRunning() }.getOrDefault(false) ||
             HevSocks5Tunnel.isRunning()
 
     override fun observeConnect(onChange: (ConnectUiState) -> Unit): () -> Unit {

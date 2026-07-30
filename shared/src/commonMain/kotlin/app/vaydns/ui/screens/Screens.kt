@@ -756,6 +756,7 @@ fun ProfileEditorScreen(
         Config.TunnelProtocol.SLIPSTREAM -> 0
         Config.TunnelProtocol.S3FU -> 1
         Config.TunnelProtocol.XRAY -> 2
+        Config.TunnelProtocol.CDNFU -> 3
     }
     Column(Modifier.fillMaxSize().background(SlipnetBg)) {
         TopBar(
@@ -778,12 +779,13 @@ fun ProfileEditorScreen(
             }
             LabeledField(t(S.PROTOCOL)) {
                 PillSelector(
-                    listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY)),
+                    listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY), t(S.PROTOCOL_CDNFU)),
                     protocolIndex
                 ) { idx ->
                     val p = when (idx) {
                         1 -> Config.TunnelProtocol.S3FU
                         2 -> Config.TunnelProtocol.XRAY
+                        3 -> Config.TunnelProtocol.CDNFU
                         else -> Config.TunnelProtocol.SLIPSTREAM
                     }
                     onChange(draft.copy(config = c.copy(protocol = p)))
@@ -802,6 +804,7 @@ fun ProfileEditorScreen(
                     onChange = { onChange(draft.copy(config = it)) },
                     formatJson = formatXray
                 )
+                Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) { onChange(draft.copy(config = it)) }
             }
 
             if (onDelete != null) {
@@ -1006,6 +1009,21 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
     }
     LabeledField(t(S.S3_PSK)) {
         SlipnetTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
+    }
+}
+
+@Composable
+private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
+    val mimics = listOf("image", "video", "static", "mixed")
+    val mimicIndex = mimics.indexOf(c.cdnMimic.ifBlank { "mixed" }).let { if (it < 0) 3 else it }
+    LabeledField(t(S.CDN_URL)) {
+        SlipnetTextField(c.cdnUrl, { onChange(c.copy(cdnUrl = it)) }, hint = "https://cdn-host/")
+    }
+    LabeledField(t(S.CDN_PSK)) {
+        SlipnetTextField(c.cdnPsk, { onChange(c.copy(cdnPsk = it)) }, hint = t(S.CDN_PSK_HINT))
+    }
+    LabeledField(t(S.CDN_MIMIC)) {
+        PillSelector(mimics, mimicIndex) { idx -> onChange(c.copy(cdnMimic = mimics[idx])) }
     }
 }
 

@@ -48,6 +48,11 @@ enum class S(val en: String, val ru: String) {
     PROTOCOL_SLIPSTREAM("Slipstream (DNS)", "Slipstream (DNS)"),
     PROTOCOL_S3FU("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
     PROTOCOL_XRAY("Xray", "Xray"),
+    PROTOCOL_CDNFU("CDN (cdn-fuckup)", "CDN (cdn-fuckup)"),
+    CDN_URL("CDN URL", "CDN URL"),
+    CDN_PSK("PSK", "PSK"),
+    CDN_PSK_HINT("passphrase (blank = VLESS)", "парольная фраза (пусто = VLESS)"),
+    CDN_MIMIC("Path mimicry", "Мимикрия путей"),
     /** Profile-card subtitle: the component actually carrying the traffic. */
     PROTOCOL_XRAY_CORE("Xray-core", "Xray-core"),
     S3_SECTION("S3 (s3-fuckup)", "S3 (s3-fuckup)"),

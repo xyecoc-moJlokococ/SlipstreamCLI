@@ -31,14 +31,17 @@ data class Config(
     val s3Prefix: String = "s3fu",
     val s3Login: String = "",
     val s3Psk: String = "",
-    val xrayConfigJson: String = ""
+    val xrayConfigJson: String = "",
+    val cdnUrl: String = "",
+    val cdnPsk: String = "",
+    val cdnMimic: String = "mixed"
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
     enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
-    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY }
+    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY, CDNFU }
 }
 
 data class ConfigProfile(
