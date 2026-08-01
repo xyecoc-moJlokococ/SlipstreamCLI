@@ -37,12 +37,38 @@ object CdnfuBridge {
      * @param psk  pre-shared key passphrase; blank = VLESS mode, else ChaCha20.
      * @param mimic  path mimicry: image|video|static|mixed (blank = mixed).
      * @param socksListen  host:port to listen on (e.g. "127.0.0.1:1080").
+     * @param uplinkMethod  auto | GET | POST | PUT | … (GET never uses upload paths).
+     * @param uplinkPath  auto | asset | api.
+     * @param uplinkData  auto | cookies | query | header | body.
+     * @param xhttpPlacement  cookie | query | header for session/seq/pad.
      */
-    fun startClient(url: String, psk: String, mimic: String, socksListen: String): Result<Unit> {
+    fun startClient(
+        url: String,
+        psk: String,
+        mimic: String,
+        socksListen: String,
+        uplinkMethod: String = "GET",
+        uplinkPath: String = "asset",
+        uplinkData: String = "query",
+        xhttpPlacement: String = "query"
+    ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libcdnfu is not loaded"))
-        AppLog.i(TAG, "start url=$url mimic=$mimic chacha=${psk.isNotBlank()} socks=$socksListen")
+        AppLog.i(
+            TAG,
+            "start url=$url mimic=$mimic method=$uplinkMethod path=$uplinkPath data=$uplinkData " +
+                "xhttp=$xhttpPlacement chacha=${psk.isNotBlank()} socks=$socksListen"
+        )
         val code = runCatching {
-            nativeStartClient(url, psk, mimic, socksListen)
+            nativeStartClient(
+                url,
+                psk,
+                mimic,
+                socksListen,
+                uplinkMethod,
+                uplinkPath,
+                uplinkData,
+                xhttpPlacement
+            )
         }.getOrElse {
             AppLog.e(TAG, "nativeStartClient threw", it)
             return Result.failure(it)
@@ -71,7 +97,11 @@ object CdnfuBridge {
         url: String,
         psk: String,
         mimic: String,
-        socksListen: String
+        socksListen: String,
+        uplinkMethod: String,
+        uplinkPath: String,
+        uplinkData: String,
+        xhttpPlacement: String
     ): Int
 
     private external fun nativeStopClient()

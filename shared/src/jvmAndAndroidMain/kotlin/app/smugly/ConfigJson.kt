@@ -45,6 +45,10 @@ object ConfigJson {
             .put("cdnUrl", config.cdnUrl)
             .put("cdnPsk", config.cdnPsk)
             .put("cdnMimic", config.cdnMimic)
+            .put("cdnUplinkMethod", config.cdnUplinkMethod)
+            .put("cdnUplinkPath", config.cdnUplinkPath)
+            .put("cdnUplinkData", config.cdnUplinkData)
+            .put("cdnXhttpPlacement", config.cdnXhttpPlacement)
 
     fun configFromJson(json: JSONObject): Config =
         Config(
@@ -76,7 +80,11 @@ object ConfigJson {
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnUrl = json.optString("cdnUrl", ""),
             cdnPsk = json.optString("cdnPsk", ""),
-            cdnMimic = json.optString("cdnMimic", "").ifBlank { "mixed" }
+            cdnMimic = json.optString("cdnMimic", "").ifBlank { "mixed" },
+            cdnUplinkMethod = json.optString("cdnUplinkMethod", "").ifBlank { "GET" },
+            cdnUplinkPath = json.optString("cdnUplinkPath", "").ifBlank { "asset" },
+            cdnUplinkData = json.optString("cdnUplinkData", "").ifBlank { "query" },
+            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "").ifBlank { "query" }
         )
 
     fun profileToJson(profile: ConfigProfile): JSONObject =

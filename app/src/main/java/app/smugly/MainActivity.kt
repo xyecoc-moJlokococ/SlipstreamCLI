@@ -103,6 +103,10 @@ class MainActivity : android.app.Activity() {
     private lateinit var cdnUrl: EditText
     private lateinit var cdnPsk: EditText
     private lateinit var cdnMimicSelector: LinearLayout
+    private lateinit var cdnUplinkMethodSelector: LinearLayout
+    private lateinit var cdnUplinkPathSelector: LinearLayout
+    private lateinit var cdnUplinkDataSelector: LinearLayout
+    private lateinit var cdnXhttpPlacementSelector: LinearLayout
     // Xray profiles have no structured fields at all -- just this JSON editor.
     private lateinit var xraySection: LinearLayout
     private lateinit var xrayConfigField: EditText
@@ -1317,6 +1321,10 @@ class MainActivity : android.app.Activity() {
         cdnUrl = edit("https://cdn-host/")
         cdnPsk = edit(t(S.CDN_PSK_HINT))
         cdnMimicSelector = pillSelector(listOf("image", "video", "static", "mixed"))
+        cdnUplinkMethodSelector = pillSelector(listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE"))
+        cdnUplinkPathSelector = pillSelector(listOf("auto", "asset", "api"))
+        cdnUplinkDataSelector = pillSelector(listOf("auto", "cookies", "query", "header", "body"))
+        cdnXhttpPlacementSelector = pillSelector(listOf("cookie", "query", "header"))
 
         root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
         root.addView(labeledField(t(S.PROTOCOL), protocolSelector), fieldParams())
@@ -1374,6 +1382,10 @@ class MainActivity : android.app.Activity() {
         cdnfuSection.addView(labeledField(t(S.CDN_URL), cdnUrl), fieldParams())
         cdnfuSection.addView(labeledField(t(S.CDN_PSK), cdnPsk), fieldParams())
         cdnfuSection.addView(labeledField(t(S.CDN_MIMIC), cdnMimicSelector), fieldParams())
+        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_METHOD), cdnUplinkMethodSelector), fieldParams())
+        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_PATH), cdnUplinkPathSelector), fieldParams())
+        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_DATA), cdnUplinkDataSelector), fieldParams())
+        cdnfuSection.addView(labeledField(t(S.CDN_XHTTP_PLACEMENT), cdnXhttpPlacementSelector), fieldParams())
         root.addView(cdnfuSection, fieldParams())
 
         // --- Xray fields: the JSON config is the entire profile ---
@@ -2034,6 +2046,26 @@ class MainActivity : android.app.Activity() {
         cdnMimicSelector.setPillSelectedIndex(
             listOf("image", "video", "static", "mixed").indexOf(c.cdnMimic.ifBlank { "mixed" }).let { if (it < 0) 3 else it }
         )
+        cdnUplinkMethodSelector.setPillSelectedIndex(
+            listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
+                .indexOf(c.cdnUplinkMethod.ifBlank { "GET" })
+                .let { if (it < 0) 1 else it }
+        )
+        cdnUplinkPathSelector.setPillSelectedIndex(
+            listOf("auto", "asset", "api")
+                .indexOf(c.cdnUplinkPath.ifBlank { "asset" })
+                .let { if (it < 0) 1 else it }
+        )
+        cdnUplinkDataSelector.setPillSelectedIndex(
+            listOf("auto", "cookies", "query", "header", "body")
+                .indexOf(c.cdnUplinkData.ifBlank { "query" })
+                .let { if (it < 0) 2 else it }
+        )
+        cdnXhttpPlacementSelector.setPillSelectedIndex(
+            listOf("cookie", "query", "header")
+                .indexOf(c.cdnXhttpPlacement.ifBlank { "query" })
+                .let { if (it < 0) 1 else it }
+        )
         updateResolverUi()
         updateProtocolUi()
     }
@@ -2296,7 +2328,15 @@ class MainActivity : android.app.Activity() {
             cdnUrl = cdnUrl.text.toString().trim(),
             cdnPsk = cdnPsk.text.toString().trim(),
             cdnMimic = listOf("image", "video", "static", "mixed")
-                .getOrElse(cdnMimicSelector.pillSelectedIndex()) { "mixed" }
+                .getOrElse(cdnMimicSelector.pillSelectedIndex()) { "mixed" },
+            cdnUplinkMethod = listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
+                .getOrElse(cdnUplinkMethodSelector.pillSelectedIndex()) { "GET" },
+            cdnUplinkPath = listOf("auto", "asset", "api")
+                .getOrElse(cdnUplinkPathSelector.pillSelectedIndex()) { "asset" },
+            cdnUplinkData = listOf("auto", "cookies", "query", "header", "body")
+                .getOrElse(cdnUplinkDataSelector.pillSelectedIndex()) { "query" },
+            cdnXhttpPlacement = listOf("cookie", "query", "header")
+                .getOrElse(cdnXhttpPlacementSelector.pillSelectedIndex()) { "query" }
         )
     }
 

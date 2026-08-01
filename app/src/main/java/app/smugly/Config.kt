@@ -68,7 +68,11 @@ object ConfigStore {
             xrayConfigJson = p.getString("xrayConfigJson", "") ?: "",
             cdnUrl = p.getString("cdnUrl", "") ?: "",
             cdnPsk = p.getString("cdnPsk", "") ?: "",
-            cdnMimic = p.getString("cdnMimic", "mixed") ?: "mixed"
+            cdnMimic = p.getString("cdnMimic", "mixed") ?: "mixed",
+            cdnUplinkMethod = p.getString("cdnUplinkMethod", "GET")?.ifBlank { "GET" } ?: "GET",
+            cdnUplinkPath = p.getString("cdnUplinkPath", "asset")?.ifBlank { "asset" } ?: "asset",
+            cdnUplinkData = p.getString("cdnUplinkData", "query")?.ifBlank { "query" } ?: "query",
+            cdnXhttpPlacement = p.getString("cdnXhttpPlacement", "query")?.ifBlank { "query" } ?: "query"
         )
     }
 
@@ -641,6 +645,10 @@ object ConfigStore {
             .putString("cdnUrl", config.cdnUrl)
             .putString("cdnPsk", config.cdnPsk)
             .putString("cdnMimic", config.cdnMimic)
+            .putString("cdnUplinkMethod", config.cdnUplinkMethod)
+            .putString("cdnUplinkPath", config.cdnUplinkPath)
+            .putString("cdnUplinkData", config.cdnUplinkData)
+            .putString("cdnXhttpPlacement", config.cdnXhttpPlacement)
             .apply()
     }
 
@@ -700,6 +708,10 @@ object ConfigStore {
             .put("cdnUrl", config.cdnUrl)
             .put("cdnPsk", config.cdnPsk)
             .put("cdnMimic", config.cdnMimic)
+            .put("cdnUplinkMethod", config.cdnUplinkMethod)
+            .put("cdnUplinkPath", config.cdnUplinkPath)
+            .put("cdnUplinkData", config.cdnUplinkData)
+            .put("cdnXhttpPlacement", config.cdnXhttpPlacement)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -731,7 +743,11 @@ object ConfigStore {
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnUrl = json.optString("cdnUrl", ""),
             cdnPsk = json.optString("cdnPsk", ""),
-            cdnMimic = json.optString("cdnMimic", "mixed")
+            cdnMimic = json.optString("cdnMimic", "mixed"),
+            cdnUplinkMethod = json.optString("cdnUplinkMethod", "GET").ifBlank { "GET" },
+            cdnUplinkPath = json.optString("cdnUplinkPath", "asset").ifBlank { "asset" },
+            cdnUplinkData = json.optString("cdnUplinkData", "query").ifBlank { "query" },
+            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "query").ifBlank { "query" }
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =

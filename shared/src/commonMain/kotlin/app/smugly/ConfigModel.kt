@@ -35,7 +35,15 @@ data class Config(
     val xrayConfigJson: String = "",
     val cdnUrl: String = "",
     val cdnPsk: String = "",
-    val cdnMimic: String = "mixed"
+    val cdnMimic: String = "mixed",
+    /** Uplink HTTP method: auto | GET | POST | PUT | PATCH | DELETE | … */
+    val cdnUplinkMethod: String = "GET",
+    /** Uplink path family: auto | asset | api (GET always forces asset). */
+    val cdnUplinkPath: String = "asset",
+    /** Uplink payload placement: auto | cookies | query | header | body. */
+    val cdnUplinkData: String = "query",
+    /** XHTTP meta placement for session/seq/pad: cookie | query | header. */
+    val cdnXhttpPlacement: String = "query"
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }

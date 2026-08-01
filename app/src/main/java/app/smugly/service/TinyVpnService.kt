@@ -376,7 +376,12 @@ class TinyVpnService : VpnService() {
     private fun startCdnfuTunnelWorker(generation: Int, config: Config) {
         currentConfig = config
         tunnelActive = true
-        AppLog.i(TAG, "CDNFU start url=${config.cdnUrl} mimic=${config.cdnMimic} chacha=${config.cdnPsk.isNotBlank()}")
+        AppLog.i(
+            TAG,
+            "CDNFU start url=${config.cdnUrl} mimic=${config.cdnMimic} " +
+                "method=${config.cdnUplinkMethod} path=${config.cdnUplinkPath} data=${config.cdnUplinkData} " +
+                "xhttp=${config.cdnXhttpPlacement} chacha=${config.cdnPsk.isNotBlank()}"
+        )
         try {
             require(config.cdnUrl.isNotBlank()) { "CDN url is empty" }
             resetTrafficBase()
@@ -386,7 +391,11 @@ class TinyVpnService : VpnService() {
                 url = config.cdnUrl.trim(),
                 psk = config.cdnPsk.trim(),
                 mimic = config.cdnMimic.trim().ifBlank { "mixed" },
-                socksListen = "127.0.0.1:$socksPort"
+                socksListen = "127.0.0.1:$socksPort",
+                uplinkMethod = config.cdnUplinkMethod.trim().ifBlank { "GET" },
+                uplinkPath = config.cdnUplinkPath.trim().ifBlank { "asset" },
+                uplinkData = config.cdnUplinkData.trim().ifBlank { "query" },
+                xhttpPlacement = config.cdnXhttpPlacement.trim().ifBlank { "query" }
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 

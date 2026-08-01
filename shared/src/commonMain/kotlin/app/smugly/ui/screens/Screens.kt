@@ -1158,6 +1158,14 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
 private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     val mimics = listOf("image", "video", "static", "mixed")
     val mimicIndex = mimics.indexOf(c.cdnMimic.ifBlank { "mixed" }).let { if (it < 0) 3 else it }
+    val methods = listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
+    val methodIndex = methods.indexOf(c.cdnUplinkMethod.ifBlank { "GET" }).let { if (it < 0) 1 else it }
+    val pathModes = listOf("auto", "asset", "api")
+    val pathIndex = pathModes.indexOf(c.cdnUplinkPath.ifBlank { "asset" }).let { if (it < 0) 1 else it }
+    val dataModes = listOf("auto", "cookies", "query", "header", "body")
+    val dataIndex = dataModes.indexOf(c.cdnUplinkData.ifBlank { "query" }).let { if (it < 0) 2 else it }
+    val xhttpModes = listOf("cookie", "query", "header")
+    val xhttpIndex = xhttpModes.indexOf(c.cdnXhttpPlacement.ifBlank { "query" }).let { if (it < 0) 1 else it }
     LabeledField(t(S.CDN_URL)) {
         SmuglyTextField(c.cdnUrl, { onChange(c.copy(cdnUrl = it)) }, hint = "https://cdn-host/")
     }
@@ -1166,6 +1174,18 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     }
     LabeledField(t(S.CDN_MIMIC)) {
         PillSelector(mimics, mimicIndex) { idx -> onChange(c.copy(cdnMimic = mimics[idx])) }
+    }
+    LabeledField(t(S.CDN_UPLINK_METHOD)) {
+        PillSelector(methods, methodIndex) { idx -> onChange(c.copy(cdnUplinkMethod = methods[idx])) }
+    }
+    LabeledField(t(S.CDN_UPLINK_PATH)) {
+        PillSelector(pathModes, pathIndex) { idx -> onChange(c.copy(cdnUplinkPath = pathModes[idx])) }
+    }
+    LabeledField(t(S.CDN_UPLINK_DATA)) {
+        PillSelector(dataModes, dataIndex) { idx -> onChange(c.copy(cdnUplinkData = dataModes[idx])) }
+    }
+    LabeledField(t(S.CDN_XHTTP_PLACEMENT)) {
+        PillSelector(xhttpModes, xhttpIndex) { idx -> onChange(c.copy(cdnXhttpPlacement = xhttpModes[idx])) }
     }
 }
 
