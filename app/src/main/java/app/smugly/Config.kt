@@ -64,7 +64,6 @@ object ConfigStore {
             s3AccessKey = p.getString("s3AccessKey", "") ?: "",
             s3SecretKey = p.getString("s3SecretKey", "") ?: "",
             s3Prefix = p.getString("s3Prefix", "")?.takeIf { it.isNotBlank() } ?: "s3fu",
-            s3Login = p.getString("s3Login", "") ?: "",
             s3Psk = p.getString("s3Psk", "") ?: "",
             xrayConfigJson = p.getString("xrayConfigJson", "") ?: "",
             cdnUrl = p.getString("cdnUrl", "") ?: "",
@@ -471,7 +470,7 @@ object ConfigStore {
                     configJson != null -> configFromJson(configJson)
                     json.has("domain") || json.has("resolverHost") ||
                         json.has("s3Endpoint") || json.has("protocol") ||
-                        json.has("s3Bucket") || json.has("s3Login") ||
+                        json.has("s3Bucket") || json.has("s3Psk") ||
                         json.has("xrayConfigJson") -> configFromJson(json)
                     else -> null
                 }
@@ -521,10 +520,13 @@ object ConfigStore {
         val bucket = first("bucket", "s3bucket", "s3_bucket")
         val accessKey = first("accesskey", "s3accesskey", "access_key", "s3_access_key")
         val secretKey = first("secretkey", "s3secretkey", "secret_key", "s3_secret_key")
-        val login = first("login", "s3login", "user", "userid", "s3userid", "s3_login")
+        // s3fu dropped the login: the PSK is the whole credential. Links minted by
+        // older builds still carry one, so it is parsed and used as a profile-name
+        // fallback, but it no longer takes part in the config.
+        val legacyLogin = first("login", "s3login", "user", "userid", "s3userid", "s3_login")
         val psk = first("psk", "s3psk", "s3_psk")
-        // Need at least endpoint + bucket + credentials, or login+psk with endpoint.
-        if (endpoint.isNullOrBlank() && bucket.isNullOrBlank() && login.isNullOrBlank()) {
+        // Need at least endpoint + bucket, or a psk with an endpoint.
+        if (endpoint.isNullOrBlank() && bucket.isNullOrBlank() && psk.isNullOrBlank()) {
             return null
         }
         val config = base.copy(
@@ -534,11 +536,10 @@ object ConfigStore {
             s3AccessKey = accessKey ?: base.s3AccessKey,
             s3SecretKey = secretKey ?: base.s3SecretKey,
             s3Prefix = (first("prefix", "s3prefix", "s3_prefix") ?: base.s3Prefix).ifBlank { "s3fu" },
-            s3Login = login ?: base.s3Login,
             s3Psk = psk ?: base.s3Psk
         )
         val name = first("name", "profilename")
-            ?: config.s3Login.takeIf { it.isNotBlank() }
+            ?: legacyLogin?.takeIf { it.isNotBlank() }
             ?: config.s3Bucket.takeIf { it.isNotBlank() }
             ?: defaultProfileName(config)
         return ImportedProfile(name, config)
@@ -635,7 +636,6 @@ object ConfigStore {
             .putString("s3AccessKey", config.s3AccessKey)
             .putString("s3SecretKey", config.s3SecretKey)
             .putString("s3Prefix", config.s3Prefix)
-            .putString("s3Login", config.s3Login)
             .putString("s3Psk", config.s3Psk)
             .putString("xrayConfigJson", config.xrayConfigJson)
             .putString("cdnUrl", config.cdnUrl)
@@ -695,7 +695,6 @@ object ConfigStore {
             .put("s3AccessKey", config.s3AccessKey)
             .put("s3SecretKey", config.s3SecretKey)
             .put("s3Prefix", config.s3Prefix)
-            .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
             .put("cdnUrl", config.cdnUrl)
@@ -728,7 +727,6 @@ object ConfigStore {
             s3AccessKey = json.optString("s3AccessKey", ""),
             s3SecretKey = json.optString("s3SecretKey", ""),
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
-            s3Login = json.optString("s3Login", ""),
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnUrl = json.optString("cdnUrl", ""),
@@ -743,7 +741,7 @@ object ConfigStore {
 
     private fun defaultProfileName(config: Config): String = when (config.protocol) {
         Config.TunnelProtocol.S3FU ->
-            config.s3Login.ifBlank { config.s3Bucket }.ifBlank { t(S.PROFILE_NAME_DEFAULT_S3FU) }
+            config.s3Bucket.ifBlank { t(S.PROFILE_NAME_DEFAULT_S3FU) }
         Config.TunnelProtocol.XRAY ->
             XrayConfigBuilder.describeServer(config.xrayConfigJson) ?: t(S.PROFILE_NAME_DEFAULT_XRAY)
         else ->

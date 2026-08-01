@@ -1149,9 +1149,6 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
     LabeledField(t(S.S3_PREFIX)) {
         SmuglyTextField(c.s3Prefix, { onChange(c.copy(s3Prefix = it)) }, hint = t(S.S3_PREFIX_HINT))
     }
-    LabeledField(t(S.S3_LOGIN)) {
-        SmuglyTextField(c.s3Login, { onChange(c.copy(s3Login = it)) })
-    }
     LabeledField(t(S.S3_PSK)) {
         SmuglyTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
     }

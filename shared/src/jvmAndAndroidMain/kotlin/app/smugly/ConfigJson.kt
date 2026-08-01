@@ -40,7 +40,6 @@ object ConfigJson {
             .put("s3AccessKey", config.s3AccessKey)
             .put("s3SecretKey", config.s3SecretKey)
             .put("s3Prefix", config.s3Prefix)
-            .put("s3Login", config.s3Login)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
             .put("cdnUrl", config.cdnUrl)
@@ -73,7 +72,6 @@ object ConfigJson {
             s3AccessKey = json.optString("s3AccessKey", ""),
             s3SecretKey = json.optString("s3SecretKey", ""),
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
-            s3Login = json.optString("s3Login", ""),
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnUrl = json.optString("cdnUrl", ""),

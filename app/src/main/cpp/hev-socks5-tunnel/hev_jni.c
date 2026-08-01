@@ -109,7 +109,7 @@ static void *tunnel_thread_func(void *arg) {
 }
 
 JNIEXPORT jint JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeStart(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeStart(
     JNIEnv *env,
     jclass clazz,
     jstring config,
@@ -169,7 +169,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeStart(
 }
 
 JNIEXPORT void JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetCrashLogPath(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeSetCrashLogPath(
     JNIEnv *env,
     jclass clazz,
     jstring path
@@ -198,7 +198,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetCrashLogPath(
 }
 
 JNIEXPORT void JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeStop(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeStop(
     JNIEnv *env,
     jclass clazz
 ) {
@@ -228,7 +228,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeStop(
 }
 
 JNIEXPORT void JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetRejectQuic(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeSetRejectQuic(
     JNIEnv *env,
     jclass clazz,
     jboolean enabled
@@ -237,7 +237,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetRejectQuic(
 }
 
 JNIEXPORT void JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetRejectNonDnsUdp(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeSetRejectNonDnsUdp(
     JNIEnv *env,
     jclass clazz,
     jboolean enabled
@@ -246,7 +246,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetRejectNonDnsUdp(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeIsRunning(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeIsRunning(
     JNIEnv *env,
     jclass clazz
 ) {
@@ -254,7 +254,7 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeIsRunning(
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeGetStats(
+Java_app_smugly_tunnel_HevSocks5Tunnel_nativeGetStats(
     JNIEnv *env,
     jclass clazz
 ) {

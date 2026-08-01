@@ -29,7 +29,8 @@ data class Config(
     val s3AccessKey: String = "",
     val s3SecretKey: String = "",
     val s3Prefix: String = "s3fu",
-    val s3Login: String = "",
+    /** The whole s3fu credential: it authenticates and derives the user's object
+     *  namespace, so there is no separate login. */
     val s3Psk: String = "",
     val xrayConfigJson: String = "",
     val cdnUrl: String = "",

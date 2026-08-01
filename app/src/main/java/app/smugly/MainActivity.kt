@@ -98,7 +98,6 @@ class MainActivity : android.app.Activity() {
     private lateinit var s3AccessKey: EditText
     private lateinit var s3SecretKey: EditText
     private lateinit var s3Prefix: EditText
-    private lateinit var s3Login: EditText
     private lateinit var s3Psk: EditText
     private lateinit var cdnfuSection: LinearLayout
     private lateinit var cdnUrl: EditText
@@ -1314,7 +1313,6 @@ class MainActivity : android.app.Activity() {
         s3AccessKey = edit(t(S.S3_ACCESS_KEY))
         s3SecretKey = edit(t(S.S3_SECRET_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         s3Prefix = edit(t(S.S3_PREFIX_HINT))
-        s3Login = edit(t(S.S3_LOGIN_HINT))
         s3Psk = edit(t(S.S3_PSK_HINT))
         cdnUrl = edit("https://cdn-host/")
         cdnPsk = edit(t(S.CDN_PSK_HINT))
@@ -1368,7 +1366,6 @@ class MainActivity : android.app.Activity() {
         s3fuSection.addView(labeledField(t(S.S3_ACCESS_KEY), s3AccessKey), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_SECRET_KEY), s3SecretKey), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PREFIX), s3Prefix), fieldParams())
-        s3fuSection.addView(labeledField(t(S.S3_LOGIN), s3Login), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
         root.addView(s3fuSection, fieldParams())
 
@@ -2031,7 +2028,6 @@ class MainActivity : android.app.Activity() {
         s3AccessKey.setText(c.s3AccessKey)
         s3SecretKey.setText(c.s3SecretKey)
         s3Prefix.setText(c.s3Prefix)
-        s3Login.setText(c.s3Login)
         s3Psk.setText(c.s3Psk)
         cdnUrl.setText(c.cdnUrl)
         cdnPsk.setText(c.cdnPsk)
@@ -2296,7 +2292,6 @@ class MainActivity : android.app.Activity() {
             s3AccessKey = s3AccessKey.text.toString().trim(),
             s3SecretKey = s3SecretKey.text.toString().trim(),
             s3Prefix = s3Prefix.text.toString().trim().ifBlank { "s3fu" },
-            s3Login = s3Login.text.toString().trim(),
             s3Psk = s3Psk.text.toString().trim(),
             cdnUrl = cdnUrl.text.toString().trim(),
             cdnPsk = cdnPsk.text.toString().trim(),
@@ -3042,7 +3037,7 @@ class MainActivity : android.app.Activity() {
         val c = profile.config
         return when (c.protocol) {
             Config.TunnelProtocol.S3FU ->
-                c.s3Endpoint.ifBlank { c.s3Login }.ifBlank { c.s3Bucket }.ifBlank { profile.name }
+                c.s3Endpoint.ifBlank { c.s3Bucket }.ifBlank { profile.name }
             Config.TunnelProtocol.XRAY ->
                 XrayConfigBuilder.describeServer(c.xrayConfigJson) ?: profile.name
             else ->

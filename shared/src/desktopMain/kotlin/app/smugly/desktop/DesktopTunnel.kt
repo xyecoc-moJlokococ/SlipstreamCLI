@@ -210,7 +210,6 @@ object DesktopTunnel {
             appendLine("access_key = ${tomlString(c.s3AccessKey.trim())}")
             appendLine("secret_key = ${tomlString(c.s3SecretKey.trim())}")
             if (c.s3Prefix.isNotBlank()) appendLine("prefix = ${tomlString(c.s3Prefix.trim())}")
-            if (c.s3Login.isNotBlank()) appendLine("login = ${tomlString(c.s3Login.trim())}")
             if (c.s3Psk.isNotBlank()) appendLine("psk = ${tomlString(c.s3Psk.trim())}")
             appendLine("socks_listen = ${tomlString("127.0.0.1:$socksPort")}")
         }
