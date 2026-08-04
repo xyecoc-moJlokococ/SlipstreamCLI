@@ -38,7 +38,7 @@ if [ -f "$SRC/app/build/rustJniLibs/android/arm64-v8a/libslipstream.so" ]; then
 elif [ -f "$DST/app/build/rustJniLibs/android/arm64-v8a/libslipstream.so" ]; then
   echo "keeping existing slipstream so in DST"
 else
-  # try from previous WSL build of slipstream via gradle target dir
+  # try from previous WSL build of slipstream via gradle target di
   if [ -f "$SLIP_SRC/target/aarch64-linux-android/release/libslipstream.so" ]; then
     mkdir -p "$DST/app/build/rustJniLibs/android/arm64-v8a"
     cp -a "$SLIP_SRC/target/aarch64-linux-android/release/libslipstream.so" \

@@ -49,6 +49,7 @@ object ConfigJson {
             .put("cdnUplinkPath", config.cdnUplinkPath)
             .put("cdnUplinkData", config.cdnUplinkData)
             .put("cdnXhttpPlacement", config.cdnXhttpPlacement)
+            .put("cdnDownlinkMode", config.cdnDownlinkMode)
 
     fun configFromJson(json: JSONObject): Config =
         Config(
@@ -84,7 +85,8 @@ object ConfigJson {
             cdnUplinkMethod = json.optString("cdnUplinkMethod", "").ifBlank { "GET" },
             cdnUplinkPath = json.optString("cdnUplinkPath", "").ifBlank { "asset" },
             cdnUplinkData = json.optString("cdnUplinkData", "").ifBlank { "query" },
-            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "").ifBlank { "query" }
+            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "").ifBlank { "query" },
+            cdnDownlinkMode = json.optString("cdnDownlinkMode", "").ifBlank { "auto" }
         )
 
     fun profileToJson(profile: ConfigProfile): JSONObject =

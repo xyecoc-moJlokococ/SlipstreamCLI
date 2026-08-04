@@ -41,6 +41,7 @@ object CdnfuBridge {
      * @param uplinkPath  auto | asset | api.
      * @param uplinkData  auto | cookies | query | header | body.
      * @param xhttpPlacement  cookie | query | header for session/seq/pad.
+     * @param downlinkMode  auto | stream | poll (image/static auto→poll on Beeline).
      */
     fun startClient(
         url: String,
@@ -50,13 +51,14 @@ object CdnfuBridge {
         uplinkMethod: String = "GET",
         uplinkPath: String = "asset",
         uplinkData: String = "query",
-        xhttpPlacement: String = "query"
+        xhttpPlacement: String = "query",
+        downlinkMode: String = "auto"
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libcdnfu is not loaded"))
         AppLog.i(
             TAG,
             "start url=$url mimic=$mimic method=$uplinkMethod path=$uplinkPath data=$uplinkData " +
-                "xhttp=$xhttpPlacement chacha=${psk.isNotBlank()} socks=$socksListen"
+                "xhttp=$xhttpPlacement downlink=$downlinkMode chacha=${psk.isNotBlank()} socks=$socksListen"
         )
         val code = runCatching {
             nativeStartClient(
@@ -67,7 +69,8 @@ object CdnfuBridge {
                 uplinkMethod,
                 uplinkPath,
                 uplinkData,
-                xhttpPlacement
+                xhttpPlacement,
+                downlinkMode
             )
         }.getOrElse {
             AppLog.e(TAG, "nativeStartClient threw", it)
@@ -101,7 +104,8 @@ object CdnfuBridge {
         uplinkMethod: String,
         uplinkPath: String,
         uplinkData: String,
-        xhttpPlacement: String
+        xhttpPlacement: String,
+        downlinkMode: String
     ): Int
 
     private external fun nativeStopClient()

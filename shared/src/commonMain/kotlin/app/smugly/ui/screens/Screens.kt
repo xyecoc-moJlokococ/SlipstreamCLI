@@ -1166,6 +1166,8 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     val dataIndex = dataModes.indexOf(c.cdnUplinkData.ifBlank { "query" }).let { if (it < 0) 2 else it }
     val xhttpModes = listOf("cookie", "query", "header")
     val xhttpIndex = xhttpModes.indexOf(c.cdnXhttpPlacement.ifBlank { "query" }).let { if (it < 0) 1 else it }
+    val dlModes = listOf("auto", "stream", "poll")
+    val dlIndex = dlModes.indexOf(c.cdnDownlinkMode.ifBlank { "auto" }).let { if (it < 0) 0 else it }
     LabeledField(t(S.CDN_URL)) {
         SmuglyTextField(c.cdnUrl, { onChange(c.copy(cdnUrl = it)) }, hint = "https://cdn-host/")
     }
@@ -1186,6 +1188,9 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     }
     LabeledField(t(S.CDN_XHTTP_PLACEMENT)) {
         PillSelector(xhttpModes, xhttpIndex) { idx -> onChange(c.copy(cdnXhttpPlacement = xhttpModes[idx])) }
+    }
+    LabeledField(t(S.CDN_DOWNLINK_MODE)) {
+        PillSelector(dlModes, dlIndex) { idx -> onChange(c.copy(cdnDownlinkMode = dlModes[idx])) }
     }
 }
 

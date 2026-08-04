@@ -72,7 +72,8 @@ object ConfigStore {
             cdnUplinkMethod = p.getString("cdnUplinkMethod", "GET")?.ifBlank { "GET" } ?: "GET",
             cdnUplinkPath = p.getString("cdnUplinkPath", "asset")?.ifBlank { "asset" } ?: "asset",
             cdnUplinkData = p.getString("cdnUplinkData", "query")?.ifBlank { "query" } ?: "query",
-            cdnXhttpPlacement = p.getString("cdnXhttpPlacement", "query")?.ifBlank { "query" } ?: "query"
+            cdnXhttpPlacement = p.getString("cdnXhttpPlacement", "query")?.ifBlank { "query" } ?: "query",
+            cdnDownlinkMode = p.getString("cdnDownlinkMode", "auto")?.ifBlank { "auto" } ?: "auto"
         )
     }
 
@@ -649,6 +650,7 @@ object ConfigStore {
             .putString("cdnUplinkPath", config.cdnUplinkPath)
             .putString("cdnUplinkData", config.cdnUplinkData)
             .putString("cdnXhttpPlacement", config.cdnXhttpPlacement)
+            .putString("cdnDownlinkMode", config.cdnDownlinkMode)
             .apply()
     }
 
@@ -712,6 +714,7 @@ object ConfigStore {
             .put("cdnUplinkPath", config.cdnUplinkPath)
             .put("cdnUplinkData", config.cdnUplinkData)
             .put("cdnXhttpPlacement", config.cdnXhttpPlacement)
+            .put("cdnDownlinkMode", config.cdnDownlinkMode)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -747,7 +750,8 @@ object ConfigStore {
             cdnUplinkMethod = json.optString("cdnUplinkMethod", "GET").ifBlank { "GET" },
             cdnUplinkPath = json.optString("cdnUplinkPath", "asset").ifBlank { "asset" },
             cdnUplinkData = json.optString("cdnUplinkData", "query").ifBlank { "query" },
-            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "query").ifBlank { "query" }
+            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "query").ifBlank { "query" },
+            cdnDownlinkMode = json.optString("cdnDownlinkMode", "auto").ifBlank { "auto" }
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =

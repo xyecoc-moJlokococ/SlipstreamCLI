@@ -43,7 +43,9 @@ data class Config(
     /** Uplink payload placement: auto | cookies | query | header | body. */
     val cdnUplinkData: String = "query",
     /** XHTTP meta placement for session/seq/pad: cookie | query | header. */
-    val cdnXhttpPlacement: String = "query"
+    val cdnXhttpPlacement: String = "query",
+    /** Downlink style: auto | stream | poll (auto: video=stream, image/static=poll). */
+    val cdnDownlinkMode: String = "auto"
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }

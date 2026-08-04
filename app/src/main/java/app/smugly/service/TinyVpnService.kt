@@ -380,7 +380,7 @@ class TinyVpnService : VpnService() {
             TAG,
             "CDNFU start url=${config.cdnUrl} mimic=${config.cdnMimic} " +
                 "method=${config.cdnUplinkMethod} path=${config.cdnUplinkPath} data=${config.cdnUplinkData} " +
-                "xhttp=${config.cdnXhttpPlacement} chacha=${config.cdnPsk.isNotBlank()}"
+                "xhttp=${config.cdnXhttpPlacement} downlink=${config.cdnDownlinkMode} chacha=${config.cdnPsk.isNotBlank()}"
         )
         try {
             require(config.cdnUrl.isNotBlank()) { "CDN url is empty" }
@@ -395,7 +395,8 @@ class TinyVpnService : VpnService() {
                 uplinkMethod = config.cdnUplinkMethod.trim().ifBlank { "GET" },
                 uplinkPath = config.cdnUplinkPath.trim().ifBlank { "asset" },
                 uplinkData = config.cdnUplinkData.trim().ifBlank { "query" },
-                xhttpPlacement = config.cdnXhttpPlacement.trim().ifBlank { "query" }
+                xhttpPlacement = config.cdnXhttpPlacement.trim().ifBlank { "query" },
+                downlinkMode = config.cdnDownlinkMode.trim().ifBlank { "auto" }
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 

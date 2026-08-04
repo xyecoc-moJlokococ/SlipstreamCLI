@@ -57,6 +57,7 @@ enum class S(val en: String, val ru: String) {
     CDN_UPLINK_PATH("Uplink paths", "Пути uplink"),
     CDN_UPLINK_DATA("Uplink data", "Данные uplink"),
     CDN_XHTTP_PLACEMENT("XHTTP placement", "XHTTP placement"),
+    CDN_DOWNLINK_MODE("Downlink mode", "Режим downlink"),
     /** Profile-card subtitle: the component actually carrying the traffic. */
     PROTOCOL_XRAY_CORE("Xray-core", "Xray-core"),
     S3_SECTION("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
