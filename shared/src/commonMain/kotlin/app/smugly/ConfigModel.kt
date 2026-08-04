@@ -32,27 +32,14 @@ data class Config(
     /** The whole s3fu credential: it authenticates and derives the user's object
      *  namespace, so there is no separate login. */
     val s3Psk: String = "",
-    val xrayConfigJson: String = "",
-    val cdnUrl: String = "",
-    val cdnPsk: String = "",
-    val cdnMimic: String = "mixed",
-    /** Uplink HTTP method: auto | GET | POST | PUT | PATCH | DELETE | … */
-    val cdnUplinkMethod: String = "GET",
-    /** Uplink path family: auto | asset | api (GET always forces asset). */
-    val cdnUplinkPath: String = "asset",
-    /** Uplink payload placement: auto | cookies | query | header | body. */
-    val cdnUplinkData: String = "query",
-    /** XHTTP meta placement for session/seq/pad: cookie | query | header. */
-    val cdnXhttpPlacement: String = "query",
-    /** Downlink style: auto | stream | poll (auto: video=stream, image/static=poll). */
-    val cdnDownlinkMode: String = "auto"
+    val xrayConfigJson: String = ""
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
     enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
-    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY, CDNFU }
+    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY }
 }
 
 data class ConfigProfile(

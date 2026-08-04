@@ -311,7 +311,13 @@ fun FolderTabs(
     val spans = remember(names) { mutableStateListOf(*Array(names.size) { 0f to 0f }) }
     /** Index of the tab being dragged, or -1. */
     var dragFrom by remember { mutableStateOf(-1) }
+    /** Slot the held tab would land in right now — drives the live gap. */
+    var dragTo by remember { mutableStateOf(-1) }
     var dragDx by remember { mutableStateOf(0f) }
+    // Gap the other tabs open up as the held one passes over them. Without it the drag was
+    // invisible: only the held tab moved, nothing showed where it would land, and a drop that
+    // did not travel far enough to change slots looked exactly like a drag that did nothing.
+    val gapPx = with(density) { 2.dp.toPx() }
     val scope = rememberCoroutineScope()
     val target = spans.getOrElse(selectedIndex) { 0f to 0f }
     val indicatorX by animateFloatAsState(
@@ -339,6 +345,22 @@ fun FolderTabs(
                 targetValue = if (selected) SmuglyTextPrimary else SmuglyTextSecondary,
                 animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
                 label = "tabLabel"
+            )
+            // Step aside while the held tab is over this slot, so the gap follows the finger.
+            val shiftTarget = if (dragFrom < 0 || dragTo < 0 || index == dragFrom) {
+                0f
+            } else {
+                val held = (spans.getOrNull(dragFrom)?.second ?: 0f) + gapPx
+                when {
+                    index in (dragFrom + 1)..dragTo -> -held
+                    index in dragTo until dragFrom -> held
+                    else -> 0f
+                }
+            }
+            val shift by animateFloatAsState(
+                targetValue = shiftTarget,
+                animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
+                label = "tabShift"
             )
             Box(
                 modifier = Modifier
@@ -380,14 +402,10 @@ fun FolderTabs(
                             onDragStart = {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 dragFrom = index
+                                dragTo = index
                                 dragDx = 0f
                                 moved = false
                                 onDragActive(true)
-                                // Touch: open the folder menu on pick-up (home-screen style).
-                                // Desktop: menu is right-click only — holding LMB is for drag.
-                                if (!isDesktop) {
-                                    onMenu(index, anchor[0], anchor[1])
-                                }
                             },
                             onDrag = { change, delta ->
                                 change.consume()
@@ -396,14 +414,28 @@ fun FolderTabs(
                                     moved = true
                                     onMenuDismiss()
                                 }
+                                // Recomputed on every frame, not on release: this is what the
+                                // other tabs animate off, so the user can see the slot open up
+                                // before letting go.
+                                val next = slotAt(spans, index, dragDx)
+                                if (next != dragTo) {
+                                    dragTo = next
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
                             },
                             onDragEnd = {
-                                val drop = if (moved) slotAt(spans, index, dragDx) else index
+                                val drop = if (moved) dragTo else index
+                                // The folder menu opens on a hold that did NOT become a drag.
+                                // Opening it on pick-up (the old behaviour) dropped a full-screen
+                                // panel over the tabs the moment the finger settled, so the drag
+                                // that followed happened underneath it, unseen.
+                                if (!moved && !isDesktop) onMenu(index, anchor[0], anchor[1])
                                 settle(
                                     scope, spans, index, drop, dragDx,
                                     onOffset = { dragDx = it },
                                     onFinished = {
                                         dragFrom = -1
+                                        dragTo = -1
                                         if (drop != index) onMove(index, drop)
                                     }
                                 )
@@ -413,14 +445,16 @@ fun FolderTabs(
                                 settle(
                                     scope, spans, index, index, dragDx,
                                     onOffset = { dragDx = it },
-                                    onFinished = { dragFrom = -1 }
+                                    onFinished = { dragFrom = -1; dragTo = -1 }
                                 )
                                 onDragActive(false)
                             }
                         )
                     }
                     .zIndex(if (dragFrom == index) 1f else 0f)
-                    .graphicsLayer { if (dragFrom == index) translationX = dragDx }
+                    .graphicsLayer {
+                        translationX = if (dragFrom == index) dragDx else shift
+                    }
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 Text(

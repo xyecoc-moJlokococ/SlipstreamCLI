@@ -14,7 +14,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import app.smugly.tunnel.CdnfuBridge
 import app.smugly.tunnel.HevSocks5Tunnel
 import app.smugly.tunnel.MiniSlipstreamSocksBridge
 import app.smugly.tunnel.ResolverListConfig
@@ -146,8 +145,7 @@ class AndroidSmuglyPlatform(
         publish()
         if (c.mode == Config.Mode.VPN ||
             c.protocol == Config.TunnelProtocol.S3FU ||
-            c.protocol == Config.TunnelProtocol.XRAY ||
-            c.protocol == Config.TunnelProtocol.CDNFU
+            c.protocol == Config.TunnelProtocol.XRAY
         ) {
             val prep = VpnService.prepare(activity)
             if (prep != null) {
@@ -298,7 +296,6 @@ class AndroidSmuglyPlatform(
             runCatching { SlipstreamBridge.isRunning() }.getOrDefault(false) ||
             runCatching { S3fuBridge.isRunning() }.getOrDefault(false) ||
             runCatching { XrayBridge.isRunning() }.getOrDefault(false) ||
-            runCatching { CdnfuBridge.isRunning() }.getOrDefault(false) ||
             HevSocks5Tunnel.isRunning()
 
     override fun observeConnect(onChange: (ConnectUiState) -> Unit): () -> Unit {

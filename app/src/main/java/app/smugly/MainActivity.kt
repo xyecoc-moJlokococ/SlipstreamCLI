@@ -99,14 +99,6 @@ class MainActivity : android.app.Activity() {
     private lateinit var s3SecretKey: EditText
     private lateinit var s3Prefix: EditText
     private lateinit var s3Psk: EditText
-    private lateinit var cdnfuSection: LinearLayout
-    private lateinit var cdnUrl: EditText
-    private lateinit var cdnPsk: EditText
-    private lateinit var cdnMimicSelector: LinearLayout
-    private lateinit var cdnUplinkMethodSelector: LinearLayout
-    private lateinit var cdnUplinkPathSelector: LinearLayout
-    private lateinit var cdnUplinkDataSelector: LinearLayout
-    private lateinit var cdnXhttpPlacementSelector: LinearLayout
     // Xray profiles have no structured fields at all -- just this JSON editor.
     private lateinit var xraySection: LinearLayout
     private lateinit var xrayConfigField: EditText
@@ -1300,7 +1292,7 @@ class MainActivity : android.app.Activity() {
 
         // Protocol picker + the mutually-exclusive field groups it toggles.
         protocolSelector = pillSelector(
-            listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY), t(S.PROTOCOL_CDNFU))
+            listOf(t(S.PROTOCOL_SLIPSTREAM), t(S.PROTOCOL_S3FU), t(S.PROTOCOL_XRAY))
         ) { updateProtocolUi() }
         xrayConfigField = multilineEdit(minLinesVisible = 18).apply {
             id = R.id.xray_config_field
@@ -1318,13 +1310,6 @@ class MainActivity : android.app.Activity() {
         s3SecretKey = edit(t(S.S3_SECRET_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         s3Prefix = edit(t(S.S3_PREFIX_HINT))
         s3Psk = edit(t(S.S3_PSK_HINT))
-        cdnUrl = edit("https://cdn-host/")
-        cdnPsk = edit(t(S.CDN_PSK_HINT))
-        cdnMimicSelector = pillSelector(listOf("image", "video", "static", "mixed"))
-        cdnUplinkMethodSelector = pillSelector(listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE"))
-        cdnUplinkPathSelector = pillSelector(listOf("auto", "asset", "api"))
-        cdnUplinkDataSelector = pillSelector(listOf("auto", "cookies", "query", "header", "body"))
-        cdnXhttpPlacementSelector = pillSelector(listOf("cookie", "query", "header"))
 
         root.addView(labeledField(t(S.PROFILE_NAME), profileName), fieldParams())
         root.addView(labeledField(t(S.PROTOCOL), protocolSelector), fieldParams())
@@ -1376,17 +1361,6 @@ class MainActivity : android.app.Activity() {
         s3fuSection.addView(labeledField(t(S.S3_PREFIX), s3Prefix), fieldParams())
         s3fuSection.addView(labeledField(t(S.S3_PSK), s3Psk), fieldParams())
         root.addView(s3fuSection, fieldParams())
-
-        // --- CDN (cdn-fuckup) fields ---
-        cdnfuSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        cdnfuSection.addView(labeledField(t(S.CDN_URL), cdnUrl), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_PSK), cdnPsk), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_MIMIC), cdnMimicSelector), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_METHOD), cdnUplinkMethodSelector), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_PATH), cdnUplinkPathSelector), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_UPLINK_DATA), cdnUplinkDataSelector), fieldParams())
-        cdnfuSection.addView(labeledField(t(S.CDN_XHTTP_PLACEMENT), cdnXhttpPlacementSelector), fieldParams())
-        root.addView(cdnfuSection, fieldParams())
 
         // --- Xray fields: the JSON config is the entire profile ---
         xraySection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2030,7 +2004,6 @@ class MainActivity : android.app.Activity() {
             when (c.protocol) {
                 Config.TunnelProtocol.S3FU -> 1
                 Config.TunnelProtocol.XRAY -> 2
-                Config.TunnelProtocol.CDNFU -> 3
                 else -> 0
             }
         )
@@ -2041,31 +2014,6 @@ class MainActivity : android.app.Activity() {
         s3SecretKey.setText(c.s3SecretKey)
         s3Prefix.setText(c.s3Prefix)
         s3Psk.setText(c.s3Psk)
-        cdnUrl.setText(c.cdnUrl)
-        cdnPsk.setText(c.cdnPsk)
-        cdnMimicSelector.setPillSelectedIndex(
-            listOf("image", "video", "static", "mixed").indexOf(c.cdnMimic.ifBlank { "mixed" }).let { if (it < 0) 3 else it }
-        )
-        cdnUplinkMethodSelector.setPillSelectedIndex(
-            listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
-                .indexOf(c.cdnUplinkMethod.ifBlank { "GET" })
-                .let { if (it < 0) 1 else it }
-        )
-        cdnUplinkPathSelector.setPillSelectedIndex(
-            listOf("auto", "asset", "api")
-                .indexOf(c.cdnUplinkPath.ifBlank { "asset" })
-                .let { if (it < 0) 1 else it }
-        )
-        cdnUplinkDataSelector.setPillSelectedIndex(
-            listOf("auto", "cookies", "query", "header", "body")
-                .indexOf(c.cdnUplinkData.ifBlank { "query" })
-                .let { if (it < 0) 2 else it }
-        )
-        cdnXhttpPlacementSelector.setPillSelectedIndex(
-            listOf("cookie", "query", "header")
-                .indexOf(c.cdnXhttpPlacement.ifBlank { "query" })
-                .let { if (it < 0) 1 else it }
-        )
         updateResolverUi()
         updateProtocolUi()
     }
@@ -2083,9 +2031,6 @@ class MainActivity : android.app.Activity() {
         if (::xraySection.isInitialized) {
             xraySection.visibility = visibleIf(protocol == Config.TunnelProtocol.XRAY)
         }
-        if (::cdnfuSection.isInitialized) {
-            cdnfuSection.visibility = visibleIf(protocol == Config.TunnelProtocol.CDNFU)
-        }
         // Switching a fresh profile to Xray gives the user something runnable to edit
         // rather than an empty box.
         if (protocol == Config.TunnelProtocol.XRAY &&
@@ -2101,7 +2046,6 @@ class MainActivity : android.app.Activity() {
     private fun selectedProtocol(): Config.TunnelProtocol = when (protocolSelector.pillSelectedIndex()) {
         1 -> Config.TunnelProtocol.S3FU
         2 -> Config.TunnelProtocol.XRAY
-        3 -> Config.TunnelProtocol.CDNFU
         else -> Config.TunnelProtocol.SLIPSTREAM
     }
 
@@ -2324,19 +2268,7 @@ class MainActivity : android.app.Activity() {
             s3AccessKey = s3AccessKey.text.toString().trim(),
             s3SecretKey = s3SecretKey.text.toString().trim(),
             s3Prefix = s3Prefix.text.toString().trim().ifBlank { "s3fu" },
-            s3Psk = s3Psk.text.toString().trim(),
-            cdnUrl = cdnUrl.text.toString().trim(),
-            cdnPsk = cdnPsk.text.toString().trim(),
-            cdnMimic = listOf("image", "video", "static", "mixed")
-                .getOrElse(cdnMimicSelector.pillSelectedIndex()) { "mixed" },
-            cdnUplinkMethod = listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
-                .getOrElse(cdnUplinkMethodSelector.pillSelectedIndex()) { "GET" },
-            cdnUplinkPath = listOf("auto", "asset", "api")
-                .getOrElse(cdnUplinkPathSelector.pillSelectedIndex()) { "asset" },
-            cdnUplinkData = listOf("auto", "cookies", "query", "header", "body")
-                .getOrElse(cdnUplinkDataSelector.pillSelectedIndex()) { "query" },
-            cdnXhttpPlacement = listOf("cookie", "query", "header")
-                .getOrElse(cdnXhttpPlacementSelector.pillSelectedIndex()) { "query" }
+            s3Psk = s3Psk.text.toString().trim()
         )
     }
 
@@ -2380,8 +2312,7 @@ class MainActivity : android.app.Activity() {
         // if the global connection mode is PROXY (SOCKS-only variants aren't wired for them).
         if (c.mode == Config.Mode.VPN ||
             c.protocol == Config.TunnelProtocol.S3FU ||
-            c.protocol == Config.TunnelProtocol.XRAY ||
-            c.protocol == Config.TunnelProtocol.CDNFU
+            c.protocol == Config.TunnelProtocol.XRAY
         ) {
             pendingStartVpn = true
             continuePreflight()

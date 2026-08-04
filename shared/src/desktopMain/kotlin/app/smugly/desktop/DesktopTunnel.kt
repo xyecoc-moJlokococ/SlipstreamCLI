@@ -104,7 +104,7 @@ object DesktopTunnel {
             // every system-routed request into a 407 nobody can answer.
             //
             // maxActiveClients from the profile is Slipstream-only (DNS tunnel pressure). Xray /
-            // s3fu / cdnfu get a high local-proxy ceiling so multi-tab browsers are not dropped.
+            // s3fu gets a high local-proxy ceiling so multi-tab browsers are not dropped.
             val proxyLimit = when (config.protocol) {
                 Config.TunnelProtocol.SLIPSTREAM ->
                     config.maxActiveClients.coerceAtLeast(1)
@@ -190,10 +190,6 @@ object DesktopTunnel {
         Config.TunnelProtocol.SLIPSTREAM -> error(
             "The Slipstream DNS engine has no Windows build yet — it needs picoquic built with " +
                 "MSVC + CMake. Use an S3 or Xray profile on desktop for now."
-        )
-        Config.TunnelProtocol.CDNFU -> error(
-            "The CDN (cdn-fuckup) engine is not packaged for Windows desktop yet. " +
-                "Use an S3 or Xray profile on desktop for now."
         )
     }
 

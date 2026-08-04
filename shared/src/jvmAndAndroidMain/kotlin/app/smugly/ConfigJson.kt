@@ -42,14 +42,6 @@ object ConfigJson {
             .put("s3Prefix", config.s3Prefix)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
-            .put("cdnUrl", config.cdnUrl)
-            .put("cdnPsk", config.cdnPsk)
-            .put("cdnMimic", config.cdnMimic)
-            .put("cdnUplinkMethod", config.cdnUplinkMethod)
-            .put("cdnUplinkPath", config.cdnUplinkPath)
-            .put("cdnUplinkData", config.cdnUplinkData)
-            .put("cdnXhttpPlacement", config.cdnXhttpPlacement)
-            .put("cdnDownlinkMode", config.cdnDownlinkMode)
 
     fun configFromJson(json: JSONObject): Config =
         Config(
@@ -79,14 +71,6 @@ object ConfigJson {
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
-            cdnUrl = json.optString("cdnUrl", ""),
-            cdnPsk = json.optString("cdnPsk", ""),
-            cdnMimic = json.optString("cdnMimic", "").ifBlank { "mixed" },
-            cdnUplinkMethod = json.optString("cdnUplinkMethod", "").ifBlank { "GET" },
-            cdnUplinkPath = json.optString("cdnUplinkPath", "").ifBlank { "asset" },
-            cdnUplinkData = json.optString("cdnUplinkData", "").ifBlank { "query" },
-            cdnXhttpPlacement = json.optString("cdnXhttpPlacement", "").ifBlank { "query" },
-            cdnDownlinkMode = json.optString("cdnDownlinkMode", "").ifBlank { "auto" }
         )
 
     fun profileToJson(profile: ConfigProfile): JSONObject =

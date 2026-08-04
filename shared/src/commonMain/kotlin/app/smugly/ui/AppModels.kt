@@ -161,7 +161,6 @@ fun profileSubtitle(profile: ConfigProfile): String = when (profile.config.proto
     Config.TunnelProtocol.S3FU -> t(S.PROTOCOL_S3FU)
     Config.TunnelProtocol.XRAY -> t(S.PROTOCOL_XRAY_CORE)
     Config.TunnelProtocol.SLIPSTREAM -> t(S.PROTOCOL_SLIPSTREAM)
-    Config.TunnelProtocol.CDNFU -> t(S.PROTOCOL_CDNFU)
 }
 
 fun defaultGlobalSettings(mode: Config.Mode = Config.Mode.PROXY): GlobalSettings =

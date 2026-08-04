@@ -815,14 +815,12 @@ fun ProfileEditorScreen(
     val protocolOptions = listOf(
         t(S.PROTOCOL_SLIPSTREAM),
         t(S.PROTOCOL_S3FU),
-        t(S.PROTOCOL_XRAY),
-        t(S.PROTOCOL_CDNFU)
+        t(S.PROTOCOL_XRAY)
     )
     val protocolIndex = when (c.protocol) {
         Config.TunnelProtocol.SLIPSTREAM -> 0
         Config.TunnelProtocol.S3FU -> 1
         Config.TunnelProtocol.XRAY -> 2
-        Config.TunnelProtocol.CDNFU -> 3
     }
     // Protocol list uses the same overlay as the + menu — never expands layout / pushes fields.
     var protocolMenuOpen by remember { mutableStateOf(false) }
@@ -925,9 +923,6 @@ fun ProfileEditorScreen(
                             onChange(draft.copy(config = it))
                         }
                         Config.TunnelProtocol.XRAY -> { /* handled above */ }
-                        Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) {
-                            onChange(draft.copy(config = it))
-                        }
                     }
                     if (onDelete != null) {
                         Spacer(Modifier.height(12.dp))
@@ -961,7 +956,6 @@ fun ProfileEditorScreen(
                     val p = when (idx) {
                         1 -> Config.TunnelProtocol.S3FU
                         2 -> Config.TunnelProtocol.XRAY
-                        3 -> Config.TunnelProtocol.CDNFU
                         else -> Config.TunnelProtocol.SLIPSTREAM
                     }
                     onChange(draft.copy(config = c.copy(protocol = p)))
@@ -1151,46 +1145,6 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
     }
     LabeledField(t(S.S3_PSK)) {
         SmuglyTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
-    }
-}
-
-@Composable
-private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
-    val mimics = listOf("image", "video", "static", "mixed")
-    val mimicIndex = mimics.indexOf(c.cdnMimic.ifBlank { "mixed" }).let { if (it < 0) 3 else it }
-    val methods = listOf("auto", "GET", "POST", "PUT", "PATCH", "DELETE")
-    val methodIndex = methods.indexOf(c.cdnUplinkMethod.ifBlank { "GET" }).let { if (it < 0) 1 else it }
-    val pathModes = listOf("auto", "asset", "api")
-    val pathIndex = pathModes.indexOf(c.cdnUplinkPath.ifBlank { "asset" }).let { if (it < 0) 1 else it }
-    val dataModes = listOf("auto", "cookies", "query", "header", "body")
-    val dataIndex = dataModes.indexOf(c.cdnUplinkData.ifBlank { "query" }).let { if (it < 0) 2 else it }
-    val xhttpModes = listOf("cookie", "query", "header")
-    val xhttpIndex = xhttpModes.indexOf(c.cdnXhttpPlacement.ifBlank { "query" }).let { if (it < 0) 1 else it }
-    val dlModes = listOf("auto", "stream", "poll")
-    val dlIndex = dlModes.indexOf(c.cdnDownlinkMode.ifBlank { "auto" }).let { if (it < 0) 0 else it }
-    LabeledField(t(S.CDN_URL)) {
-        SmuglyTextField(c.cdnUrl, { onChange(c.copy(cdnUrl = it)) }, hint = "https://cdn-host/")
-    }
-    LabeledField(t(S.CDN_PSK)) {
-        SmuglyTextField(c.cdnPsk, { onChange(c.copy(cdnPsk = it)) }, hint = t(S.CDN_PSK_HINT))
-    }
-    LabeledField(t(S.CDN_MIMIC)) {
-        PillSelector(mimics, mimicIndex) { idx -> onChange(c.copy(cdnMimic = mimics[idx])) }
-    }
-    LabeledField(t(S.CDN_UPLINK_METHOD)) {
-        PillSelector(methods, methodIndex) { idx -> onChange(c.copy(cdnUplinkMethod = methods[idx])) }
-    }
-    LabeledField(t(S.CDN_UPLINK_PATH)) {
-        PillSelector(pathModes, pathIndex) { idx -> onChange(c.copy(cdnUplinkPath = pathModes[idx])) }
-    }
-    LabeledField(t(S.CDN_UPLINK_DATA)) {
-        PillSelector(dataModes, dataIndex) { idx -> onChange(c.copy(cdnUplinkData = dataModes[idx])) }
-    }
-    LabeledField(t(S.CDN_XHTTP_PLACEMENT)) {
-        PillSelector(xhttpModes, xhttpIndex) { idx -> onChange(c.copy(cdnXhttpPlacement = xhttpModes[idx])) }
-    }
-    LabeledField(t(S.CDN_DOWNLINK_MODE)) {
-        PillSelector(dlModes, dlIndex) { idx -> onChange(c.copy(cdnDownlinkMode = dlModes[idx])) }
     }
 }
 

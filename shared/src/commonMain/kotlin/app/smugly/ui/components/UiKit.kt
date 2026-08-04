@@ -189,8 +189,8 @@ fun MenuLayer(
 
     val density = LocalDensity.current
     val gutterPx = with(density) { 8.dp.roundToPx() }
-    val minW = with(density) { 168.dp.toPx() }.toInt()
-    val defaultMaxW = with(density) { 280.dp.toPx() }.toInt()
+    val minW = with(density) { 220.dp.toPx() }.toInt()
+    val defaultMaxW = with(density) { 340.dp.toPx() }.toInt()
     Box(Modifier.fillMaxSize()) {
         // Outside tap closes the menu (same as a Popup's dismiss-on-outside-touch).
         Box(
@@ -257,7 +257,7 @@ fun MenuRow(text: String, onClick: () -> Unit) {
     Text(
         text = text,
         color = SmuglyTextPrimary,
-        fontSize = 14.sp,
+        fontSize = 16.sp,
         maxLines = 1,
         modifier = Modifier
             .fillMaxWidth()
@@ -269,7 +269,9 @@ fun MenuRow(text: String, onClick: () -> Unit) {
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            // Rows are ~52dp tall: these are the app's primary actions on a phone, and at
+            // the old 14sp/12dp they read as a desktop context menu shrunk down.
+            .padding(horizontal = 20.dp, vertical = 16.dp)
     )
 }
 
@@ -1010,7 +1012,7 @@ fun DrawerPanel(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Text(
-                "Slipstream",
+                "Smugly",
                 color = SmuglyTextPrimary,
                 fontWeight = FontWeight.Normal,
                 fontSize = 16.sp
