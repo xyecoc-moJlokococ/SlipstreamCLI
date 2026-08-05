@@ -34,6 +34,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewResponder
 import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.rememberScrollState
@@ -51,6 +53,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.SolidColor
@@ -227,6 +231,9 @@ fun HomeScreen(
     var dragFromIndex by remember { mutableStateOf(-1) }
     var dragOffsetY by remember { mutableStateOf(0f) }
     var gapTargetIndex by remember { mutableStateOf(-1) }
+    /** An edge pulls only after the finger has been away from it at least once (see drag start). */
+    var armScrollUp by remember { mutableStateOf(true) }
+    var armScrollDown by remember { mutableStateOf(true) }
 
     /**
      * What the list actually renders. Straight from the folder unless a drag is in progress —
@@ -406,11 +413,74 @@ fun HomeScreen(
                     // now. (This is the opposite call from ProfileEditorScreen, where LazyColumn
                     // lost: that is a fixed ~25 heterogeneous rows, this is an unbounded list of
                     // identical ones.)
+                    // Keys must survive a reorder: the card being dragged is rebuilt if its
+                    // key changes, and rebuilding it cancels the gesture. So the id alone — with
+                    // a suffix only where an id actually repeats, because a lazy list throws
+                    // outright on a duplicate key and profile ids are storage data we do not
+                    // fully control (an older subscription refresh could mint two profiles
+                    // sharing one id). A corrupt list should look wrong, not take the screen down.
+                    val itemKeys = remember(pageDisplayed) {
+                        val seen = mutableMapOf<String, Int>()
+                        pageDisplayed.map { p ->
+                            val n = (seen[p.id] ?: 0) + 1
+                            seen[p.id] = n
+                            if (n == 1) p.id else p.id + "#" + n
+                        }
+                    }
+                    val listState = rememberLazyListState()
+                    /** List top in root coords + its height: the frame the finger is judged against. */
+                    val listBounds = remember { floatArrayOf(0f, 0f) }
+                    // Which way the list creeps while a card is held against an edge, in px per
+                    // frame. Dragging a profile in a long folder was otherwise a dead end: the
+                    // list cannot be scrolled by the finger that is holding a card.
+                    var autoScroll by remember { mutableStateOf(0f) }
+                    LaunchedEffect(draggingId) {
+                        if (draggingId == null) return@LaunchedEffect
+                        while (true) {
+                            val speed = autoScroll
+                            if (speed == 0f) {
+                                withFrameNanos { }
+                                continue
+                            }
+                            val moved = listState.scrollBy(speed)
+                            if (moved == 0f) {
+                                // Hit the end of the list; keep the loop alive so dragging back
+                                // the other way still works.
+                                withFrameNanos { }
+                                continue
+                            }
+                            // The items just slid under the card; keeping the drag offset in step
+                            // is what holds the card under the finger — and it is the same value
+                            // the drop slot is computed from, so the gap follows too.
+                            dragOffsetY += moved
+                            // Same live reorder the finger does — scrolling is just another way
+                            // of crossing slots, and the card has to travel with its slot or the
+                            // lazy list drops it.
+                            val crossed = (dragOffsetY / slotPitchPx).toInt()
+                            if (crossed != 0 && dragFromIndex >= 0) {
+                                val to = (dragFromIndex + crossed).coerceIn(0, ordered.lastIndex)
+                                if (to != dragFromIndex) {
+                                    val next = ordered.toMutableList()
+                                    next.add(to, next.removeAt(dragFromIndex))
+                                    ordered = next
+                                    dragOffsetY -= (to - dragFromIndex) * slotPitchPx
+                                    dragFromIndex = to
+                                    gapTargetIndex = to
+                                    tick()
+                                }
+                            }
+                            withFrameNanos { }
+                        }
+                    }
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
+                            .onGloballyPositioned {
+                                listBounds[0] = it.positionInRoot().y
+                                listBounds[1] = it.size.height.toFloat()
+                            }
                             .padding(horizontal = 10.dp),
-                        state = rememberLazyListState(),
+                        state = listState,
                         userScrollEnabled = draggingId == null,
                         // Space for bar (72) + half button (~33) sitting above the bar.
                         contentPadding = PaddingValues(bottom = 112.dp)
@@ -450,22 +520,10 @@ fun HomeScreen(
                                 }
                             }
                         }
-                // The index is in the key on purpose. A lazy list throws outright on a repeated
-                // key, and profile ids are storage data we do not fully control — an older
-                // subscription refresh could mint two profiles sharing one id. A corrupt list
-                // should look wrong, not take the whole screen down.
-                itemsIndexed(pageDisplayed, key = { index, p -> "${p.id}:$index" }) { index, profile ->
+                itemsIndexed(pageDisplayed, key = { index, _ -> itemKeys[index] }) { index, profile ->
                     val isDragging = profile.id == draggingId
-                    val gapOffset = when {
-                        draggingId == null || isDragging || dragFromIndex < 0 || gapTargetIndex < 0 -> 0f
-                        // Dragging down: rows between start and target shift up.
-                        gapTargetIndex > dragFromIndex &&
-                            index in (dragFromIndex + 1)..gapTargetIndex -> -slotPitchPx
-                        // Dragging up: rows between target and start shift down.
-                        gapTargetIndex < dragFromIndex &&
-                            index in gapTargetIndex until dragFromIndex -> slotPitchPx
-                        else -> 0f
-                    }
+                    // No hand-rolled gap any more: the rows really do change places as the card
+                    // passes them, and the list animates that itself (see `animateItem` below).
                     ProfileCard(
                         name = profile.name.ifBlank { t(S.PROFILE_NAME_FALLBACK) },
                         subtitle = profileSubtitle(profile),
@@ -474,6 +532,24 @@ fun HomeScreen(
                         // Servers in a subscription folder are replaced wholesale on refresh, so
                         // deleting one individually would just come back — hide the button.
                         latency = latencies[profile.id],
+                        // Rows slide into their new slot instead of jumping there. Reordering is
+                        // live now — the list itself moves the cards — so the animation belongs to
+                        // the list, not to the hand-rolled gap offsets it replaced. Never for the
+                        // card being carried: its position is the finger's, and animating that
+                        // would fight the drag.
+                        modifier = if (isDragging) {
+                            Modifier
+                        } else {
+                            Modifier.animateItem(
+                                // Placement only. The default also fades rows in and out, and a
+                                // folder switch composes that page's rows for the first time — so
+                                // every tab change looked like the profiles disappeared and swam
+                                // back half a second later.
+                                fadeInSpec = null,
+                                fadeOutSpec = null,
+                                placementSpec = tween(180, easing = FastOutSlowInEasing)
+                            )
+                        },
                         onDelete = if (pageSubscription == null) {
                             { onDelete(profile) }
                         } else {
@@ -490,59 +566,111 @@ fun HomeScreen(
                         onMoreAnchor = { y -> cardAnchors[profile.id] = y },
                         dragOffsetY = if (isDragging) dragOffsetY else 0f,
                         isDragging = isDragging,
-                        gapOffsetY = gapOffset,
                         // A subscription group is replaced wholesale on refresh, so a hand-made
                         // order only survives if the folder is set to keep one.
                         enableReorder = pageDisplayed.size > 1 &&
                             (pageSubscription == null || pageSubscription.allowReorder),
-                        onLongPressDragStart = {
+                        onLongPressDragStart = { pointerRootY ->
                             moreFor = null
                             draggingId = profile.id
                             dragFromIndex = index
                             gapTargetIndex = index
                             dragOffsetY = 0f
+                            // An edge only starts pulling once the finger has been outside it.
+                            // Otherwise picking up the top or bottom card scrolls the list the
+                            // instant it is touched, before the user has asked for anything.
+                            val y = pointerRootY - listBounds[0]
+                            val edge = listBounds[1] * AUTO_SCROLL_EDGE_FRACTION
+                            armScrollUp = y > edge
+                            armScrollDown = y < listBounds[1] - edge
                         },
-                        onLongPressDrag = { dy ->
+                        onLongPressDrag = { dy, pointerRootY ->
                             if (draggingId != profile.id) return@ProfileCard
                             dragOffsetY += dy
-                            val shiftSlots = (dragOffsetY / slotPitchPx).toInt()
-                            val target = (dragFromIndex + shiftSlots).coerceIn(0, pageDisplayed.lastIndex)
-                            if (target != gapTargetIndex) {
-                                gapTargetIndex = target
-                                // A neighbour just moved out of the way — one light tick per slot
-                                // crossed, so the new position is felt without watching the list.
-                                tick()
+                            // Move it in the list as soon as it passes a neighbour, instead of
+                            // holding the original order and drawing gaps. Carrying a card far
+                            // from its own slot is what made it vanish past ~10 rows: the slot
+                            // left the viewport, the lazy list dropped the card, and the gesture
+                            // went with it. Reordering as we go keeps card and slot together.
+                            val crossed = (dragOffsetY / slotPitchPx).toInt()
+                            if (crossed != 0 && dragFromIndex >= 0) {
+                                val to = (dragFromIndex + crossed).coerceIn(0, ordered.lastIndex)
+                                if (to != dragFromIndex) {
+                                    val next = ordered.toMutableList()
+                                    next.add(to, next.removeAt(dragFromIndex))
+                                    ordered = next
+                                    // The finger has not moved: the card sits one slot further
+                                    // along now, so the offset owes exactly that much less.
+                                    dragOffsetY -= (to - dragFromIndex) * slotPitchPx
+                                    dragFromIndex = to
+                                    gapTargetIndex = to
+                                    // One light tick per slot crossed, so the new position is
+                                    // felt without watching the list.
+                                    tick()
+                                }
+                            }
+                            // At either end there is no next slot to move into, so the offset
+                            // would just keep growing and carry the card off the list — under the
+                            // tab bar, where it is clipped, and with a debt that takes several
+                            // slots to unwind when the finger comes back. Hold it at one slot.
+                            if (dragFromIndex <= 0) {
+                                dragOffsetY = dragOffsetY.coerceAtLeast(-slotPitchPx)
+                            }
+                            if (dragFromIndex >= ordered.lastIndex) {
+                                dragOffsetY = dragOffsetY.coerceAtMost(slotPitchPx)
+                            }
+                            // Judged by where the FINGER is, not where the card is. The card is
+                            // clamped by the list and by its own slot, so it stops steering as
+                            // soon as the finger leaves the list — which is why holding above the
+                            // tab bar froze the drag instead of pulling the list up.
+                            val viewport = listBounds[1]
+                            val y = pointerRootY - listBounds[0]
+                            // The card travels with its slot now, so it is on screen and its row
+                            // is always here. If it somehow is not, stop — creeping on blind is
+                            // exactly how the list ran away from the finger.
+                            autoScroll = if (viewport > 0) {
+                                // A share of the visible list, not a fixed distance: the same
+                                // 40dp is a comfortable margin on a tall phone and most of the
+                                // list in a small window. Speed ramps with how deep into the zone
+                                // the finger is, so a nudge creeps and pressing right against the
+                                // edge flies — one gesture covers a neighbouring slot or the far
+                                // end of a long folder.
+                                val edge = viewport * AUTO_SCROLL_EDGE_FRACTION
+                                if (y > edge) armScrollUp = true
+                                if (y < viewport - edge) armScrollDown = true
+                                when {
+                                    y < edge && armScrollUp -> -speedFor((edge - y) / edge)
+                                    y > viewport - edge && armScrollDown ->
+                                        speedFor((y - (viewport - edge)) / edge)
+                                    else -> 0f
+                                }
+                            } else {
+                                0f
                             }
                         },
                         onLongPressDragEnd = {
                             if (draggingId != profile.id) return@ProfileCard
-                            val from = dragFromIndex
-                            val to = gapTargetIndex
+                            autoScroll = 0f
+                            // The list is already in its final order — the card was carried
+                            // through it as the finger crossed each slot. All that is left is to
+                            // drop the leftover offset into the slot it sits in, and persist.
+                            val finalOrder = ordered.map { it.id }
                             scope.launch {
-                                // Ride the card down into its slot rather than teleporting it
-                                // there: clearing the offset in one frame read as a snap-back.
+                                // Ride the card down rather than teleporting it: clearing the
+                                // offset in one frame read as a snap-back.
                                 Animatable(dragOffsetY).animateTo(
-                                    targetValue = if (from >= 0 && to >= 0) {
-                                        (to - from) * slotPitchPx
-                                    } else {
-                                        0f
-                                    },
+                                    targetValue = 0f,
                                     animationSpec = tween(180, easing = FastOutSlowInEasing)
                                 ) { dragOffsetY = value }
-                                if (from >= 0 && to >= 0 && from != to && from in ordered.indices) {
-                                    val next = ordered.toMutableList()
-                                    val item = next.removeAt(from)
-                                    next.add(to.coerceIn(0, next.size), item)
-                                    ordered = next
-                                    onReorder(next.map { it.id })
-                                }
                                 draggingId = null
                                 dragFromIndex = -1
                                 gapTargetIndex = -1
                                 dragOffsetY = 0f
+                                onReorder(finalOrder)
                             }
                         },
                         onLongPressDragCancel = {
+                            autoScroll = 0f
                             draggingId = null
                             dragFromIndex = -1
                             gapTargetIndex = -1
@@ -1270,4 +1398,18 @@ private fun XrayEditor(
             }
         }
     }
+}
+
+/** How fast the list creeps while a dragged card is held at an edge (px per frame). */
+/** Slowest and fastest auto-scroll, in px per frame. */
+private const val AUTO_SCROLL_MIN_PX = 3f
+private const val AUTO_SCROLL_MAX_PX = 30f
+
+/** Share of the visible list at each end that counts as "at the edge" for auto-scroll. */
+private const val AUTO_SCROLL_EDGE_FRACTION = 0.25f
+
+/** [depth] is 0 at the edge of the zone and 1 at the very end of the list. */
+private fun speedFor(depth: Float): Float {
+    val d = depth.coerceIn(0f, 1f)
+    return AUTO_SCROLL_MIN_PX + (AUTO_SCROLL_MAX_PX - AUTO_SCROLL_MIN_PX) * d * d
 }

@@ -57,10 +57,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +77,8 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LocalPinnableContainer
+import androidx.compose.ui.layout.PinnableContainer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -590,8 +594,13 @@ fun DropdownField(
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(10.dp)
+    // Where the card sits, so the finger's position inside it can be turned into a screen one.
+    // The list needs that: judging auto-scroll by the CARD means one picked up near an edge
+    // scrolls the instant it is touched, and a finger carried off the list stops steering at all.
+    val cardRootY = remember { floatArrayOf(0f) }
     Row(
         modifier = modifier
+            .onGloballyPositioned { cardRootY[0] = it.positionInRoot().y }
             .fillMaxWidth()
             .onGloballyPositioned { coords ->
                 val pos = coords.positionInRoot()
@@ -759,16 +768,38 @@ fun ProfileCard(
     isDragging: Boolean = false,
     /** Sibling shift to open a gap during reorder (px). */
     gapOffsetY: Float = 0f,
-    onLongPressDragStart: () -> Unit = {},
-    onLongPressDrag: (dy: Float) -> Unit = {},
+    /** [pointerRootY] is where the finger actually is, in root coordinates. */
+    onLongPressDragStart: (pointerRootY: Float) -> Unit = {},
+    onLongPressDrag: (dy: Float, pointerRootY: Float) -> Unit = { _, _ -> },
     onLongPressDragEnd: () -> Unit = {},
     onLongPressDragCancel: () -> Unit = {},
     enableReorder: Boolean = true,
     /** Measured round trip to this profile's own server, or null when never measured. */
-    latency: app.smugly.ui.LatencyUi? = null
+    latency: app.smugly.ui.LatencyUi? = null,
+    /** Applied to the card's root — the list uses it to animate the row into its new slot. */
+    modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(12.dp)
     val haptics = LocalHapticFeedback.current
+    // A lazy list disposes items that leave the viewport, and disposing the one under the finger
+    // cancels the drag with it — which is why a profile could never be carried further than about
+    // a screen, however long the folder was. Pinning keeps it composed while it is being held; the
+    // card itself stays on screen the whole time, only its slot travels away.
+    // `pointerInput(Unit)` keeps the closure it started with, and these callbacks are rebuilt on
+    // every recomposition — they capture the card's current index, which now changes DURING a
+    // drag as the list reorders under it. Reading them through holders keeps the gesture talking
+    // to the current ones instead of the ones from the frame it was born in.
+    val dragStartNow by rememberUpdatedState(onLongPressDragStart)
+    val dragNow by rememberUpdatedState(onLongPressDrag)
+    val dragEndNow by rememberUpdatedState(onLongPressDragEnd)
+    val dragCancelNow by rememberUpdatedState(onLongPressDragCancel)
+    val pinnable = LocalPinnableContainer.current
+    var pinned by remember { mutableStateOf<PinnableContainer.PinnedHandle?>(null) }
+    fun unpin() {
+        pinned?.release()
+        pinned = null
+    }
+    DisposableEffect(Unit) { onDispose { pinned?.release() } }
     // Asymmetric on purpose: the card the user just tapped lights up on the same frame as the
     // tap, and only the one losing selection fades, over 150ms. Animating both directions made
     // the highlight look like it was sliding between rows instead of following the finger.
@@ -820,8 +851,13 @@ fun ProfileCard(
     )
     val translationY = if (isDragging) dragOffsetY else gapAnim
 
+    // Where the card sits, so the finger's position inside it can be turned into a screen one.
+    // The list needs that: judging auto-scroll by the CARD means one picked up near an edge
+    // scrolls the instant it is touched, and a finger carried off the list stops steering at all.
+    val cardRootY = remember { floatArrayOf(0f) }
     Row(
-        modifier = Modifier
+        modifier = modifier
+            .onGloballyPositioned { cardRootY[0] = it.positionInRoot().y }
             .fillMaxWidth()
             .padding(bottom = 8.dp)
             .zIndex(if (isDragging) 2f else 0f)
@@ -846,18 +882,19 @@ fun ProfileCard(
                         )
                         .pointerInput(Unit) {
                             detectDragGesturesAfterLongPress(
-                                onDragStart = {
+                                onDragStart = { offset ->
                                     // One tick the moment the card is picked up, so reordering is
                                     // confirmed by feel rather than by watching the card move.
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onLongPressDragStart()
+                                    pinned = pinnable?.pin()
+                                    dragStartNow(cardRootY[0] + offset.y)
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    onLongPressDrag(dragAmount.y)
+                                    dragNow(dragAmount.y, cardRootY[0] + change.position.y)
                                 },
-                                onDragEnd = { onLongPressDragEnd() },
-                                onDragCancel = { onLongPressDragCancel() }
+                                onDragEnd = { unpin(); dragEndNow() },
+                                onDragCancel = { unpin(); dragCancelNow() }
                             )
                         }
                 } else Modifier

@@ -49,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -56,6 +57,10 @@ import kotlin.math.abs
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -373,16 +378,29 @@ fun FolderTabs(
     // so sliding there afterwards plays the move a second time. Both cases change the measured
     // target, so they are told apart by whether the tab ORDER changed; the flag is held until the
     // new measurement actually lands, because that is a layout pass later than the reorder.
-    val orderMark = remember { object { var names: List<String>? = null; var reordered = false } }
-    if (orderMark.names != names) {
-        orderMark.reordered = orderMark.names != null
-        orderMark.names = names
+    // "A reorder is settling" — held for a couple of frames rather than for one state change.
+    // Everything that keys off the SELECTED SLOT has to freeze during it: the slot number changes
+    // as soon as the folders are rearranged, but the row is measured a layout pass later, so for
+    // those frames an index points at the wrong tab. Anything animated across that gap plays out
+    // on the wrong tab — the underline slid in from the old tab's width, and the highlight lit up
+    // whichever folder happened to be sitting at the destination.
+    var settling by remember { mutableStateOf(false) }
+    val lastNames = remember { arrayOfNulls<List<String>>(1) }
+    if (lastNames[0] != names) {
+        if (lastNames[0] != null) settling = true
+        lastNames[0] = names
+    }
+    LaunchedEffect(names) {
+        if (!settling) return@LaunchedEffect
+        // One frame for the new order, one for the measurements it produces.
+        withFrameNanos { }
+        withFrameNanos { }
+        settling = false
     }
     val indicatorAnimX = remember { Animatable(0f) }
     val indicatorAnimW = remember { Animatable(0f) }
     LaunchedEffect(target.first, target.second) {
-        if (orderMark.reordered) {
-            orderMark.reordered = false
+        if (settling) {
             indicatorAnimX.snapTo(target.first)
             indicatorAnimW.snapTo(target.second)
         } else {
@@ -419,23 +437,29 @@ fun FolderTabs(
             val anchor = remember { intArrayOf(0, 0) }
             val labelColor by animateColorAsState(
                 targetValue = if (selected) SmuglyTextPrimary else SmuglyTextSecondary,
-                animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
+                // Cross-fades when the user picks another tab, snaps when the tabs are rearranged.
+                // The highlight belongs to the folder, not to the slot: after a reorder both tabs
+                // hold new text, so fading between the old and new colour lights up the wrong tab
+                // for the length of the fade.
+                animationSpec = if (settling) {
+                    snap()
+                } else {
+                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+                },
                 label = "tabLabel"
             )
             // Step aside while the held tab is over this slot, so the gap follows the finger.
             val shiftTarget = shiftOf(index)
-            val shift by animateFloatAsState(
+            val shiftAnimated by animateFloatAsState(
                 targetValue = shiftTarget,
-                // Animated only while a tab is actually being carried. Once the reorder lands the
-                // layout already puts every tab where it belongs, so animating the offset away
-                // would play the move a second time, from the wrong side.
-                animationSpec = if (dragging) {
-                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
-                } else {
-                    snap()
-                },
+                animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
                 label = "tabShift"
             )
+            // Applied only while a tab is actually being carried, and read as a plain 0 otherwise.
+            // Animating it back — even with `snap()` — costs a frame, and that frame lands after
+            // the reordered layout: every neighbour flicks back to where it used to be for one
+            // frame before settling.
+            val shift = if (dragging) shiftAnimated else 0f
             Box(
                 modifier = Modifier
                     .onGloballyPositioned {
@@ -516,8 +540,12 @@ fun FolderTabs(
                                             // flick back to its old slot before moving.
                                             moveNow(index, drop)
                                         } else {
+                                            // Nothing reordered, so no new list is coming to clear
+                                            // this for us.
                                             dragFrom = -1
                                             dragTo = -1
+                                            dragDx = 0f
+                                            dragNames = null
                                         }
                                     }
                                 )
@@ -527,7 +555,12 @@ fun FolderTabs(
                                 settle(
                                     scope, spans, index, index, dragDx,
                                     onOffset = { dragDx = it },
-                                    onFinished = { dragFrom = -1; dragTo = -1 }
+                                    onFinished = {
+                                        dragFrom = -1
+                                        dragTo = -1
+                                        dragDx = 0f
+                                        dragNames = null
+                                    }
                                 )
                                 dragActiveNow(false)
                             }
@@ -550,48 +583,41 @@ fun FolderTabs(
             }
         }
     }
-        // The indicator lives outside the scrolling row so it can be placed by absolute px;
-        // both edges are animated, so it stretches as it travels between labels of different
-        // widths instead of jumping to the new size.
+        // Drawn, not laid out. The bar lives outside the scrolling row (so it can travel between
+        // tabs of different widths), which means it depends on positions the row reports during
+        // layout — and reading those in composition is always one frame behind: on the frame a
+        // reorder lands, the tabs are already in their new places and the bar is still drawing
+        // itself against the old ones. Reading them in the DRAW phase closes that gap: the draw
+        // runs after layout, in the same frame, and re-runs on its own when a position changes.
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(3.dp)
                 .padding(horizontal = 10.dp)
-        ) {
-            // While the selected tab is being carried, the underline goes with it — it belongs to
-            // that tab, not to the slot it happens to be sitting in.
-            val carriedTarget = when {
-                !dragging -> 0f
-                // The open folder is the one in hand: the underline rides along with it.
-                dragFrom == selectedIndex -> dragDx
-                // Something else is being carried past it: the open tab steps aside, so does this.
-                else -> shiftOf(selectedIndex)
-            }
-            val carried by animateFloatAsState(
-                targetValue = carriedTarget,
-                // Following a finger must not lag, and once the reorder lands the measured
-                // position is already right — so only the step-aside is animated.
-                animationSpec = if (dragging && dragFrom != selectedIndex) {
-                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
-                } else {
-                    snap()
-                },
-                label = "tabIndicatorCarry"
-            )
-            Box(
-                Modifier
-                    .width(with(density) { indicatorWidth.toDp() })
-                    .fillMaxHeight()
-                    // Tab positions are measured inside the scrolling row, so they are content
-                    // coordinates; the indicator is drawn outside it and has to be shifted by
-                    // however far the row has scrolled, or it sits under the wrong tab (or under
-                    // no tab at all) as soon as the row moves.
-                    .graphicsLayer { translationX = indicatorX + carried - rowScroll.value }
-                    .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
-                    .background(SmuglyAccent)
-            )
-        }
+                .drawBehind {
+                    val sel = spans.getOrNull(selectedIndex) ?: return@drawBehind
+                    // While the selected tab is being carried, the underline goes with it — it
+                    // belongs to that tab, not to the slot it happens to be sitting in.
+                    val carried = when {
+                        !dragging -> 0f
+                        dragFrom == selectedIndex -> dragDx
+                        else -> shiftOf(selectedIndex)
+                    }
+                    // Fresh measurements while a reorder settles, the travelling animation
+                    // otherwise — that animation is what makes picking another tab read as one
+                    // bar moving rather than two bars blinking.
+                    val x = (if (settling) sel.first else indicatorAnimX.value) +
+                        carried - rowScroll.value
+                    val w = if (settling) sel.second else indicatorAnimW.value
+                    if (w <= 0f) return@drawBehind
+                    drawRoundRect(
+                        color = SmuglyAccent,
+                        topLeft = Offset(x, 0f),
+                        size = Size(w, size.height),
+                        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                    )
+                }
+        )
         Spacer(Modifier.height(6.dp))
     }
 }
@@ -612,10 +638,22 @@ private fun settle(
     onOffset: (Float) -> Unit,
     onFinished: () -> Unit
 ) {
-    val land = if (target == from) {
-        0f
-    } else {
-        (spans.getOrNull(target)?.first ?: 0f) - (spans.getOrNull(from)?.first ?: 0f)
+    // Where the held tab actually ends up — which is NOT the target tab's old left edge unless
+    // the two happen to be the same width.
+    //
+    // Moving right, everything it passes slides left by its own width, so it comes to rest against
+    // the target's right edge: x_target + w_target - w_held. Moving left it does take the target's
+    // left edge, because the block it displaces slides right instead. Using the left edge for both
+    // is why a rightward drop settled short of its slot — by exactly the width difference — and
+    // then jumped once the real layout arrived.
+    val fromX = spans.getOrNull(from)?.first ?: 0f
+    val fromW = spans.getOrNull(from)?.second ?: 0f
+    val targetX = spans.getOrNull(target)?.first ?: 0f
+    val targetW = spans.getOrNull(target)?.second ?: 0f
+    val land = when {
+        target == from -> 0f
+        target > from -> (targetX + targetW - fromW) - fromX
+        else -> targetX - fromX
     }
     scope.launch {
         Animatable(current).animateTo(land, tween(180, easing = FastOutSlowInEasing)) {
@@ -624,8 +662,13 @@ private fun settle(
         // Only now does the tab stop being "the dragged one" — clearing that first is what made
         // the release look like a snap-back: the offset was still animating but nothing was
         // applying it any more.
+        //
+        // The offset is deliberately NOT zeroed here. When a move was reported, the reordered list
+        // is still travelling back through the caller, and dropping the offset before it lands put
+        // the tab in its old slot for those frames — the flick you see right after the animation
+        // stops. Whoever asked for the settle clears it: at once when nothing moved, and when the
+        // new order arrives if something did.
         onFinished()
-        onOffset(0f)
     }
 }
 
