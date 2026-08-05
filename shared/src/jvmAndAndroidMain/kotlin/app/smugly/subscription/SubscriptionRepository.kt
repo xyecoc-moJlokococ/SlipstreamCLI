@@ -90,11 +90,18 @@ class SubscriptionRepository(private val storage: Storage) {
         allowReorder: Boolean,
         showInfo: Boolean
     ): String? {
-        val url = SubscriptionManager.normalizeSubscriptionUrl(rawUrl)
-            ?: return "not a subscription URL"
+        // A folder is allowed to have no link at all: plenty of them are just a place to keep
+        // hand-made profiles, and demanding a subscription URL made that impossible. Only a
+        // non-empty link has to look like one.
+        val url = if (rawUrl.isBlank()) {
+            if (name.isBlank()) return "folder needs a name"
+            ""
+        } else {
+            SubscriptionManager.normalizeSubscriptionUrl(rawUrl) ?: return "not a subscription URL"
+        }
         val existing = id?.let { find(it) }
             // Re-adding a URL that is already here edits that folder instead of making a twin.
-            ?: storage.loadSubscriptions().firstOrNull { it.url == url }
+            ?: storage.loadSubscriptions().firstOrNull { url.isNotBlank() && it.url == url }
         val updated = (existing ?: Subscription(
             id = storage.newId(),
             name = name,
@@ -108,7 +115,8 @@ class SubscriptionRepository(private val storage: Storage) {
             allowReorder = allowReorder,
             showInfo = showInfo
         )
-        val urlChanged = existing == null || existing.url != url
+        // Nothing to fetch without a link, so a URL-less folder is simply stored.
+        val urlChanged = url.isNotBlank() && (existing == null || existing.url != url)
         if (existing == null) {
             storage.saveSubscriptions(storage.loadSubscriptions() + updated)
         } else {
@@ -132,6 +140,7 @@ class SubscriptionRepository(private val storage: Storage) {
     fun refresh(id: String): ImportResult {
         val existing = find(id)
             ?: return ImportResult(Subscription(id = id, name = "", url = ""), 0, "unknown subscription")
+        if (existing.url.isBlank()) return ImportResult(existing, 0, "folder has no subscription link")
 
         val result = SubscriptionManager.refresh(existing, storage.nowMs(), storage.fetchRoutes())
         persist(result.subscription)
@@ -149,11 +158,15 @@ class SubscriptionRepository(private val storage: Storage) {
     }
 
     /** Refresh every subscription whose interval has elapsed. */
+    // Link-less folders are skipped rather than "refreshed" into an error: they are a place to
+    // keep hand-made profiles, and there is nothing to fetch.
     fun refreshDue(): List<ImportResult> =
         SubscriptionManager.dueForUpdate(storage.loadSubscriptions(), storage.nowMs())
+            .filter { it.url.isNotBlank() }
             .map { refresh(it.id) }
 
-    fun refreshAll(): List<ImportResult> = storage.loadSubscriptions().map { refresh(it.id) }
+    fun refreshAll(): List<ImportResult> =
+        storage.loadSubscriptions().filter { it.url.isNotBlank() }.map { refresh(it.id) }
 
     /** Removes the subscription and every profile that came from it. */
     fun delete(id: String) {

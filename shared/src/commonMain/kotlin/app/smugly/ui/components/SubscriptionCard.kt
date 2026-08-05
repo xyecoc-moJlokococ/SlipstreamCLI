@@ -8,6 +8,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.horizontalScroll
@@ -41,9 +42,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.zIndex
@@ -298,6 +301,21 @@ fun FolderTabs(
     modifier: Modifier = Modifier
 ) {
     if (names.size <= 1) return
+    // Gesture handlers below live inside `pointerInput`, whose block is only restarted when its
+    // keys change. The callbacks close over the caller's *current* folder list, so a block that
+    // survives a reorder keeps calling yesterday's lambda: the first drag after launch worked and
+    // every one after it re-applied the first drag's outcome, which looked exactly like the tab
+    // springing back to where it started. Always call through the latest ones.
+    // Same reason as the callbacks below: `pointerInput` keeps the closure it started with, so a
+    // drag begun after a reorder would stamp itself with the OLD tab order, decide it was stale on
+    // the spot, and run with no visuals at all — the tab did not follow the finger and the new
+    // position simply appeared on release.
+    val namesNow by rememberUpdatedState(names)
+    val selectNow by rememberUpdatedState(onSelect)
+    val menuNow by rememberUpdatedState(onMenu)
+    val moveNow by rememberUpdatedState(onMove)
+    val menuDismissNow by rememberUpdatedState(onMenuDismiss)
+    val dragActiveNow by rememberUpdatedState(onDragActive)
     val haptics = LocalHapticFeedback.current
     // Desktop: menu via right-click; long-press still reorders (same as phone).
     val isDesktop = remember { currentHostPlatform().isDesktop() }
@@ -305,12 +323,22 @@ fun FolderTabs(
     // Where each tab sits inside the row, in px. Snapshot state because the indicator animates
     // off it; written only when a value actually changes, so a layout pass that moves nothing
     // does not recompose.
-    // Keyed on the names themselves, not just how many there are: after a reorder the count is
-    // identical but every measured position belongs to a different tab, and a stale span makes
-    // the drop-target maths point at the wrong slot.
-    val spans = remember(names) { mutableStateListOf(*Array(names.size) { 0f to 0f }) }
+    // Keyed on the COUNT, not on the names. Rebuilding this on every reorder looked safer, but the
+    // replacement starts as zeros and is only filled on the next layout pass — so for a frame the
+    // indicator aimed at x=0, which is the underline snapping to the first tab and then sliding
+    // back. Worse, the gesture below captures this list, so a fresh instance left the drag reading
+    // positions nothing writes to any more. Reordering re-measures every tab anyway.
+    val spans = remember(names.size) { mutableStateListOf(*Array(names.size) { 0f to 0f }) }
     /** Index of the tab being dragged, or -1. */
     var dragFrom by remember { mutableStateOf(-1) }
+    /**
+     * Tab order as it was when the drag started. Reordering is not instant — the new list comes
+     * back through the caller, its store and a reload — and clearing the drag on release meant a
+     * few frames of the OLD order with no offsets applied: the tab appeared to snap back to where
+     * it came from and only then slide across. Comparing against this makes the drag's visual
+     * state expire exactly when the new order arrives, in the same pass that lays it out.
+     */
+    var dragNames by remember { mutableStateOf<List<String>?>(null) }
     /** Slot the held tab would land in right now — drives the live gap. */
     var dragTo by remember { mutableStateOf(-1) }
     var dragDx by remember { mutableStateOf(0f) }
@@ -318,23 +346,71 @@ fun FolderTabs(
     // invisible: only the held tab moved, nothing showed where it would land, and a drop that
     // did not travel far enough to change slots looked exactly like a drag that did nothing.
     val gapPx = with(density) { 2.dp.toPx() }
+    val dragging = dragFrom >= 0 && dragNames == names
+    // The new order is here; `dragging` already reads false, so this just tidies the state up.
+    LaunchedEffect(names) {
+        dragFrom = -1
+        dragTo = -1
+        dragDx = 0f
+        dragNames = null
+    }
+    // How far tab [index] steps aside for the tab being carried. Shared with the indicator below:
+    // when the OPEN folder is the one stepping aside, its underline has to go with it, or the tab
+    // moves and the red bar stays behind.
+    fun shiftOf(index: Int): Float {
+        if (!dragging || dragTo < 0 || index == dragFrom) return 0f
+        val held = (spans.getOrNull(dragFrom)?.second ?: 0f) + gapPx
+        return when {
+            index in (dragFrom + 1)..dragTo -> -held
+            index in dragTo until dragFrom -> held
+            else -> 0f
+        }
+    }
     val scope = rememberCoroutineScope()
     val target = spans.getOrElse(selectedIndex) { 0f to 0f }
-    val indicatorX by animateFloatAsState(
-        targetValue = target.first,
-        animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
-        label = "tabIndicatorX"
-    )
-    val indicatorWidth by animateFloatAsState(
-        targetValue = target.second,
-        animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
-        label = "tabIndicatorW"
-    )
+    // The underline travels when the user picks a different tab, and teleports when the tabs
+    // themselves are rearranged — in a reorder the tab it belongs to is already in its new place,
+    // so sliding there afterwards plays the move a second time. Both cases change the measured
+    // target, so they are told apart by whether the tab ORDER changed; the flag is held until the
+    // new measurement actually lands, because that is a layout pass later than the reorder.
+    val orderMark = remember { object { var names: List<String>? = null; var reordered = false } }
+    if (orderMark.names != names) {
+        orderMark.reordered = orderMark.names != null
+        orderMark.names = names
+    }
+    val indicatorAnimX = remember { Animatable(0f) }
+    val indicatorAnimW = remember { Animatable(0f) }
+    LaunchedEffect(target.first, target.second) {
+        if (orderMark.reordered) {
+            orderMark.reordered = false
+            indicatorAnimX.snapTo(target.first)
+            indicatorAnimW.snapTo(target.second)
+        } else {
+            launch {
+                indicatorAnimX.animateTo(
+                    target.first,
+                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+                )
+            }
+            indicatorAnimW.animateTo(
+                target.second,
+                tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+    val indicatorX = indicatorAnimX.value
+    val indicatorWidth = indicatorAnimW.value
+    val rowScroll = rememberScrollState()
     Column(modifier = modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState(), enabled = dragFrom < 0)
+            // Only scrollable when the tabs actually overflow. A scrollable that has nothing
+            // to scroll still competes for the same horizontal drag as the reorder gesture,
+            // and it wins as soon as the finger moves — the row twitched sideways and the tab
+            // never picked up. `enabled` cannot fix that after the fact: by the time the long
+            // press sets `dragFrom`, the scroll has already claimed the pointer.
+            .horizontalScroll(rowScroll, enabled = !dragging && rowScroll.maxValue > 0)
             .padding(horizontal = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -347,19 +423,17 @@ fun FolderTabs(
                 label = "tabLabel"
             )
             // Step aside while the held tab is over this slot, so the gap follows the finger.
-            val shiftTarget = if (dragFrom < 0 || dragTo < 0 || index == dragFrom) {
-                0f
-            } else {
-                val held = (spans.getOrNull(dragFrom)?.second ?: 0f) + gapPx
-                when {
-                    index in (dragFrom + 1)..dragTo -> -held
-                    index in dragTo until dragFrom -> held
-                    else -> 0f
-                }
-            }
+            val shiftTarget = shiftOf(index)
             val shift by animateFloatAsState(
                 targetValue = shiftTarget,
-                animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
+                // Animated only while a tab is actually being carried. Once the reorder lands the
+                // layout already puts every tab where it belongs, so animating the offset away
+                // would play the move a second time, from the wrong side.
+                animationSpec = if (dragging) {
+                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+                } else {
+                    snap()
+                },
                 label = "tabShift"
             )
             Box(
@@ -384,7 +458,7 @@ fun FolderTabs(
                                             event.buttons.isSecondaryPressed
                                         ) {
                                             event.changes.forEach { it.consume() }
-                                            onMenu(index, anchor[0], anchor[1])
+                                            menuNow(index, anchor[0], anchor[1])
                                         }
                                     }
                                 }
@@ -392,7 +466,7 @@ fun FolderTabs(
                         } else Modifier
                     )
                     .pointerInput(index) {
-                        detectTapGestures(onTap = { onSelect(index) })
+                        detectTapGestures(onTap = { selectNow(index) })
                     }
                     // Long-press + drag reorders on every platform (phone and mouse).
                     .pointerInput(index, names.size, isDesktop) {
@@ -403,16 +477,17 @@ fun FolderTabs(
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 dragFrom = index
                                 dragTo = index
+                                dragNames = namesNow
                                 dragDx = 0f
                                 moved = false
-                                onDragActive(true)
+                                dragActiveNow(true)
                             },
                             onDrag = { change, delta ->
                                 change.consume()
                                 dragDx += delta.x
                                 if (!moved && abs(dragDx) > slop) {
                                     moved = true
-                                    onMenuDismiss()
+                                    menuDismissNow()
                                 }
                                 // Recomputed on every frame, not on release: this is what the
                                 // other tabs animate off, so the user can see the slot open up
@@ -429,17 +504,24 @@ fun FolderTabs(
                                 // Opening it on pick-up (the old behaviour) dropped a full-screen
                                 // panel over the tabs the moment the finger settled, so the drag
                                 // that followed happened underneath it, unseen.
-                                if (!moved && !isDesktop) onMenu(index, anchor[0], anchor[1])
+                                if (!moved && !isDesktop) menuNow(index, anchor[0], anchor[1])
                                 settle(
                                     scope, spans, index, drop, dragDx,
                                     onOffset = { dragDx = it },
                                     onFinished = {
-                                        dragFrom = -1
-                                        dragTo = -1
-                                        if (drop != index) onMove(index, drop)
+                                        if (drop != index) {
+                                            // Deliberately does NOT clear the drag here: the
+                                            // reordered list is still on its way back, and
+                                            // dropping the offsets first is what made the tab
+                                            // flick back to its old slot before moving.
+                                            moveNow(index, drop)
+                                        } else {
+                                            dragFrom = -1
+                                            dragTo = -1
+                                        }
                                     }
                                 )
-                                onDragActive(false)
+                                dragActiveNow(false)
                             },
                             onDragCancel = {
                                 settle(
@@ -447,13 +529,13 @@ fun FolderTabs(
                                     onOffset = { dragDx = it },
                                     onFinished = { dragFrom = -1; dragTo = -1 }
                                 )
-                                onDragActive(false)
+                                dragActiveNow(false)
                             }
                         )
                     }
-                    .zIndex(if (dragFrom == index) 1f else 0f)
+                    .zIndex(if (dragging && dragFrom == index) 1f else 0f)
                     .graphicsLayer {
-                        translationX = if (dragFrom == index) dragDx else shift
+                        translationX = if (dragging && dragFrom == index) dragDx else shift
                     }
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
@@ -479,12 +561,33 @@ fun FolderTabs(
         ) {
             // While the selected tab is being carried, the underline goes with it — it belongs to
             // that tab, not to the slot it happens to be sitting in.
-            val carried = if (dragFrom == selectedIndex) dragDx else 0f
+            val carriedTarget = when {
+                !dragging -> 0f
+                // The open folder is the one in hand: the underline rides along with it.
+                dragFrom == selectedIndex -> dragDx
+                // Something else is being carried past it: the open tab steps aside, so does this.
+                else -> shiftOf(selectedIndex)
+            }
+            val carried by animateFloatAsState(
+                targetValue = carriedTarget,
+                // Following a finger must not lag, and once the reorder lands the measured
+                // position is already right — so only the step-aside is animated.
+                animationSpec = if (dragging && dragFrom != selectedIndex) {
+                    tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+                } else {
+                    snap()
+                },
+                label = "tabIndicatorCarry"
+            )
             Box(
                 Modifier
                     .width(with(density) { indicatorWidth.toDp() })
                     .fillMaxHeight()
-                    .graphicsLayer { translationX = indicatorX + carried }
+                    // Tab positions are measured inside the scrolling row, so they are content
+                    // coordinates; the indicator is drawn outside it and has to be shifted by
+                    // however far the row has scrolled, or it sits under the wrong tab (or under
+                    // no tab at all) as soon as the row moves.
+                    .graphicsLayer { translationX = indicatorX + carried - rowScroll.value }
                     .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
                     .background(SmuglyAccent)
             )

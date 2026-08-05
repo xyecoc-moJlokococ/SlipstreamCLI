@@ -37,7 +37,7 @@ enum class S(val en: String, val ru: String) {
     DIAGNOSTICS("Diagnostics", "Диагностика"),
     SETTINGS("Settings", "Настройки"),
     NEW_PROFILE_TITLE("New Profile", "Новый профиль"),
-    EDIT_PROFILE_TITLE("Edit Profile", "Редактирование профиля"),
+    EDIT_PROFILE_TITLE("Edit Profile", "Редактирование"),
     DNS_RESOLVER("DNS Resolver", "DNS-резолвер"),
     AUTHENTICATION("Authentication", "Аутентификация"),
     ADVANCED_CLIENT_ONLY("Advanced (client-only)", "Дополнительно (только клиент)"),
@@ -175,6 +175,9 @@ enum class S(val en: String, val ru: String) {
     MENU_IMPORT_FILE("Import from file", "Импорт из файла"),
 
     // Per-profile overflow menu (⋯ button)
+    TOAST_NOTHING_TO_EXPORT("Folder has no profiles", "В папке нет профилей"),
+    MENU_EXPORT_FOLDER("Export all profiles", "Экспорт всех профилей"),
+    MENU_MEASURE_LATENCY("Measure latency", "Измерить задержку"),
     MENU_EXPORT_PROFILE("Export", "Экспортировать"),
 
     // Dialogs
@@ -246,7 +249,7 @@ enum class S(val en: String, val ru: String) {
     FOLDER_NEW_TITLE("New folder", "Новая папка"),
     FOLDER_EDIT_TITLE("Folder settings", "Настройки папки"),
     FOLDER_NAME("Folder name", "Название папки"),
-    FOLDER_URL("Subscription link", "Ссылка на подписку"),
+    FOLDER_URL("Subscription link (optional)", "Ссылка на подписку (необязательно)"),
     FOLDER_UPDATES_ENABLED("Allow updating", "Разрешить обновление"),
     FOLDER_AUTO_UPDATE("Update automatically", "Обновлять автоматически"),
     FOLDER_ALLOW_REORDER("Allow reordering profiles", "Разрешить перетаскивание профилей"),

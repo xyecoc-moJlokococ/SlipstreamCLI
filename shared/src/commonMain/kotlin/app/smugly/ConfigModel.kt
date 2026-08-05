@@ -90,7 +90,13 @@ data class GlobalSettings(
      * subscription list, but Home is not one of them and still has to be draggable, so its slot
      * lives here.
      */
-    val homeFolderIndex: Int = 0
+    val homeFolderIndex: Int = 0,
+    /**
+     * Folder that was open when the app was last used — a subscription id, or blank for Home.
+     * Stored by identity rather than by tab number so reordering the tabs cannot land the user
+     * in a different folder than the one they left.
+     */
+    val lastFolderId: String = ""
 )
 
 enum class AppLanguage { SYSTEM, EN, RU }

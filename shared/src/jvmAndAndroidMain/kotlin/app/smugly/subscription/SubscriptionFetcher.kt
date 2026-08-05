@@ -36,9 +36,19 @@ object SubscriptionFetcher {
     )
 
     /** An HTTP proxy to route the request through; null means a direct connection. */
-    data class ProxySpec(val host: String, val port: Int) {
-        fun toJavaProxy(): java.net.Proxy =
-            java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress(host, port))
+    data class ProxySpec(val host: String, val port: Int, val socks: Boolean = true) {
+        /**
+         * SOCKS by default, because that is what the local listener actually speaks.
+         *
+         * The tunnel route was being built as an HTTP proxy while every engine on Android
+         * (s3fu, Xray, Slipstream via hev) exposes a plain SOCKS5 inbound — so the "through the
+         * tunnel" attempt could never succeed, and a panel that is blocked on the bare mobile
+         * network failed both ways round with "Failed to connect".
+         */
+        fun toJavaProxy(): java.net.Proxy = java.net.Proxy(
+            if (socks) java.net.Proxy.Type.SOCKS else java.net.Proxy.Type.HTTP,
+            java.net.InetSocketAddress(host, port)
+        )
     }
 
     /**
@@ -63,7 +73,7 @@ object SubscriptionFetcher {
                 last = error
                 PlatformLog.log(
                     LogLevel.INFO, TAG,
-                    "route ${route?.let { "${it.host}:${it.port}" } ?: "direct"} failed: ${error.message}"
+                    "route ${route?.let { "${if (it.socks) "socks" else "http"} ${it.host}:${it.port}" } ?: "direct"} failed: ${error.message}"
                 )
             }
         }

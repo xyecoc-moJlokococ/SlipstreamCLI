@@ -73,9 +73,25 @@ class DesktopPlatform(
             running -> t(S.STATUS_CONNECTED)
             else -> t(S.STATUS_NOT_CONNECTED)
         }
+        // Speed alongside the totals — see the same computation on Android.
+        val now = System.currentTimeMillis()
+        val elapsed = now - lastTrafficAtMs
+        if (lastTrafficAtMs != 0L && elapsed >= 500) {
+            rateDown = (rx - lastRxBytes).coerceAtLeast(0) * 1000 / elapsed
+            rateUp = (tx - lastTxBytes).coerceAtLeast(0) * 1000 / elapsed
+        }
+        if (lastTrafficAtMs == 0L || elapsed >= 500) {
+            lastRxBytes = rx
+            lastTxBytes = tx
+            lastTrafficAtMs = now
+        }
+        if (!running) {
+            rateDown = 0
+            rateUp = 0
+        }
         return ConnectUiState(
             statusText = status,
-            trafficText = "↓ ${formatBytes(rx)}   ↑ ${formatBytes(tx)}",
+            trafficText = "↓ ${formatBytes(rx)} (${formatBytes(rateDown)}/s)   ↑ ${formatBytes(tx)} (${formatBytes(rateUp)}/s)",
             running = running && !connecting,
             connecting = connecting,
             diagnosticsText = buildString {
@@ -480,7 +496,31 @@ class DesktopPlatform(
         id, name, url, enabled, updateIntervalMinutes, allowReorder, showInfo
     )
 
+    private var lastRxBytes = 0L
+    private var lastTxBytes = 0L
+    private var lastTrafficAtMs = 0L
+    private var rateDown = 0L
+    private var rateUp = 0L
+
     override fun reorderSubscriptions(orderedIds: List<String>) = subscriptions.reorder(orderedIds)
+
+    override fun exportTextFile(fileName: String, content: String) {
+        runCatching {
+            val file = java.io.File(app.smugly.platform.AppPaths.filesDir(), fileName)
+            file.parentFile?.mkdirs()
+            file.writeText(content)
+            toast(file.absolutePath)
+        }.onFailure { toast(it.message ?: "export failed") }
+    }
+
+    override fun measureLatency(
+        profile: app.smugly.ConfigProfile,
+        onResult: (Result<Int>) -> Unit
+    ) {
+        Thread({ onResult(app.smugly.net.LatencyProbe.measure(profile.config)) }, "latency-probe")
+            .apply { isDaemon = true }
+            .start()
+    }
 
     override fun looksLikeSubscription(text: String): Boolean =
         app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)

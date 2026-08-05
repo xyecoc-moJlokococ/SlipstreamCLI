@@ -131,7 +131,8 @@ class FileProfileStore(
             dnsResolverPool = DnsResolverPool.normalize(
                 json.optString("dnsResolverPool", DnsResolverPool.DEFAULT_RAW)
             ),
-            homeFolderIndex = json.optInt("homeFolderIndex", 0)
+            homeFolderIndex = json.optInt("homeFolderIndex", 0),
+            lastFolderId = json.optString("lastFolderId", "")
         )
     }
 
@@ -147,6 +148,7 @@ class FileProfileStore(
             .put("language", settings.language.name)
             .put("dnsResolverPool", settings.dnsResolverPool)
             .put("homeFolderIndex", settings.homeFolderIndex)
+            .put("lastFolderId", settings.lastFolderId)
         settingsFile.writeText(json.toString(2))
     }
 }

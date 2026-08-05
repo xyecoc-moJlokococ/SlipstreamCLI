@@ -58,12 +58,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Legacy View-based UI kept for reference / emergency rollback (not launched). -->
-        <activity
-            android:name=".MainActivity"
-            android:exported="false"
-            android:theme="@style/AppTheme" />
-
         <service
             android:name=".service.TinyVpnService"
             android:exported="false"

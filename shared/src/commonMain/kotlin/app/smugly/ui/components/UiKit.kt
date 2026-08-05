@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,6 +46,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
@@ -189,8 +191,8 @@ fun MenuLayer(
 
     val density = LocalDensity.current
     val gutterPx = with(density) { 8.dp.roundToPx() }
-    val minW = with(density) { 220.dp.toPx() }.toInt()
-    val defaultMaxW = with(density) { 340.dp.toPx() }.toInt()
+    val minW = with(density) { 200.dp.toPx() }.toInt()
+    val defaultMaxW = with(density) { 300.dp.toPx() }.toInt()
     Box(Modifier.fillMaxSize()) {
         // Outside tap closes the menu (same as a Popup's dismiss-on-outside-touch).
         Box(
@@ -206,6 +208,10 @@ fun MenuLayer(
             content = {
                 Column(
                     modifier = Modifier
+                        // Hug the longest label. The rows are fillMaxWidth, so without this the
+                        // panel measured at its maximum every time and stood there half empty,
+                        // eating screen width for nothing.
+                        .width(IntrinsicSize.Max)
                         .graphicsLayer {
                             val p = anim.value
                             alpha = p
@@ -270,8 +276,10 @@ fun MenuRow(text: String, onClick: () -> Unit) {
                 onClick = onClick
             )
             // Rows are ~52dp tall: these are the app's primary actions on a phone, and at
-            // the old 14sp/12dp they read as a desktop context menu shrunk down.
-            .padding(horizontal = 20.dp, vertical = 16.dp)
+            // the old 14sp/12dp they read as a desktop context menu shrunk down. The right
+            // side is deliberately tighter — the panel is sized by its longest label, so
+            // padding there is width the menu takes off the screen for nothing.
+            .padding(start = 18.dp, end = 10.dp, top = 16.dp, bottom = 16.dp)
     )
 }
 
@@ -287,7 +295,11 @@ fun TopBar(
     onBack: (() -> Unit)? = null,
     onAdd: (() -> Unit)? = null,
     /** Reports the + button's top edge in root coords so the screen can anchor its menu. */
-    onAddAnchor: (Int) -> Unit = {}
+    onAddAnchor: (Int) -> Unit = {},
+    /** Confirm action (✓) — the editor's save, in the bar instead of a button at the bottom. */
+    onConfirm: (() -> Unit)? = null,
+    /** Destructive action (🗑). Sits in the outer corner, where + is on the list screen. */
+    onDeleteAction: (() -> Unit)? = null
 ) {
     // Full-bleed bar: menu / + sit against the physical window edges; 56dp targets.
     Row(
@@ -339,6 +351,38 @@ fun TopBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
         )
+        if (onDeleteAction != null) {
+            Box(
+                Modifier
+                    .size(TopBarIconSize)
+                    .handClickable(onClick = onDeleteAction),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Delete,
+                    null,
+                    // Muted rather than accent: it sits in the corner the thumb lands on, and the
+                    // confirmation dialog behind it is what actually protects the profile.
+                    tint = SmuglyTextSecondary,
+                    modifier = Modifier.size(TopBarIconGlyph)
+                )
+            }
+        }
+        if (onConfirm != null) {
+            Box(
+                Modifier
+                    .size(TopBarIconSize)
+                    .handClickable(onClick = onConfirm),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Check,
+                    null,
+                    tint = SmuglyTextPrimary,
+                    modifier = Modifier.size(TopBarIconGlyph)
+                )
+            }
+        }
         if (onAdd != null) {
             Box(
                 Modifier
@@ -672,6 +716,33 @@ private const val SelectFadeOutMs = 350
 /** How long the pill takes to slide to the option you tapped. */
 private const val PillSwitchMs = 250
 
+/**
+ * Latency chip next to a profile name. Deliberately three distinct states — an unreachable
+ * server and a slow one are different answers, and one number for both would hide the useful one.
+ */
+@Composable
+private fun LatencyBadge(latency: app.smugly.ui.LatencyUi) {
+    // The palette is monochrome plus one red, so red is spent only on "this does not work":
+    // a number that is merely large still reads fine as plain text.
+    val (text, color) = when {
+        latency.measuring -> "…" to SmuglyTextMuted
+        latency.failed -> "—" to SmuglyAccent
+        latency.ms != null -> "${latency.ms} ms" to
+            if (latency.ms < 800) SmuglyTextSecondary else SmuglyTextMuted
+        else -> return
+    }
+    Text(
+        text = text,
+        color = color,
+        fontSize = 12.sp,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(SmuglyCardSoft)
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    )
+}
+
 @Composable
 fun ProfileCard(
     name: String,
@@ -692,7 +763,9 @@ fun ProfileCard(
     onLongPressDrag: (dy: Float) -> Unit = {},
     onLongPressDragEnd: () -> Unit = {},
     onLongPressDragCancel: () -> Unit = {},
-    enableReorder: Boolean = true
+    enableReorder: Boolean = true,
+    /** Measured round trip to this profile's own server, or null when never measured. */
+    latency: app.smugly.ui.LatencyUi? = null
 ) {
     val shape = RoundedCornerShape(12.dp)
     val haptics = LocalHapticFeedback.current
@@ -817,13 +890,20 @@ fun ProfileCard(
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
             // Flag emojis in profile titles (🇪🇸 Испания) become letter-pairs on Windows;
             // ProfileNameText draws a real flag image on desktop and keeps emoji elsewhere.
-            ProfileNameText(
-                name = name,
-                color = SmuglyTextPrimary,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Normal,
-                maxLines = 1
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ProfileNameText(
+                    name = name,
+                    color = SmuglyTextPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Normal,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (latency != null) {
+                    Spacer(Modifier.width(8.dp))
+                    LatencyBadge(latency)
+                }
+            }
             // Xray and empty subtitles: no second line (avoids "{..." junk).
             if (subtitle.isNotBlank()) {
                 Text(

@@ -31,6 +31,13 @@ data class ConnectUiState(
     }
 }
 
+/** What the row shows for a profile's measured latency. */
+data class LatencyUi(
+    val measuring: Boolean = false,
+    val ms: Int? = null,
+    val failed: Boolean = false
+)
+
 data class EditorDraft(
     val profileId: String?,
     val name: String,
@@ -138,6 +145,20 @@ interface SmuglyPlatform {
 
     /** Persist a new folder-tab order (subscription ids only; Home's slot is a global setting). */
     fun reorderSubscriptions(orderedIds: List<String>) {}
+
+    /**
+     * Time the first packet back from this profile's own server (see `LatencyProbe`).
+     * Runs off the UI thread; the callback may arrive on any thread.
+     */
+    /**
+     * Hand [content] to the user as a file (share sheet on Android, a file on disk on desktop).
+     * Used for exporting a whole folder; the text is what the importer accepts back.
+     */
+    fun exportTextFile(fileName: String, content: String) {}
+
+    fun measureLatency(profile: ConfigProfile, onResult: (Result<Int>) -> Unit) {
+        onResult(Result.failure(UnsupportedOperationException("not supported on this platform")))
+    }
 
     /** True when [text] should be treated as a subscription rather than a single config. */
     fun looksLikeSubscription(text: String): Boolean = false

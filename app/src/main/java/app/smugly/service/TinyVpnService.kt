@@ -27,7 +27,7 @@ import app.smugly.tunnel.XrayBridge
 import app.smugly.util.AppLog
 import app.smugly.Config
 import app.smugly.ConfigStore
-import app.smugly.MainActivity
+import app.smugly.ComposeMainActivity
 import app.smugly.R
 import app.smugly.ResolverChoice
 import app.smugly.ResolverSelector
@@ -1593,7 +1593,7 @@ class TinyVpnService : VpnService() {
         val pi = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, ComposeMainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val builder = if (Build.VERSION.SDK_INT >= 26) {

@@ -329,7 +329,28 @@ class AndroidSmuglyPlatform(
         val bridge = MiniSlipstreamSocksBridge.stats()
         val rx = if (HevSocks5Tunnel.isRunning()) hev.rxBytes else bridge.rxBytes
         val tx = if (HevSocks5Tunnel.isRunning()) hev.txBytes else bridge.txBytes
-        val traffic = "↓ ${formatBytes(rx)}   ↑ ${formatBytes(tx)}"
+        // Current speed, not just the running totals: a number that is moving is the quickest
+        // way to see the tunnel is alive. Sampled over at least half a second so it does not
+        // jitter with the poll interval, and held between samples rather than dropping to zero.
+        val now = android.os.SystemClock.elapsedRealtime()
+        val elapsed = now - lastTrafficAtMs
+        if (lastTrafficAtMs != 0L && elapsed >= 500) {
+            val dr = (rx - lastRxBytes).coerceAtLeast(0)
+            val dt = (tx - lastTxBytes).coerceAtLeast(0)
+            rateDown = dr * 1000 / elapsed
+            rateUp = dt * 1000 / elapsed
+        }
+        if (lastTrafficAtMs == 0L || elapsed >= 500) {
+            lastRxBytes = rx
+            lastTxBytes = tx
+            lastTrafficAtMs = now
+        }
+        // A stopped tunnel has no speed; leaving the last value up reads as still running.
+        if (!running) {
+            rateDown = 0
+            rateUp = 0
+        }
+        val traffic = "↓ ${formatBytes(rx)} (${formatBytes(rateDown)}/s)   ↑ ${formatBytes(tx)} (${formatBytes(rateUp)}/s)"
         val diag = buildString {
             appendLine("running=$running ready=${SlipstreamBridge.isReady()} port=${SlipstreamBridge.port()}")
             appendLine("proxyStarted=$proxyStarted connecting=$connecting")
@@ -487,9 +508,9 @@ class AndroidSmuglyPlatform(
                  */
                 override fun fetchRoutes(): List<app.smugly.subscription.SubscriptionFetcher.ProxySpec?> =
                     buildList {
+                        val port = ConfigStore.loadGlobalSettings(activity).listenPort
                         val local = app.smugly.subscription.SubscriptionFetcher.ProxySpec(
-                            "127.0.0.1",
-                            ConfigStore.loadGlobalSettings(activity).listenPort
+                            "127.0.0.1", port, socks = true
                         )
                         if (isRunning()) {
                             // Tunnel up: it is the more likely winner, but a direct attempt still
@@ -532,7 +553,41 @@ class AndroidSmuglyPlatform(
         id, name, url, enabled, updateIntervalMinutes, allowReorder, showInfo
     )
 
+    // Rolling sample behind the speed shown in the traffic line.
+    private var lastRxBytes = 0L
+    private var lastTxBytes = 0L
+    private var lastTrafficAtMs = 0L
+    private var rateDown = 0L
+    private var rateUp = 0L
+
     override fun reorderSubscriptions(orderedIds: List<String>) = subscriptions.reorder(orderedIds)
+
+    override fun exportTextFile(fileName: String, content: String) {
+        runCatching {
+            // Same route as the log share: a file under filesDir handed out through the app's
+            // FileProvider, so no storage permission is involved.
+            val dir = java.io.File(activity.filesDir, "export").apply { mkdirs() }
+            val file = java.io.File(dir, fileName)
+            file.writeText(content)
+            val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.files", file)
+            val intent = Intent(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            activity.startActivity(Intent.createChooser(intent, fileName))
+        }.onFailure { toast(it.message ?: "export failed") }
+    }
+
+    override fun measureLatency(
+        profile: app.smugly.ConfigProfile,
+        onResult: (Result<Int>) -> Unit
+    ) {
+        // Plain thread, not a coroutine scope: the probe is a blocking socket round trip and the
+        // callback is expected to hop back to the UI itself.
+        Thread({ onResult(app.smugly.net.LatencyProbe.measure(profile.config)) }, "latency-probe")
+            .apply { isDaemon = true }
+            .start()
+    }
 
     override fun looksLikeSubscription(text: String): Boolean =
         app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)

@@ -6,8 +6,8 @@ package app.smugly
  */
 object AppVersion {
     const val name = "0.1.0"
-    /** ISO date of this desktop/shared build stamp (update when shipping). */
-    const val buildDate = "2026-07-27"
+    /** ISO date this build was compiled — generated, never hand-edited (see BuildStamp.kt). */
+    val buildDate: String get() = BUILD_STAMP_DATE
 
     val display: String get() = "$name · $buildDate"
 }

@@ -138,6 +138,15 @@ fun HomeScreen(
     onBlockDrawerGestures: (Boolean) -> Unit = {},
     /** Where the Home tab sits among the folders. */
     homeFolderIndex: Int = 0,
+    /** Folder to open on entry: a subscription id, or blank for Home. */
+    initialFolderId: String = "",
+    /** Reports the folder now on screen so it can be restored next launch. */
+    onFolderOpened: (String) -> Unit = {},
+    /** Measured latency per profile id (see LatencyProbe); missing = never measured. */
+    latencies: Map<String, app.smugly.ui.LatencyUi> = emptyMap(),
+    onMeasureLatency: (ConfigProfile) -> Unit = {},
+    /** Write every profile of one folder out as an importable file. */
+    onExportFolder: (profiles: List<ConfigProfile>, folderName: String) -> Unit = { _, _ -> },
     /** Create ([FolderDraft.id] null) or update a folder. */
     onSaveFolder: (FolderDraft) -> Unit = {},
     /** New tab order: subscription ids in order, plus the slot Home ended up in. */
@@ -167,13 +176,25 @@ fun HomeScreen(
      * while the panel fades out; only [folderMenuOpen] is cleared on dismiss.
      */
     var folderMenu by remember { mutableStateOf<Subscription?>(null) }
+    /** Slot the folder menu belongs to, or -1. Home is a folder too and has no [Subscription]. */
+    var folderMenuSlot by remember { mutableStateOf(-1) }
     var folderMenuOpen by remember { mutableStateOf(false) }
     /** Folder being created or edited; kept while the dialog animates out. */
     var folderDraft by remember { mutableStateOf<FolderDraft?>(null) }
     var folderEditorOpen by remember { mutableStateOf(false) }
     var deletingFolder by remember { mutableStateOf<Subscription?>(null) }
     val scope = rememberCoroutineScope()
-    val pagerState = rememberPagerState(pageCount = { subscriptions.size + 1 })
+    // Slots are needed to turn the stored folder id back into a page, and they are computed
+    // below — this only reads the same two inputs, so it cannot disagree with them.
+    val initialPage = remember(subscriptions, homeFolderIndex, initialFolderId) {
+        val ordered = subscriptions.toMutableList<Subscription?>()
+            .also { it.add(homeFolderIndex.coerceIn(0, subscriptions.size), null) }
+        ordered.indexOfFirst { (it?.id ?: "") == initialFolderId }.coerceAtLeast(0)
+    }
+    val pagerState = rememberPagerState(
+        initialPage = initialPage,
+        pageCount = { subscriptions.size + 1 }
+    )
     val folderIndex = pagerState.currentPage
     /** Tab the user just tapped, held until the pager finishes travelling to it. */
     var pendingTab by remember { mutableStateOf<Int?>(null) }
@@ -221,6 +242,12 @@ fun HomeScreen(
     // Who may own a horizontal drag right now. Past the first folder it is the pager's; while a
     // tab is held it is the tab's — otherwise dragging a tab rightwards pulled the drawer out
     // from under it. Handed back when this screen goes away.
+    // `settledPage`, not `currentPage`: the latter flips halfway through a swipe, and gating it
+    // on "not scrolling" would drop the final report entirely when the page it lands on is the
+    // one it already flipped to.
+    LaunchedEffect(pagerState.settledPage, slots) {
+        onFolderOpened(slots.getOrNull(pagerState.settledPage)?.id ?: "")
+    }
     LaunchedEffect(folderIndex, tabDragging) {
         onFirstFolder(folderIndex == 0 && !tabDragging)
     }
@@ -318,15 +345,15 @@ fun HomeScreen(
                     }
                 },
                 onMenu = { index, x, y ->
-                    // The Home slot has nothing to manage.
-                    slots.getOrNull(index)?.let { sub ->
-                        menuAnchorY = y
-                        menuAnchorX = x
-                        addMenu = false
-                        moreFor = null
-                        folderMenu = sub
-                        folderMenuOpen = true
-                    }
+                    // Home has no subscription to edit or delete, but it is still a folder: the
+                    // two whole-folder actions apply to it exactly the same.
+                    menuAnchorY = y
+                    menuAnchorX = x
+                    addMenu = false
+                    moreFor = null
+                    folderMenu = slots.getOrNull(index)
+                    folderMenuSlot = index
+                    folderMenuOpen = true
                 }
             )
             HorizontalPager(
@@ -446,6 +473,7 @@ fun HomeScreen(
                         onClick = { if (draggingId == null) onSelect(profile) },
                         // Servers in a subscription folder are replaced wholesale on refresh, so
                         // deleting one individually would just come back — hide the button.
+                        latency = latencies[profile.id],
                         onDelete = if (pageSubscription == null) {
                             { onDelete(profile) }
                         } else {
@@ -590,26 +618,44 @@ fun HomeScreen(
                 onDismiss = { moreFor = null }
             ) {
                 MenuRow(t(S.CD_EDIT_PROFILE)) { moreFor = null; onEdit(p) }
+                MenuRow(t(S.MENU_MEASURE_LATENCY)) { moreFor = null; onMeasureLatency(p) }
                 MenuRow(t(S.MENU_EXPORT_PROFILE)) { moreFor = null; onExport(p) }
             }
         }
         // Folder management: the same dropdown as + / ⋮, dropped under the tab that was
         // long-pressed. Rename and delete still open their own dialogs from here.
-        folderMenu?.let { sub ->
+        if (folderMenuSlot >= 0) {
+            val menuSub = folderMenu
+            // Profiles of the folder the menu was opened on — not of the folder currently on
+            // screen: the two differ the moment you long-press a tab you are not looking at.
+            val menuProfiles = profiles.filter { it.subscriptionId == menuSub?.id }
+            val menuFolderName = menuSub?.name?.ifBlank { menuSub.url } ?: t(S.HOME_FOLDER)
             MenuLayer(
                 visible = folderMenuOpen,
                 anchorY = menuAnchorY,
                 anchorX = menuAnchorX,
                 onDismiss = { folderMenuOpen = false }
             ) {
-                MenuRow(t(S.EDIT_FOLDER)) {
-                    folderMenuOpen = false
-                    folderDraft = FolderDraft.of(sub)
-                    folderEditorOpen = true
+                if (menuSub != null) {
+                    MenuRow(t(S.EDIT_FOLDER)) {
+                        folderMenuOpen = false
+                        folderDraft = FolderDraft.of(menuSub)
+                        folderEditorOpen = true
+                    }
                 }
-                MenuRow(t(S.SUBSCRIPTION_DELETE)) {
+                MenuRow(t(S.MENU_MEASURE_LATENCY)) {
                     folderMenuOpen = false
-                    deletingFolder = sub
+                    menuProfiles.forEach { onMeasureLatency(it) }
+                }
+                MenuRow(t(S.MENU_EXPORT_FOLDER)) {
+                    folderMenuOpen = false
+                    onExportFolder(menuProfiles, menuFolderName)
+                }
+                if (menuSub != null) {
+                    MenuRow(t(S.SUBSCRIPTION_DELETE)) {
+                        folderMenuOpen = false
+                        deletingFolder = menuSub
+                    }
                 }
             }
         }
@@ -836,7 +882,11 @@ fun ProfileEditorScreen(
         Column(Modifier.fillMaxSize()) {
             TopBar(
                 title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
-                onBack = onBack
+                onBack = onBack,
+                // Save and delete live in the bar, where the + sits on the list screen — the form
+                // is a scrolling page and a button pinned under it was a second thing to reach.
+                onConfirm = onSave,
+                onDeleteAction = onDelete
             )
             // Xray: name/protocol stay fixed; JSON fills remaining height and scrolls only inside
             // the field. Nested verticalScroll+focus bring-into-view used to yank the page to top
@@ -877,16 +927,6 @@ fun ProfileEditorScreen(
                         .padding(horizontal = 10.dp)
                         .padding(bottom = 8.dp)
                 )
-                if (onDelete != null) {
-                    SecondaryButton(
-                        t(S.DELETE_PROFILE_BTN),
-                        onDelete,
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp)
-                            .padding(bottom = 8.dp)
-                    )
-                }
             } else {
                 Column(
                     Modifier
@@ -924,22 +964,7 @@ fun ProfileEditorScreen(
                         }
                         Config.TunnelProtocol.XRAY -> { /* handled above */ }
                     }
-                    if (onDelete != null) {
-                        Spacer(Modifier.height(12.dp))
-                        SecondaryButton(t(S.DELETE_PROFILE_BTN), onDelete, Modifier.fillMaxWidth())
-                    }
                 }
-            }
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .background(SmuglyCard)
-                    .padding(horizontal = 10.dp, vertical = 10.dp)
-            ) {
-                PrimaryButton(
-                    text = if (draft.profileId == null) t(S.CREATE_PROFILE_BTN) else t(S.SAVE_PROFILE_BTN),
-                    onClick = onSave
-                )
             }
         }
 
