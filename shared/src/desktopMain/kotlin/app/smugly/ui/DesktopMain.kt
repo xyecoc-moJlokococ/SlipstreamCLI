@@ -2,13 +2,20 @@ package app.smugly.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -22,6 +29,7 @@ import androidx.compose.ui.window.rememberWindowState
 import app.smugly.currentHostPlatform
 import app.smugly.platform.LogLevel
 import app.smugly.platform.PlatformLog
+import app.smugly.ui.theme.SmuglyAccent
 import app.smugly.ui.theme.SmuglyBg
 import kotlinx.coroutines.launch
 import java.awt.Dimension
@@ -147,6 +155,16 @@ fun main() {
             val restoreBounds = remember { arrayOfNulls<java.awt.Rectangle>(1) }
             // The window animations run on Compose's frame clock, so they need its scope.
             val scope = androidx.compose.runtime.rememberCoroutineScope()
+            // Discord-style boot: hold a centered spinner for a couple of frames while Skiko /
+            // first composition settle, then mount SmuglyApp. Longer cold work is covered by the
+            // pre-GUI WarmupCds splash when AppCDS is rebuilt after compile.
+            var bootReady by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                withFrameNanos { }
+                withFrameNanos { }
+                bootReady = true
+            }
             fun toggleMaximize(w: java.awt.Window) {
                 if (maximized) {
                     val back = restoreBounds[0] ?: return
@@ -247,21 +265,32 @@ fun main() {
                 }
                 // Compose-side full-bleed dark so any frame lag still shows SmuglyBg, not white.
                 Box(Modifier.fillMaxSize().background(SmuglyBg)) {
-                    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
-                        WindowChrome(
-                            title = "Smugly",
-                            maximized = maximized,
-                            onMinimize = { windowState.isMinimized = true },
-                            onToggleMaximize = { toggleMaximize(window) },
-                            onClose = { closeWindow() }
-                        )
-                        Box(Modifier.weight(1f)) {
-                            SmuglyApp(platform, shortcuts)
+                    if (!bootReady) {
+                        // Same as Android LoadingOverlay: accent ring only, no wordmark / caption.
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(34.dp),
+                                color = SmuglyAccent,
+                                strokeWidth = 3.dp
+                            )
                         }
+                    } else {
+                        Column(Modifier.fillMaxSize()) {
+                            WindowChrome(
+                                title = "Smugly",
+                                maximized = maximized,
+                                onMinimize = { windowState.isMinimized = true },
+                                onToggleMaximize = { toggleMaximize(window) },
+                                onClose = { closeWindow() }
+                            )
+                            Box(Modifier.weight(1f)) {
+                                SmuglyApp(platform, shortcuts)
+                            }
+                        }
+                        // Above the content: the grips are a few pixels at the window's edge and
+                        // must win over whatever the app draws underneath them.
+                        WindowResizeHandles(window, enabled = !maximized)
                     }
-                    // Above the content: the grips are a few pixels at the window's edge and must
-                    // win over whatever the app draws underneath them.
-                    WindowResizeHandles(window, enabled = !maximized)
                 }
             }
         }
