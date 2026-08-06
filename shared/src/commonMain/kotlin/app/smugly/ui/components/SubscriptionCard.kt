@@ -47,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -460,9 +461,8 @@ fun FolderTabs(
         dragDx = 0f
         dragNames = null
     }
-    // How far tab [index] steps aside for the tab being carried. Shared with the indicator below:
-    // when the OPEN folder is the one stepping aside, its underline has to go with it, or the tab
-    // moves and the red bar stays behind.
+    // How far tab [index] steps aside for the tab being carried. The OPEN folder's underline
+    // must use the same value (animated) or the red bar jumps while the label eases aside.
     fun shiftOf(index: Int): Float {
         if (!dragging || dragTo < 0 || index == dragFrom) return 0f
         val held = (spans.getOrNull(dragFrom)?.second ?: 0f) + gapPx
@@ -472,6 +472,15 @@ fun FolderTabs(
             else -> 0f
         }
     }
+    // Same curve as each tab's shiftAnimated — indicator used to read shiftOf() raw, so the bar
+    // teleported to the gap as soon as dragTo flipped while the active label still eased over.
+    val selectedShiftTarget =
+        if (dragging && dragFrom != selectedIndex) shiftOf(selectedIndex) else 0f
+    val selectedShiftAnim by animateFloatAsState(
+        targetValue = selectedShiftTarget,
+        animationSpec = tween(TabIndicatorMs, easing = FastOutSlowInEasing),
+        label = "selectedTabShift"
+    )
     val scope = rememberCoroutineScope()
     val target = spans.getOrElse(selectedIndex) { 0f to 0f }
     // The underline travels when the user picks a different tab, and teleports when the tabs
@@ -501,7 +510,12 @@ fun FolderTabs(
     val indicatorAnimX = remember { Animatable(0f) }
     val indicatorAnimW = remember { Animatable(0f) }
     LaunchedEffect(target.first, target.second) {
-        if (settling) {
+        if (target.second <= 0f) return@LaunchedEffect
+        // First real measurement (or remount after leaving Home for Settings/Diagnostics):
+        // Animatable starts at 0, and animating 0→tab reads as the bar "fading/sliding in".
+        // Only travel between tabs once the underline is already on screen.
+        val firstPlace = indicatorAnimW.value <= 0f
+        if (settling || firstPlace) {
             indicatorAnimX.snapTo(target.first)
             indicatorAnimW.snapTo(target.second)
         } else {
@@ -559,6 +573,10 @@ fun FolderTabs(
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         names.forEachIndexed { index, name ->
+            // Colour/weight state must follow the FOLDER, not the slot index. Without this, a
+            // reorder leaves the old "selected" Color animation on the destination index for a
+            // frame — the tab you just dropped there flashes white as if it were active.
+            key(name) {
             val selected = index == selectedIndex
             val anchor = remember { intArrayOf(0, 0) }
             val labelColor by animateColorAsState(
@@ -719,6 +737,7 @@ fun FolderTabs(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            }
         }
     }
         // Drawn, not laid out. The bar lives outside the scrolling row (so it can travel between
@@ -734,12 +753,13 @@ fun FolderTabs(
                 .padding(horizontal = 10.dp)
                 .drawBehind {
                     val sel = spans.getOrNull(selectedIndex) ?: return@drawBehind
-                    // While the selected tab is being carried, the underline goes with it — it
-                    // belongs to that tab, not to the slot it happens to be sitting in.
+                    // Underline follows the OPEN folder: finger-drag when that tab is held, the
+                    // same eased shift the label uses when a neighbour is shoved through its slot
+                    // (never the raw target — that is the jump while text still animates).
                     val carried = when {
                         !dragging -> 0f
                         dragFrom == selectedIndex -> dragDx
-                        else -> shiftOf(selectedIndex)
+                        else -> selectedShiftAnim
                     }
                     // Fresh measurements while a reorder settles, the travelling animation
                     // otherwise — that animation is what makes picking another tab read as one

@@ -898,7 +898,11 @@ fun ProfileCard(
                                 }
                             },
                             onDragEnd = { unpin(); dragEndNow() },
-                            onDragCancel = { unpin(); dragCancelNow() }
+                            // Keep the pin on cancel. LazyList recycle cancels this pointerInput
+                            // after about a screen of travel; unpinning here would drop the item
+                            // from composition and abort the reorder. The list host finishes the
+                            // drag on finger-up and dispose releases the pin if the node is gone.
+                            onDragCancel = { dragCancelNow() }
                         )
                     }
                 } else Modifier

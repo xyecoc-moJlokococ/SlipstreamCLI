@@ -53,11 +53,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
@@ -208,6 +210,12 @@ fun HomeScreen(
     val folderIndex = pagerState.currentPage
     /** Tab the user just tapped, held until the pager finishes travelling to it. */
     var pendingTab by remember { mutableStateOf<Int?>(null) }
+    /**
+     * True only while [onSelect]/[onMove] is driving the pager. Distinguishes that from a
+     * finger swipe so we can clear a stale [pendingTab] without nuking it between the
+     * intermediate scrollToPage and animateScrollToPage of a far-tab jump.
+     */
+    var tabNavigating by remember { mutableStateOf(false) }
     /** True while a folder tab is being held / dragged. */
     var tabDragging by remember { mutableStateOf(false) }
     // Tab slots in display order; null is the Home folder. Home is not a subscription, so its
@@ -273,6 +281,16 @@ fun HomeScreen(
     // one it already flipped to.
     LaunchedEffect(pagerState.settledPage, slots) {
         onFolderOpened(slots.getOrNull(pagerState.settledPage)?.id ?: "")
+    }
+    // Finger-swipe on the pager while a tab-tap left pendingTab set: drop it so the strip
+    // follows currentPage. Gated on !tabNavigating so the far-tab hop (scroll to neighbour,
+    // then animate) does not clear pending between the two steps.
+    LaunchedEffect(pagerState.isScrollInProgress, pagerState.currentPage, tabNavigating) {
+        val pending = pendingTab ?: return@LaunchedEffect
+        if (tabNavigating || pagerState.isScrollInProgress) return@LaunchedEffect
+        if (pagerState.currentPage != pending) {
+            pendingTab = null
+        }
     }
     LaunchedEffect(folderIndex, tabDragging) {
         onFirstFolder(folderIndex == 0 && !tabDragging)
@@ -346,21 +364,31 @@ fun HomeScreen(
                 // The tab the user tapped lights up on the tap, not when the pager gets there:
                 // the one-page approach below parks on the neighbour first, and following
                 // currentPage made the *middle* tab flash before the target.
+                // While pendingTab is set, a finger-swipe must still win: a cancelled
+                // animateScrollToPage used to leave pendingTab stuck and freeze the highlight
+                // on the old folder even as the pager moved underneath.
                 selectedIndex = pendingTab ?: folderIndex,
                 onSelect = { target ->
                     pendingTab = target
+                    tabNavigating = true
                     scope.launch {
-                        // Always exactly one page of travel. Animating the whole distance would
-                        // scroll through every folder in between and compose each on the way,
-                        // which is what made a far tab feel like the app had hung; jumping
-                        // outright lost the sense of direction. So land next to the target
-                        // first, then slide the last page in.
-                        val from = pagerState.currentPage
-                        if (abs(target - from) > 1) {
-                            pagerState.scrollToPage(if (target > from) target - 1 else target + 1)
+                        try {
+                            // Always exactly one page of travel. Animating the whole distance would
+                            // scroll through every folder in between and compose each on the way,
+                            // which is what made a far tab feel like the app had hung; jumping
+                            // outright lost the sense of direction. So land next to the target
+                            // first, then slide the last page in.
+                            val from = pagerState.currentPage
+                            if (abs(target - from) > 1) {
+                                pagerState.scrollToPage(if (target > from) target - 1 else target + 1)
+                            }
+                            pagerState.animateScrollToPage(target)
+                        } finally {
+                            // finally: swipe / cancel / dispose must not leave pendingTab stuck,
+                            // or the top strip stops tracking pager swipes until the next tap.
+                            pendingTab = null
+                            tabNavigating = false
                         }
-                        pagerState.animateScrollToPage(target)
-                        pendingTab = null
                     }
                 },
                 onMenuDismiss = { folderMenuOpen = false },
@@ -378,9 +406,14 @@ fun HomeScreen(
                         next.indexOfFirst { it == null }.coerceAtLeast(0)
                     )
                     pendingTab = openNow
+                    tabNavigating = true
                     scope.launch {
-                        pagerState.scrollToPage(openNow)
-                        pendingTab = null
+                        try {
+                            pagerState.scrollToPage(openNow)
+                        } finally {
+                            pendingTab = null
+                            tabNavigating = false
+                        }
                     }
                 },
                 onMenu = { index, x, y ->
@@ -460,10 +493,14 @@ fun HomeScreen(
                     val listState = rememberLazyListState()
                     /** List top in root coords + its height: the frame the finger is judged against. */
                     val listBounds = remember { floatArrayOf(0f, 0f) }
+                    /** Layout of the list host — converts pointer events to root Y while dragging. */
+                    var listCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
                     // Which way the list creeps while a card is held against an edge, in px per
                     // frame. Dragging a profile in a long folder was otherwise a dead end: the
                     // list cannot be scrolled by the finger that is holding a card.
                     var autoScroll by remember { mutableStateOf(0f) }
+                    /** Guards dropCard so end+cancel+parent-up cannot persist twice. */
+                    var dropStarted by remember { mutableStateOf(false) }
 
                     /**
                      * Hang the held card off the finger and, if its centre has crossed a neighbour's
@@ -560,11 +597,12 @@ fun HomeScreen(
 
                     /**
                      * Put the card down where it is now: ride the leftover offset into its slot
-                     * and persist the order. Shared by a normal release and by a cancel — the list
-                     * has been reordered live either way, and only one of those outcomes is a
-                     * surprise.
+                     * and persist the order. Idempotent — finger-up may arrive from the card
+                     * gesture and from the list-level pointer tracker in the same frame.
                      */
-                    val dropCard: () -> Unit = {
+                    fun dropCard() {
+                        if (draggingId == null || dropStarted) return
+                        dropStarted = true
                         autoScroll = 0f
                         dragKey = null
                         // The list is already in its final order — the card was carried through it
@@ -582,6 +620,7 @@ fun HomeScreen(
                             dragFromIndex = -1
                             gapTargetIndex = -1
                             dragOffsetY = 0f
+                            dropStarted = false
                             onReorder(finalOrder)
                         }
                     }
@@ -596,9 +635,10 @@ fun HomeScreen(
                     // wait we used before also halved the scroll rate (one step per two frames).
                     LaunchedEffect(draggingId) {
                         if (draggingId == null) return@LaunchedEffect
+                        dropStarted = false
                         while (true) {
                             withFrameNanos { }
-                            if (draggingId == null) break
+                            if (draggingId == null || dropStarted) break
                             trackDrag()
                             val speed = scrollSpeedForFinger()
                             autoScroll = speed
@@ -688,22 +728,59 @@ fun HomeScreen(
                                     // glue, bringing the edge shake back.
                                     pointerRootY = rootY
                                 },
-                                onDragEnd = dropCard,
-                                // A cancel is the system taking the pointer away — most often the
-                                // finger reaching the navigation bar. The list has already been
-                                // reordered live under the finger, so throwing that away and
-                                // snapping the card home is the one outcome nobody asked for:
-                                // keep what is on screen, exactly as a normal drop does.
-                                onDragCancel = dropCard
+                                onDragEnd = { dropCard() },
+                                // Do NOT drop on cancel. After ~one screen of auto-scroll the
+                                // lazy item is often disposed despite pin; that cancels the
+                                // card's pointerInput and used to end the reorder at ~8–10
+                                // slots. The list host below owns the drag until finger-up.
+                                onDragCancel = { }
                             )
                         }
-                    LazyColumn(
-                        modifier = Modifier
+                    // Host owns pointer lifecycle for the whole drag: the card starts it (long
+                    // press) but a LazyColumn recycle must not abort auto-scroll mid-list.
+                    // pointerInput only while dragging — an always-on block (even one that
+                    // returns immediately) can still fight the HorizontalPager's horizontal
+                    // swipe and leave pendingTab / tab highlight desynced from the page.
+                    Box(
+                        Modifier
                             .fillMaxSize()
                             .onGloballyPositioned {
                                 listBounds[0] = it.positionInRoot().y
                                 listBounds[1] = it.size.height.toFloat()
+                                listCoords = it
                             }
+                            .then(
+                                if (draggingId != null) {
+                                    Modifier.pointerInput(draggingId) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event =
+                                                    awaitPointerEvent(PointerEventPass.Final)
+                                                val coords =
+                                                    listCoords?.takeIf { it.isAttached }
+                                                val change = event.changes
+                                                    .maxByOrNull { it.uptimeMillis }
+                                                    ?: continue
+                                                if (coords != null) {
+                                                    pointerRootY =
+                                                        coords.localToRoot(change.position).y
+                                                }
+                                                // Finger up or system cancel — settle.
+                                                if (event.changes.none { it.pressed }) {
+                                                    dropCard()
+                                                    break
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
                             .padding(horizontal = 10.dp),
                         state = listState,
                         userScrollEnabled = draggingId == null,
@@ -794,6 +871,7 @@ fun HomeScreen(
                         )
                     }
                 }
+                    }
                     }
                 }
             }
@@ -994,7 +1072,7 @@ private fun ServerRow(
             if (draggingId == profile.id) onDrag(dy, pointerRootY)
         },
         onLongPressDragEnd = { if (draggingId == profile.id) onDragEnd() },
-        onLongPressDragCancel = onDragCancel
+        onLongPressDragCancel = { if (draggingId == profile.id) onDragCancel() }
     )
 }
 
