@@ -10,6 +10,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.ProxyInfo
 import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
@@ -386,7 +387,17 @@ class TinyVpnService : VpnService() {
             // else (or pasted from elsewhere with an inbound we can't reach), so pin
             // the SOCKS inbound to the port the TUN bridge is about to dial.
             val socksPort = config.listenPort
+            // The HTTP proxy apps are handed sits one port up, the way every other client lays it
+            // out (10808 SOCKS / 10809 HTTP). Only added when it is actually going to be
+            // advertised — an inbound nobody dials is just an open port.
+            val appProxy = ConfigStore.loadGlobalSettings(this).appHttpProxy &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            // A config that already publishes an HTTP inbound keeps its own port — that one is
+            // the user's decision and may be written down elsewhere. Only a config without one
+            // gets ours, one above the SOCKS port the way every other client lays it out.
+            val httpPort = XrayConfigBuilder.httpPortOf(config.xrayConfigJson) ?: (socksPort + 1)
             val configJson = XrayConfigBuilder.withSocksPort(config.xrayConfigJson, socksPort)
+                .let { if (appProxy) XrayConfigBuilder.withHttpPort(it, httpPort) else it }
             AppLog.i(
                 TAG,
                 "XRAY start server=${XrayConfigBuilder.describeServer(configJson) ?: "?"} " +
@@ -417,6 +428,16 @@ class TinyVpnService : VpnService() {
                 .addDnsServer(VPN_DNS_SECONDARY)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
+            if (appProxy) {
+                // Proxy-aware apps now send `CONNECT host:port` instead of dialling an address
+                // they resolved themselves, so the host name survives all the way to the routing
+                // rules. That is what makes `.onion` / `.i2p` reachable: nothing resolves those,
+                // so through the TUN alone the browser never even opens a connection.
+                runCatching {
+                    builder.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", httpPort))
+                    AppLog.i(TAG, "XRAY app http proxy 127.0.0.1:$httpPort")
+                }.onFailure { AppLog.w(TAG, "setHttpProxy failed: ${it.message}") }
+            }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
 
             // The generated socks inbound sets "udp": true, i.e. real SOCKS5 UDP

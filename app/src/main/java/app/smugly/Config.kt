@@ -27,6 +27,7 @@ object ConfigStore {
     private const val KEY_GLOBAL_HOME_FOLDER_INDEX = "globalHomeFolderIndex"
     private const val KEY_GLOBAL_LAST_FOLDER_ID = "globalLastFolderId"
     private const val KEY_GLOBAL_COLLAPSED_CATEGORIES = "globalCollapsedCategories"
+    private const val KEY_GLOBAL_APP_HTTP_PROXY = "globalAppHttpProxy"
     private const val KEY_GLOBAL_DNS_RESOLVER_POOL = "globalDnsResolverPool"
 
     fun load(context: Context): Config {
@@ -73,19 +74,14 @@ object ConfigStore {
 
     fun save(context: Context, config: Config) {
         val global = loadGlobalSettings(context)
+        // `copy`, never a fresh GlobalSettings: this runs on every connect, and rebuilding the
+        // record from a hand-written argument list silently reset every field that list did not
+        // mention — the open folder, the tab order, folded categories, the app proxy switch — back
+        // to its default. Which is why a setting could be turned on, and be off again the moment
+        // the user pressed connect.
         saveGlobalSettings(
             context,
-            GlobalSettings(
-                config.listenPort,
-                config.mode,
-                global.fileLogging,
-                global.trafficNotification,
-                global.localSocksAuthEnabled,
-                global.localSocksUsername,
-                global.localSocksPassword,
-                global.language,
-                global.dnsResolverPool
-            )
+            global.copy(listenPort = config.listenPort, mode = config.mode)
         )
         saveLegacy(context, config)
         val profiles = loadProfiles(context)
@@ -239,7 +235,8 @@ object ConfigStore {
             lastFolderId = p.getString(KEY_GLOBAL_LAST_FOLDER_ID, "") ?: "",
             collapsedCategories = CollapsedCategories.decode(
                 p.getString(KEY_GLOBAL_COLLAPSED_CATEGORIES, "")
-            )
+            ),
+            appHttpProxy = p.getBoolean(KEY_GLOBAL_APP_HTTP_PROXY, false)
         )
     }
 
@@ -260,6 +257,7 @@ object ConfigStore {
                 KEY_GLOBAL_COLLAPSED_CATEGORIES,
                 CollapsedCategories.encode(settings.collapsedCategories)
             )
+            .putBoolean(KEY_GLOBAL_APP_HTTP_PROXY, settings.appHttpProxy)
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()

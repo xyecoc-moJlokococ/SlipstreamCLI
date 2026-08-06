@@ -244,6 +244,7 @@ enum class S(val en: String, val ru: String) {
         "There are no VPN configurations here",
         "Здесь нет VPN-конфигураций"
     ),
+    APP_HTTP_PROXY("HTTP proxy for apps (Xray)", "HTTP-прокси для приложений (Xray)"),
     RENAME_FOLDER("Rename", "Переименовать"),
     EDIT_FOLDER("Edit", "Редактировать"),
     FOLDER_NEW_TITLE("New folder", "Новая папка"),

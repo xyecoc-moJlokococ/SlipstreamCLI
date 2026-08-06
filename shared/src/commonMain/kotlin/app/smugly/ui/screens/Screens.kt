@@ -1205,6 +1205,12 @@ fun SettingsScreen(
                     onChange(settings.copy(trafficNotification = it))
                 }
             }
+            // Only the system-VPN platform can hand a proxy to other apps.
+            if (supportsVpn) {
+                SmuglyCheckbox(settings.appHttpProxy, t(S.APP_HTTP_PROXY)) {
+                    onChange(settings.copy(appHttpProxy = it))
+                }
+            }
             // Local SOCKS auth only where the platform can actually use it — see
             // HostPlatform.supportsLocalProxyAuth().
             if (showLocalSocksAuth) {

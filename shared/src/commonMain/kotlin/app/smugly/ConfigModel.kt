@@ -106,7 +106,19 @@ data class GlobalSettings(
      * Categories the user folded away, as `subscriptionId/categoryId`. Kept across restarts: a
      * group the user closed should stay closed, exactly like the folder they left open.
      */
-    val collapsedCategories: Set<String> = emptySet()
+    val collapsedCategories: Set<String> = emptySet(),
+    /**
+     * Advertise the tunnel's own HTTP proxy to apps (Android 10+ `VpnService.setHttpProxy`).
+     *
+     * What it buys: a proxy-aware app hands the tunnel a **host name** instead of an address it
+     * resolved first. Names that have no DNS behind them — `.onion`, `.i2p` — only reach the
+     * routing rules that know what to do with them this way; through the TUN alone the browser
+     * never gets past "cannot resolve" and the rules never see the name.
+     *
+     * Off by default: a system proxy changes how every proxy-aware app on the device connects,
+     * and only the Xray tunnel has an HTTP inbound to point them at.
+     */
+    val appHttpProxy: Boolean = false
 )
 
 /**

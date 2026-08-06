@@ -268,6 +268,45 @@ object XrayConfigBuilder {
         return root.toString(2)
     }
 
+    /**
+     * Pin an HTTP inbound onto 127.0.0.1:[httpPort], adding one when the config has none.
+     *
+     * This is what apps are pointed at by `VpnService.setHttpProxy`. It matters beyond
+     * convenience: through the TUN a browser must resolve the name itself and connect to an
+     * address, so a name with no DNS behind it (`.onion`, `.i2p`) never becomes a connection at
+     * all. Through the proxy the app sends `CONNECT host:port`, and the host name reaches the
+     * routing rules — which is the only reason those addresses can work.
+     */
+    fun withHttpPort(configJson: String, httpPort: Int): String {
+        val root = runCatching { JSONObject(configJson) }.getOrNull() ?: return configJson
+        val inbounds = root.optJSONArray("inbounds") ?: JSONArray().also { root.put("inbounds", it) }
+        for (i in 0 until inbounds.length()) {
+            val inbound = inbounds.optJSONObject(i) ?: continue
+            if (!inbound.optString("protocol").equals("http", ignoreCase = true)) continue
+            inbound.put("listen", "127.0.0.1").put("port", httpPort)
+            // Same reason as the SOCKS inbound: panel configs ship accounts for desktop clients,
+            // and the apps dialling this one have no credentials to offer.
+            inbound.optJSONObject("settings")?.remove("accounts")
+            if (!inbound.has("sniffing")) inbound.put("sniffing", sniffing())
+            return root.toString(2)
+        }
+        inbounds.put(httpInbound(httpPort))
+        return root.toString(2)
+    }
+
+    /** Port of the config's first HTTP inbound, or null when it has none. */
+    fun httpPortOf(configJson: String): Int? {
+        val root = runCatching { JSONObject(configJson) }.getOrNull() ?: return null
+        val inbounds = root.optJSONArray("inbounds") ?: return null
+        for (i in 0 until inbounds.length()) {
+            val inbound = inbounds.optJSONObject(i) ?: continue
+            if (inbound.optString("protocol").equals("http", ignoreCase = true)) {
+                return inbound.optInt("port").takeIf { it in 1..65535 }
+            }
+        }
+        return null
+    }
+
     /** Port of the config's first SOCKS inbound, or null when it has none. */
     fun socksPortOf(configJson: String): Int? {
         val root = runCatching { JSONObject(configJson) }.getOrNull() ?: return null
@@ -313,13 +352,26 @@ object XrayConfigBuilder {
                     .put("udp", true)
                     .put("userLevel", USER_LEVEL)
             )
-            .put(
-                "sniffing",
-                JSONObject()
-                    .put("enabled", true)
-                    .put("destOverride", JSONArray().put("http").put("tls").put("quic"))
-                    .put("routeOnly", false)
-            )
+            .put("sniffing", sniffing())
+
+    private fun httpInbound(httpPort: Int): JSONObject =
+        JSONObject()
+            .put("tag", "http")
+            .put("protocol", "http")
+            .put("listen", "127.0.0.1")
+            .put("port", httpPort)
+            .put("settings", JSONObject().put("userLevel", USER_LEVEL))
+            .put("sniffing", sniffing())
+
+    /**
+     * Recover the destination from the stream itself. Without it the routing rules only ever see
+     * an address, so every `domain:` rule in the config is dead weight.
+     */
+    private fun sniffing(): JSONObject =
+        JSONObject()
+            .put("enabled", true)
+            .put("destOverride", JSONArray().put("http").put("tls").put("quic"))
+            .put("routeOnly", false)
 
     private fun vlessOutbound(link: VlessLink): JSONObject {
         // Flat form (address/port/id/... directly under settings); Xray rewrites it

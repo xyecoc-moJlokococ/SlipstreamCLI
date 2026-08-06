@@ -51,6 +51,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -98,6 +100,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import app.smugly.AppVersion
+import app.smugly.S
+import app.smugly.t
 import app.smugly.ui.theme.SmuglyAccent
 import app.smugly.ui.theme.SmuglyBg
 import app.smugly.ui.theme.SmuglyButtonTextPrimary
@@ -1073,7 +1077,10 @@ fun BottomConnectBar(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 20.dp, bottom = barHeight / 2 - 2.dp)
+                // Centred on the bar's top edge: exactly half the button over the status strip and
+                // half over the profile list. `barHeight / 2` measures from the wrong end — it put
+                // the button's centre 5dp below the edge, which is what made it look mis-set.
+                .padding(end = 20.dp, bottom = barHeight - buttonSize / 2)
                 .size(buttonSize)
                 .clip(CircleShape)
                 .background(SmuglyAccent)
@@ -1082,16 +1089,24 @@ fun BottomConnectBar(
         ) {
             if (loading) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(26.dp),
                     color = SmuglyButtonTextPrimary,
-                    strokeWidth = 2.dp
+                    strokeWidth = 2.5.dp
                 )
             } else {
-                Text(
-                    text = if (running) "■" else "▶",
-                    color = SmuglyButtonTextPrimary,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Normal
+                // Real vector icons, not the "▶" / "■" characters that used to be here: those are
+                // font glyphs, so their weight, size and centring were whatever the system font
+                // felt like — which is exactly what looked cheap. Rounded variants to match the
+                // rest of the app's corners.
+                Icon(
+                    imageVector = if (running) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                    contentDescription = t(if (running) S.STATUS_DISCONNECTING else S.CONNECT_BTN),
+                    tint = SmuglyButtonTextPrimary,
+                    // No optical nudge for the triangle: Material already draws PlayArrow right of
+                    // its box centre, so adding one pushed it visibly off — measured at 9px right
+                    // of the circle's centre, 4px by area. Drawn as-is its centre of mass lands on
+                    // the middle, which is what the eye reads as centred.
+                    modifier = Modifier.size(if (running) 30.dp else 34.dp)
                 )
             }
         }

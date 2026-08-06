@@ -135,7 +135,8 @@ class FileProfileStore(
             lastFolderId = json.optString("lastFolderId", ""),
             collapsedCategories = app.smugly.CollapsedCategories.decode(
                 json.optString("collapsedCategories", "")
-            )
+            ),
+            appHttpProxy = json.optBoolean("appHttpProxy", false)
         )
     }
 
@@ -156,6 +157,7 @@ class FileProfileStore(
                 "collapsedCategories",
                 app.smugly.CollapsedCategories.encode(settings.collapsedCategories)
             )
+            .put("appHttpProxy", settings.appHttpProxy)
         settingsFile.writeText(json.toString(2))
     }
 }
