@@ -75,6 +75,8 @@ kotlin {
                 implementation(compose.animation)
                 implementation(compose.material3)
                 implementation(compose.ui)
+                // Extended is large on disk (~37 MB), but icons are class-loaded lazily; a few
+                // chrome glyphs (CropSquare / FilterNone / Rounded.Stop) only live here.
                 implementation(compose.materialIconsExtended)
                 implementation(compose.components.resources)
             }

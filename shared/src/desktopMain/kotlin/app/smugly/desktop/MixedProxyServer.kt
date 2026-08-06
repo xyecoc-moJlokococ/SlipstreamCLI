@@ -42,7 +42,11 @@ class MixedProxyServer(
 ) {
     private companion object {
         const val TAG = "MixedProxy"
-        const val RELAY_BUF = 64 * 1024
+        /**
+         * Per-direction relay buffer. 32 KiB is enough for localhost hop latency; 64 KiB × 2 ×
+         * thousands of browser tabs was a large fixed overhead for no throughput win.
+         */
+        const val RELAY_BUF = 32 * 1024
         const val HS_BUF = HttpProxyProtocol.MAX_HEAD
         const val SELECT_TIMEOUT_MS = 5_000L
         const val IDLE_MS = 300_000L
@@ -206,7 +210,17 @@ class MixedProxyServer(
     private fun service(conn: Conn, key: SelectionKey) {
         val isClientSide = key === conn.clientKey
         if (key.isWritable) {
-            if (isClientSide) flush(conn.client, conn.toClient) else conn.remote?.let { flush(it, conn.toRemote) }
+            val ok = if (isClientSide) {
+                flush(conn.client, conn.toClient)
+            } else {
+                conn.remote?.let { flush(it, conn.toRemote) } ?: true
+            }
+            // A failed write on a dead peer used to be swallowed: the buffer stayed non-empty,
+            // OP_WRITE stayed armed, and select() returned immediately forever — ~20% steady CPU
+            // with nothing useful happening (measured: smugly-mixed-proxy in SocketChannel.write).
+            if (!ok) {
+                closeConn(conn, "write failed"); return
+            }
             if (conn.closeAfterFlush && conn.toClient.position() == 0) {
                 closeConn(conn, "closed after flush"); return
             }
@@ -220,8 +234,15 @@ class MixedProxyServer(
                     if (!isClientSide) readUpstreamHandshake(conn)
                 Phase.RELAY -> relay(conn)
             }
+        } else if (conn.phase == Phase.RELAY) {
+            // The write above drained a buffer, which is what frees room for the peer we had
+            // stopped reading from — and only the pump re-arms that OP_READ. Leaving it to the
+            // next *readable* event meant an upload moved exactly one buffer and then waited for
+            // something to arrive the other way: one buffer per stall, which is where the whole
+            // upload direction was stuck at ~4 Mbit/s while downloads ran at full speed.
+            relay(conn)
         }
-        if (conn.phase != Phase.RELAY) updateInterest(conn)
+        if (conn.phase != Phase.RELAY && conns.contains(conn)) updateInterest(conn)
     }
 
     // ---- client side ----
@@ -324,12 +345,14 @@ class MixedProxyServer(
                 }
                 else -> {}
             }
-            flush(conn.client, conn.toClient)
+            if (!flush(conn.client, conn.toClient)) {
+                closeConn(conn, "write failed during handshake"); return
+            }
         }
         if (conn.closeAfterFlush && conn.toClient.position() == 0) {
             closeConn(conn, "rejected"); return
         }
-        if (conn.phase != Phase.RELAY) updateInterest(conn)
+        if (conn.phase != Phase.RELAY && conns.contains(conn)) updateInterest(conn)
     }
 
     private fun rejectSocks(conn: Conn) {
@@ -427,9 +450,12 @@ class MixedProxyServer(
                 }
                 else -> {}
             }
-            conn.remote?.let { flush(it, conn.toRemote) }
+            val remoteCh = conn.remote
+            if (remoteCh != null && !flush(remoteCh, conn.toRemote)) {
+                failUpstream(conn, "write failed during upstream handshake"); return
+            }
         }
-        if (conn.phase != Phase.RELAY) updateInterest(conn)
+        if (conn.phase != Phase.RELAY && conns.contains(conn)) updateInterest(conn)
     }
 
     private fun failUpstream(conn: Conn, reason: String) {
@@ -446,8 +472,11 @@ class MixedProxyServer(
         }
         conn.closeAfterFlush = true
         conn.phase = Phase.S_REQUEST
-        flush(conn.client, conn.toClient)
-        if (conn.toClient.position() == 0) closeConn(conn, "upstream failed") else updateInterest(conn)
+        if (!flush(conn.client, conn.toClient) || conn.toClient.position() == 0) {
+            closeConn(conn, "upstream failed")
+        } else {
+            updateInterest(conn)
+        }
     }
 
     // ---- relay ----
@@ -472,8 +501,11 @@ class MixedProxyServer(
                 else -> if (n > 0) { rxBytes.addAndGet(n.toLong()); touch(conn) }
             }
         }
-        flush(remote, conn.toRemote)
-        flush(conn.client, conn.toClient)
+        // Do not swallow write errors: a reset peer with pending bytes left OP_WRITE armed and the
+        // selector loop spun at full speed (see service()).
+        if (!flush(remote, conn.toRemote) || !flush(conn.client, conn.toClient)) {
+            closeConn(conn, "relay write failed"); return
+        }
         if (conn.clientEof && conn.remoteEof && conn.toRemote.position() == 0 && conn.toClient.position() == 0) {
             closeConn(conn, "both sides closed"); return
         }
@@ -520,14 +552,34 @@ class MixedProxyServer(
 
     // ---- buffer helpers (buffers are kept in WRITE mode; position = pending bytes) ----
 
-    private fun readInto(ch: SocketChannel, buf: ByteBuffer): Int =
-        if (!buf.hasRemaining()) 0 else runCatching { ch.read(buf) }.getOrElse { -1 }
+    /** Bytes read, 0 if none available, -1 on EOF or hard channel error. */
+    private fun readInto(ch: SocketChannel, buf: ByteBuffer): Int {
+        if (!buf.hasRemaining()) return 0
+        return try {
+            ch.read(buf)
+        } catch (_: Exception) {
+            -1
+        }
+    }
 
-    private fun flush(ch: SocketChannel, buf: ByteBuffer) {
-        if (buf.position() == 0) return
+    /**
+     * Flush pending bytes in [buf] to [ch].
+     *
+     * @return false when the channel is dead (caller must close the connection). Returning true
+     *   with bytes still in [buf] means ordinary TCP backpressure — keep OP_WRITE and wait.
+     */
+    private fun flush(ch: SocketChannel, buf: ByteBuffer): Boolean {
+        if (buf.position() == 0) return true
         buf.flip()
-        runCatching { ch.write(buf) }
-        buf.compact()
+        return try {
+            ch.write(buf)
+            buf.compact()
+            true
+        } catch (_: Exception) {
+            // Leave buffer consistent for close; data is unrecoverable either way.
+            runCatching { buf.compact() }
+            false
+        }
     }
 
     private fun queue(buf: ByteBuffer, bytes: ByteArray) {

@@ -191,6 +191,23 @@ fun waitForPort(host: String, port: Int, timeoutMs: Long): Boolean {
 }
 
 /** True when nothing is listening on [port] yet, i.e. it is safe to bind. */
+/**
+ * Blocks until nothing answers on [host]:[port], or [timeoutMs] elapses.
+ *
+ * Switching profiles restarts the engine, and the process we just killed does not give its listener
+ * back the instant `waitFor` returns — the socket is torn down by the OS a moment later. Asking once
+ * therefore failed with "port is already in use" on a port that was about to be free, seemingly at
+ * random. Anything still holding it after the wait really is somebody else.
+ */
+fun waitForPortFree(host: String, port: Int, timeoutMs: Long): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (true) {
+        if (isPortFree(host, port)) return true
+        if (System.currentTimeMillis() >= deadline) return false
+        Thread.sleep(50)
+    }
+}
+
 fun isPortFree(host: String, port: Int): Boolean = runCatching {
     Socket().use { s ->
         s.connect(InetSocketAddress(host, port), 200)

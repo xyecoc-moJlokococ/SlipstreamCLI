@@ -1,5 +1,11 @@
 package app.smugly.desktop
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.geometry.Offset
@@ -26,7 +32,10 @@ import java.io.File
  * writes `<out>.png`; pass a tap coordinate to capture the same screen after a click, which is how
  * a folded category gets rendered.
  *
- * Usage: `java -cp "lib\…" app.smugly.desktop.RenderShotKt <dataDir> <out.png> [tapX tapY]`
+ * Usage: `java -cp "lib\…" app.smugly.desktop.RenderShotKt <dataDir> <out.png> [tapX tapY] [stopMs] [topInsetPx]`
+ *
+ * `topInsetPx` reproduces the desktop's own title bar sitting above the screen — the offset that
+ * once pushed every anchored menu down by exactly its height.
  * (Kotlin nests block comments, so the classpath wildcard cannot be written out here.)
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -39,24 +48,30 @@ fun main(args: Array<String>) {
     val profiles = readProfiles(File(dataDir, "profiles.json"))
     val subscriptions = SubscriptionJson.listFromString(File(dataDir, "subscriptions.json").readText())
 
+    // Reproduces the desktop's own title bar sitting above the screen — the offset that once
+    // pushed every anchored menu down by exactly its height.
+    val topInset = args.getOrNull(5)?.toIntOrNull() ?: 0
     val scene = ImageComposeScene(width = 1080, height = 2100, density = Density(2.75f)) {
         SmuglyTheme {
-            HomeScreen(
-                profiles = profiles,
-                activeId = profiles.firstOrNull { it.subscriptionId != null }?.id,
-                connect = ConnectUiState.idle(),
-                onMenu = {},
-                onAddNew = {},
-                onImportClipboard = {},
-                onImportFile = {},
-                onSelect = {},
-                onEdit = {},
-                onDelete = {},
-                onExport = {},
-                onToggle = {},
-                subscriptions = subscriptions,
-                initialFolderId = subscriptions.firstOrNull()?.id.orEmpty()
-            )
+            Column(Modifier.fillMaxSize()) {
+                if (topInset > 0) Spacer(Modifier.fillMaxWidth().height(with(Density(2.75f)) { topInset.toDp() }))
+                HomeScreen(
+                    profiles = profiles,
+                    activeId = profiles.firstOrNull { it.subscriptionId != null }?.id,
+                    connect = ConnectUiState.idle(),
+                    onMenu = {},
+                    onAddNew = {},
+                    onImportClipboard = {},
+                    onImportFile = {},
+                    onSelect = {},
+                    onEdit = {},
+                    onDelete = {},
+                    onExport = {},
+                    onToggle = {},
+                    subscriptions = subscriptions,
+                    initialFolderId = subscriptions.firstOrNull()?.id.orEmpty()
+                )
+            }
         }
     }
     try {

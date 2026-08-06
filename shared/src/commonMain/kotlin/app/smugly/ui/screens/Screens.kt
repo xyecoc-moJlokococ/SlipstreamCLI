@@ -176,6 +176,16 @@ fun HomeScreen(
     var menuAnchorY by remember { mutableStateOf(0) }
     /** Set only for the folder menu, which drops under its tab instead of the right edge. */
     var menuAnchorX by remember { mutableStateOf<Int?>(null) }
+    /**
+     * Where this screen begins inside the window, in root coordinates.
+     *
+     * Anchors are reported in root coordinates but the menus are placed inside this screen. The two
+     * were the same thing while the screen started at the window's top-left; the desktop draws its
+     * own title bar above it now, so every menu opened exactly that much too low. Subtracted when
+     * an anchor is *captured*, not when the menu is placed — by then the screen has long been laid
+     * out, while the menu layer only exists from the moment it opens and knows nothing yet.
+     */
+    val screenOrigin = remember { intArrayOf(0, 0) }
 
     // --- folders (v2rayNG-style groups) -------------------------------------------------
     // Folder 0 is always the user's own profiles; one folder per subscription after it.
@@ -344,14 +354,23 @@ fun HomeScreen(
     val autoScrollEdgePx = with(LocalDensity.current) { 96.dp.toPx() }
     fun edgeZone(viewport: Float): Float = minOf(autoScrollEdgePx, viewport * 0.22f)
 
-    Box(Modifier.fillMaxSize().background(SmuglyBg)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(SmuglyBg)
+            .onGloballyPositioned {
+                val root = it.positionInRoot()
+                screenOrigin[0] = root.x.toInt()
+                screenOrigin[1] = root.y.toInt()
+            }
+    ) {
         // TopBar full-bleed (menu / + on window edges); list content keeps side padding.
         Column(Modifier.fillMaxSize()) {
             TopBar(
                 title = t(S.HOME),
                 onMenu = onMenu,
                 onAdd = {
-                    menuAnchorY = addAnchor[0]
+                    menuAnchorY = addAnchor[0] - screenOrigin[1]
                     menuAnchorX = null
                     moreFor = null
                     folderMenuOpen = false
@@ -419,8 +438,8 @@ fun HomeScreen(
                 onMenu = { index, x, y ->
                     // Home has no subscription to edit or delete, but it is still a folder: the
                     // two whole-folder actions apply to it exactly the same.
-                    menuAnchorY = y
-                    menuAnchorX = x
+                    menuAnchorY = y - screenOrigin[1]
+                    menuAnchorX = x - screenOrigin[0]
                     addMenu = false
                     moreFor = null
                     folderMenu = slots.getOrNull(index)
@@ -687,7 +706,7 @@ fun HomeScreen(
                                     null
                                 },
                                 onMoreClick = {
-                                    menuAnchorY = cardAnchors[profile.id] ?: 0
+                                    menuAnchorY = (cardAnchors[profile.id] ?: 0) - screenOrigin[1]
                                     menuAnchorX = null
                                     addMenu = false
                                     folderMenuOpen = false
@@ -1347,12 +1366,23 @@ fun ProfileEditorScreen(
     var protocolAnchorX by remember { mutableStateOf(0) }
     var protocolAnchorY by remember { mutableStateOf(0) }
     var protocolFieldWidth by remember { mutableStateOf(0) }
+    /** See the same field in HomeScreen: root anchors, menu placed inside this screen. */
+    val screenOrigin = remember { intArrayOf(0, 0) }
 
     PlatformBackHandler(enabled = protocolMenuOpen) { protocolMenuOpen = false }
 
     val isXray = c.protocol == Config.TunnelProtocol.XRAY
 
-    Box(Modifier.fillMaxSize().background(SmuglyBg)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(SmuglyBg)
+            .onGloballyPositioned {
+                val root = it.positionInRoot()
+                screenOrigin[0] = root.x.toInt()
+                screenOrigin[1] = root.y.toInt()
+            }
+    ) {
         Column(Modifier.fillMaxSize()) {
             TopBar(
                 title = if (draft.profileId == null) t(S.NEW_PROFILE_TITLE) else t(S.EDIT_PROFILE_TITLE),
@@ -1384,8 +1414,8 @@ fun ProfileEditorScreen(
                             open = protocolMenuOpen,
                             onClick = { protocolMenuOpen = !protocolMenuOpen },
                             onAnchor = { x, y, w ->
-                                protocolAnchorX = x
-                                protocolAnchorY = y
+                                protocolAnchorX = x - screenOrigin[0]
+                                protocolAnchorY = y - screenOrigin[1]
                                 protocolFieldWidth = w
                             }
                         )
@@ -1421,8 +1451,8 @@ fun ProfileEditorScreen(
                             open = protocolMenuOpen,
                             onClick = { protocolMenuOpen = !protocolMenuOpen },
                             onAnchor = { x, y, w ->
-                                protocolAnchorX = x
-                                protocolAnchorY = y
+                                protocolAnchorX = x - screenOrigin[0]
+                                protocolAnchorY = y - screenOrigin[1]
                                 protocolFieldWidth = w
                             }
                         )

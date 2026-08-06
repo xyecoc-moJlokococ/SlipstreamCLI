@@ -1,0 +1,4 @@
+## Windows host (Compose desktop / Android Studio on Win)
+sdk.dir=//wsl$/Debian/home/reil/android-sdk
+## For pure WSL builds, switch to:
+## sdk.dir=/home/reil/android-sdk

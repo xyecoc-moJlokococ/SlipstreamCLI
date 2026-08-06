@@ -61,18 +61,36 @@ tasks.register<Sync>("stageWindowsRuntime") {
     into(layout.buildDirectory.dir("windows-runtime/lib"))
     from(windowsRuntime)
     from(tasks.named("jar"))
+    // AppCDS archive is keyed to jar timestamps. Leaving a stale smugly-dev.jsa after staging
+    // makes the next run dump cds warnings and run without the archive (cold tab switches again).
+    doLast {
+        val jsa = layout.buildDirectory.file("windows-runtime/smugly-dev.jsa").get().asFile
+        if (jsa.exists()) {
+            jsa.delete()
+            logger.lifecycle("deleted stale AppCDS archive ${jsa.name} (will rebuild on clean exit)")
+        }
+    }
 }
 
 compose.desktop {
     application {
         mainClass = "app.smugly.ui.DesktopMainKt"
-        // GPU Skiko + kill Windows white erase on resize (AWT default bg is white).
+        // Match packaged Smugly.exe memory profile (see build-windows-exe.ps1). Without these,
+        // a dev run on a 16 GB machine commits ~250 MB G1 heap + 8 refinement threads while
+        // live data is ~50 MB — Working Set ~350-400 MB with the VPN idle.
+        //
+        // skiko.renderApi is left unset so DesktopMain's SOFTWARE default applies (measured
+        // ~90 MB less than DIRECT3D). Override with JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D.
         jvmArgs += listOf(
-            "-Dskiko.renderApi=DIRECT3D",
             "-Dskiko.vsync.enabled=true",
             "-Dsun.java2d.d3d=true",
-            "-Dsun.awt.noerasebackground=true",
-            "-Dsun.awt.erasebackgroundonresize=false",
+            "-Dsun.awt.noerasebackground=false",
+            "-Dsun.awt.erasebackgroundonresize=true",
+            "-Xms32m",
+            "-Xmx256m",
+            "-XX:+UseSerialGC",
+            "-XX:MaxMetaspaceSize=192m",
+            "-XX:ReservedCodeCacheSize=96m",
         )
         nativeDistributions {
             targetFormats(

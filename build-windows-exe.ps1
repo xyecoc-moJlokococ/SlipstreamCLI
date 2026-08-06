@@ -89,8 +89,9 @@ $cliProps = Join-Path $env:TEMP 'smugly-cli-launcher.properties'
     --java-options '-Dfile.encoding=UTF-8' `
     --java-options '-XX:+AutoCreateSharedArchive' `
     --java-options '-XX:SharedArchiveFile=$APPDIR\smugly.jsa' `
-    --java-options '-Xms16m' `
+    --java-options '-Xms32m' `
     --java-options '-Xmx256m' `
+    --java-options '-Xlog:cds=error' `
     --java-options '-XX:+UseSerialGC' `
     --java-options '-XX:MaxMetaspaceSize=192m' `
     --java-options '-XX:ReservedCodeCacheSize=96m' `

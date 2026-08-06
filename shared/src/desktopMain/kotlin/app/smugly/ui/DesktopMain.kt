@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.remember
 import androidx.compose.ui.input.key.Key
@@ -20,6 +23,7 @@ import app.smugly.currentHostPlatform
 import app.smugly.platform.LogLevel
 import app.smugly.platform.PlatformLog
 import app.smugly.ui.theme.SmuglyBg
+import kotlinx.coroutines.launch
 import java.awt.Dimension
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -38,34 +42,61 @@ import javax.swing.Timer
  */
 fun main() {
     installDesktopCrashHandler()
+    // Class-load Settings / editor / Material bits on a background thread while the window comes
+    // up, so the first drawer → Settings click is not a multi-hundred-ms ClassLoader stall.
+    DesktopUiWarmup.start()
 
-    // Software rendering by default — a deliberate memory-over-smoothness choice.
+    // Software rendering by default — a deliberate memory-over-smoothness choice, measured on
+    // Windows at DIRECT3D 223 MB / SOFTWARE 133 MB working set. It was briefly DIRECT3D while the
+    // window itself animated its geometry; that animation is gone (see WindowAnimation), and the
+    // GPU path also left a much larger white gap while a live resize outran the swapchain.
     //
-    // Measured on Windows: creating a GPU device costs ~90 MB of working set and ~145 MB of
-    // committed memory (DIRECT3D 223/279 MB, OPENGL 234/253 MB, SOFTWARE 133/135 MB), which
-    // dwarfs the JVM's own ~85 MB for a UI this simple. The cost is animation smoothness.
-    //
-    // Set the property to switch back without rebuilding, e.g.
+    // Switch without rebuilding:
     //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D
-    // (DIRECT3D resizes more reliably than ANGLE on some Windows GPUs; macOS wants METAL.)
     if (System.getProperty("skiko.renderApi").isNullOrBlank()) {
         System.setProperty("skiko.renderApi", "SOFTWARE")
     }
     System.setProperty("skiko.vsync.enabled", "true")
     System.setProperty("sun.java2d.d3d", "true")
     System.setProperty("sun.java2d.noddraw", "false")
-    // Stop AWT from flooding newly exposed regions with pure white during live resize.
-    System.setProperty("sun.awt.noerasebackground", "true")
-    System.setProperty("sun.awt.erasebackgroundonresize", "false")
+    // Let AWT erase newly exposed regions during a live resize — *because* every background in
+    // this window is dark (see paintWindowDark / tintTreeDark below). These were the other way
+    // round for a long time, to stop the white flooding, which treated the symptom: with erasing
+    // off nothing paints the strip the window has just grown into, so it shows whatever the
+    // compositor had there — which is how a whole white block ended up next to the UI while
+    // dragging an edge. Erasing with a dark brush fills it with the app's own colour instead.
+    System.setProperty("sun.awt.noerasebackground", "false")
+    System.setProperty("sun.awt.erasebackgroundonresize", "true")
 
     // Explicit sRGB ints — never rely on Compose float→AWT float edge cases.
     val darkAwt = java.awt.Color(0x11, 0x11, 0x11)
+    // Anything Swing builds for us later starts dark too, instead of inheriting the default grey /
+    // white and flashing it the first time it is exposed.
+    javax.swing.UIManager.put("Panel.background", darkAwt)
+    javax.swing.UIManager.put("control", darkAwt)
 
     /**
      * Lightweight: only tint AWT chrome. Do **not** setSize/revalidate/repaint Skiko children
      * on every resize — that queues multi-second freezes after the user stops dragging.
      * Compose fillMaxSize + noerasebackground handle the canvas.
      */
+    /**
+     * The rendering surface is a heavyweight AWT component with its own native window, and Windows
+     * fills whatever a resize newly exposes with **that component's** background brush before Skia
+     * gets to draw. Tinting only the frame and its panes left the canvas itself default-white,
+     * which is the white edge that flashed along the side being dragged.
+     *
+     * Walking the whole tree is deliberate: the surface sits several layers down inside Skiko and
+     * its class is an implementation detail. Setting a colour is cheap — no layout, no repaint —
+     * so this stays safe to call from the resize-settled timer.
+     */
+    fun tintTreeDark(component: java.awt.Component) {
+        runCatching { component.background = darkAwt }
+        if (component is java.awt.Container) {
+            for (child in component.components) tintTreeDark(child)
+        }
+    }
+
     fun paintWindowDark(window: java.awt.Window) {
         window.background = darkAwt
         if (window is javax.swing.RootPaneContainer) {
@@ -81,6 +112,7 @@ fun main() {
                 glass.isOpaque = false
             }
         }
+        tintTreeDark(window)
     }
 
     try {
@@ -93,10 +125,44 @@ fun main() {
             )
             val platform = DesktopPlatform()
             val shortcuts = remember { AppShortcuts() }
+            // Set once the frame exists; the close handler needs it and runs before the content.
+            val frame = remember { arrayOfNulls<java.awt.Window>(1) }
+            val windowState = rememberWindowState(size = DpSize(420.dp, 780.dp))
+            // Maximise is ours, not `WindowPlacement.Maximized`: an undecorated window maximised by
+            // the toolkit takes the whole monitor and sits **over the taskbar**, because the OS only
+            // trims a maximised window to the work area for frames it draws itself.
+            var maximized by remember { mutableStateOf(false) }
+            val restoreBounds = remember { arrayOfNulls<java.awt.Rectangle>(1) }
+            // The window animations run on Compose's frame clock, so they need its scope.
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            fun toggleMaximize(w: java.awt.Window) {
+                if (maximized) {
+                    val back = restoreBounds[0] ?: return
+                    // Flipped before the animation, not after: the button's icon and the resize
+                    // grips belong to where the window is going, not where it is leaving.
+                    maximized = false
+                    WindowAnimation.applyPlacement(windowState, w, back)
+                } else {
+                    restoreBounds[0] = w.bounds
+                    maximized = true
+                    WindowAnimation.applyPlacement(windowState, w, workArea(w))
+                }
+            }
+            fun closeWindow() {
+                scope.launch {
+                    WindowAnimation.playClose(frame[0])
+                    exitApplication()
+                }
+            }
             Window(
-                onCloseRequest = ::exitApplication,
+                // No system chrome at all: the title bar is ours (see WindowChrome). That removes
+                // the light strip above the app, the white flash while Windows animated a frame
+                // Compose had already torn down, and any reliance on DWM honouring a dark-mode
+                // attribute. Resizing comes back via WindowResizeHandles.
+                undecorated = true,
+                state = windowState,
+                onCloseRequest = { closeWindow() },
                 title = "Smugly",
-                state = rememberWindowState(size = DpSize(420.dp, 780.dp)),
                 // Ctrl+V pastes a profile from the clipboard. This is onKeyEvent, not
                 // onPreviewKeyEvent, so a focused text field gets the key first and its own paste
                 // still works — the shortcut only fires when nothing is being typed into.
@@ -113,6 +179,10 @@ fun main() {
                 }
             ) {
                 DisposableEffect(window) {
+                    frame[0] = window
+                    // Invisible until the window is on screen, so the opening fade has something
+                    // to fade from.
+                    WindowAnimation.prepareForOpen(window)
                     paintWindowDark(window)
                     fitWindowToScreen(window)
 
@@ -142,6 +212,9 @@ fun main() {
                             // frame has not been given its final size yet, so anything decided
                             // then gets overwritten when the window is realised.
                             fitWindowToScreen(window)
+                            // Now that the window is on screen and at its final size, that size is
+                            // what the opening animation grows into.
+                            scope.launch { WindowAnimation.playOpen(window) }
                         }
 
                         override fun windowStateChanged(e: WindowEvent?) {
@@ -162,7 +235,21 @@ fun main() {
                 }
                 // Compose-side full-bleed dark so any frame lag still shows SmuglyBg, not white.
                 Box(Modifier.fillMaxSize().background(SmuglyBg)) {
-                    SmuglyApp(platform, shortcuts)
+                    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
+                        WindowChrome(
+                            title = "Smugly",
+                            maximized = maximized,
+                            onMinimize = { windowState.isMinimized = true },
+                            onToggleMaximize = { toggleMaximize(window) },
+                            onClose = { closeWindow() }
+                        )
+                        Box(Modifier.weight(1f)) {
+                            SmuglyApp(platform, shortcuts)
+                        }
+                    }
+                    // Above the content: the grips are a few pixels at the window's edge and must
+                    // win over whatever the app draws underneath them.
+                    WindowResizeHandles(window, enabled = !maximized)
                 }
             }
         }
@@ -180,6 +267,25 @@ fun main() {
  * Clamping in AWT coordinates avoids any dp/DPI conversion: `graphicsConfiguration.bounds` minus
  * `getScreenInsets` is already the taskbar-free area in the same units as `window.size`.
  */
+/**
+ * The monitor's usable area — the screen minus the taskbar and anything else docked to an edge.
+ *
+ * This is what "maximised" has to mean for an undecorated window: the toolkit's own maximise takes
+ * the whole monitor, because Windows only trims a maximised window to the work area when it draws
+ * the frame itself.
+ */
+private fun workArea(window: java.awt.Window): java.awt.Rectangle {
+    val gc = window.graphicsConfiguration ?: return window.bounds
+    val screen = gc.bounds
+    val insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc)
+    return java.awt.Rectangle(
+        screen.x + insets.left,
+        screen.y + insets.top,
+        screen.width - insets.left - insets.right,
+        screen.height - insets.top - insets.bottom
+    )
+}
+
 private fun fitWindowToScreen(window: java.awt.Window) {
     val gc = window.graphicsConfiguration ?: return
     val screen = gc.bounds

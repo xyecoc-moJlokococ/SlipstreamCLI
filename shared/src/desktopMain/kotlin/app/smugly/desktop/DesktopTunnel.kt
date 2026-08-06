@@ -28,13 +28,17 @@ import org.json.JSONObject
 object DesktopTunnel {
     private const val TAG = "DesktopTunnel"
     private const val ENGINE_READY_TIMEOUT_MS = 20_000L
+
+    /** How long a just-killed engine is given to hand its listener back before we call it taken. */
+    private const val PORT_RELEASE_TIMEOUT_MS = 4_000L
     /**
      * Concurrent client cap for the local mixed proxy when the engine is **not** Slipstream.
      * `Config.maxActiveClients` (default 40) is a DNS-tunnel memory guard for Slipstream only —
      * applying it to Xray/S3 made browsers hit "connection limit 40 reached; dropped" under
-     * normal multi-tab load (Throne/v2rayN do not cap local proxy like that).
+     * normal multi-tab load. 512 covers multi-tab browsers with headroom; 4096 reserved
+     * ~400+ MB of relay ByteBuffers for connections that almost never exist.
      */
-    private const val NON_SLIPSTREAM_MAX_CLIENTS = 4096
+    private const val NON_SLIPSTREAM_MAX_CLIENTS = 512
 
     /** Result of a connect attempt; [warning] is shown to the user but does not mean failure. */
     data class StartOutcome(
@@ -82,10 +86,14 @@ object DesktopTunnel {
             // holding them, and it is ours to clean up.
             proc.reapStale()
 
-            if (!isPortFree("127.0.0.1", listenPort)) {
+            // Wait, don't just look: the engine this call replaces was killed a moment ago and the
+            // OS hands its listener back slightly later, so an instant check failed on a port that
+            // was about to be free — which is exactly what made switching profiles report
+            // "port 1081 (engine) is already in use" now and then.
+            if (!waitForPortFree("127.0.0.1", listenPort, PORT_RELEASE_TIMEOUT_MS)) {
                 error("port $listenPort is already in use — close the other proxy or change the local port")
             }
-            if (!isPortFree("127.0.0.1", enginePort)) {
+            if (!waitForPortFree("127.0.0.1", enginePort, PORT_RELEASE_TIMEOUT_MS)) {
                 error("port $enginePort (engine) is already in use")
             }
 

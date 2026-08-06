@@ -89,6 +89,9 @@ class DesktopPlatform(
             rateDown = 0
             rateUp = 0
         }
+        // Engine binary paths only change if the install is rewritten; cache them so the 1 Hz
+        // traffic tick does not re-stat the filesystem on every publish.
+        if (engineReportCache == null) engineReportCache = EngineBinaries.report()
         return ConnectUiState(
             statusText = status,
             trafficText = "↓ ${formatBytes(rx)} (${formatBytes(rateDown)}/s)   ↑ ${formatBytes(tx)} (${formatBytes(rateUp)}/s)",
@@ -98,10 +101,12 @@ class DesktopPlatform(
                 appendLine("running=$running connecting=$connecting")
                 appendLine("connections=${proxy?.activeConnections() ?: 0} ok=${proxy?.connectOkCount() ?: 0} fail=${proxy?.connectFailCount() ?: 0}")
                 if (lastError.isNotBlank()) appendLine("lastError=$lastError")
-                appendLine(EngineBinaries.report())
+                appendLine(engineReportCache)
             }
         )
     }
+
+    private var engineReportCache: String? = null
 
     private var lastPublished: ConnectUiState? = null
 

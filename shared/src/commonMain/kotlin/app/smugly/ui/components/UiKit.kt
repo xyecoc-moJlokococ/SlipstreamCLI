@@ -202,6 +202,10 @@ fun MenuLayer(
     val gutterPx = with(density) { 8.dp.roundToPx() }
     val minW = with(density) { 200.dp.toPx() }.toInt()
     val defaultMaxW = with(density) { 300.dp.toPx() }.toInt()
+    // Anchors arrive already relative to this layer — the screens subtract their own origin when
+    // they capture one (see `screenOrigin` in Screens.kt). Measuring the offset here instead did
+    // not work: the layer is only mounted when a menu opens, so on the frame that places the panel
+    // its own position is not known yet, and the menu appeared at the raw root coordinate.
     Box(Modifier.fillMaxSize()) {
         // Outside tap closes the menu (same as a Popup's dismiss-on-outside-touch).
         Box(
