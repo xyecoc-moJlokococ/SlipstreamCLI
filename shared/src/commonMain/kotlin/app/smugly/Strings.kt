@@ -91,11 +91,7 @@ enum class S(val en: String, val ru: String) {
     MAX_ACTIVE_CONNECTIONS("Max active connections", "Макс. активных соединений"),
     SOCKS_USERNAME("SOCKS username", "Логин SOCKS"),
     SOCKS_PASSWORD("SOCKS password", "Пароль SOCKS"),
-    DNS_RESOLVER_POOL("DNS resolver pool", "Пул DNS-резолверов"),
-    HINT_DNS_RESOLVER_POOL(
-        "One per line. \"(local)\" = the current connection's own operator/DHCP DNS servers.",
-        "По одному на строку. «(local)» = операторские/DHCP DNS-серверы текущего подключения."
-    ),
+    DNS_RESOLVER_POOL("DNS resolver pool (Slipstream)", "Пул DNS-резолверов (Slipstream)"),
 
     // Pill / spinner option labels
     DNS_MODE_MANUAL("manual dns", "ручной DNS"),

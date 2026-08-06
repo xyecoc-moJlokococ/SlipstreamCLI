@@ -1239,7 +1239,6 @@ fun SettingsScreen(
                     minLines = 5
                 )
             }
-            HintText(t(S.HINT_DNS_RESOLVER_POOL))
         }
     }
 }
