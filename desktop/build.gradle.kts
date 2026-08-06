@@ -26,12 +26,13 @@ tasks.test {
 }
 
 /**
- * Stage a classpath that can run on **Windows** even when the build itself runs elsewhere.
+ * Stage a classpath that can run on **Windows** even when the build itself runs under WSL.
  *
- * The project has to be built under WSL (the `:shared` KMP module needs an Android SDK, and there
- * is none on the Windows side), but `compose.desktop.currentOs` then resolves the Linux Skiko
- * native. Adding the Windows artifact puts both in the staged directory; Skiko picks the one
- * matching the host at runtime, so the same folder runs on either OS.
+ * `:shared` needs an Android SDK, so Gradle usually runs in WSL where `compose.desktop.currentOs`
+ * resolves **Linux** Skiko. We still pull the full runtime classpath, then add the Windows Skiko
+ * artifact — and **drop every non-Windows Skiko native** from the staged folder. Shipping
+ * `skiko-awt-runtime-linux-x64` on a Windows install is pure dead weight (~12 MB on disk and on
+ * the classpath scan); Skiko only loads the host OS jar anyway.
  */
 val windowsRuntime: Configuration by configurations.creating {
     extendsFrom(configurations.runtimeClasspath.get())
@@ -57,13 +58,29 @@ afterEvaluate {
 
 tasks.register<Sync>("stageWindowsRuntime") {
     group = "distribution"
-    description = "Copies every runtime jar (incl. Windows Skiko) into build/windows-runtime/lib."
+    description = "Copies Windows desktop runtime jars (Windows Skiko only — no linux/mac natives)."
     into(layout.buildDirectory.dir("windows-runtime/lib"))
-    from(windowsRuntime)
+    from(windowsRuntime) {
+        // Keep skiko-awt-*.jar (common) and skiko-awt-runtime-windows-*; drop linux/macos/arm.
+        exclude { details ->
+            val n = details.name.lowercase()
+            n.startsWith("skiko-awt-runtime-") && !n.contains("windows")
+        }
+    }
     from(tasks.named("jar"))
     // AppCDS archive is keyed to jar timestamps. Leaving a stale smugly-dev.jsa after staging
     // makes the next run dump cds warnings and run without the archive (cold tab switches again).
     doLast {
+        val lib = layout.buildDirectory.dir("windows-runtime/lib").get().asFile
+        lib.listFiles()
+            ?.filter { f ->
+                val n = f.name.lowercase()
+                n.startsWith("skiko-awt-runtime-") && !n.contains("windows")
+            }
+            ?.forEach { stray ->
+                stray.delete()
+                logger.lifecycle("removed non-Windows Skiko native: ${stray.name}")
+            }
         val jsa = layout.buildDirectory.file("windows-runtime/smugly-dev.jsa").get().asFile
         if (jsa.exists()) {
             jsa.delete()
@@ -79,8 +96,8 @@ compose.desktop {
         // a dev run on a 16 GB machine commits ~250 MB G1 heap + 8 refinement threads while
         // live data is ~50 MB — Working Set ~350-400 MB with the VPN idle.
         //
-        // skiko.renderApi is left unset so DesktopMain's SOFTWARE default applies (measured
-        // ~90 MB less than DIRECT3D). Override with JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D.
+        // skiko.renderApi is left unset so DesktopMain picks DIRECT3D on Windows (smooth FPS).
+        // Override with JAVA_TOOL_OPTIONS=-Dskiko.renderApi=SOFTWARE for lower RAM.
         jvmArgs += listOf(
             "-Dskiko.vsync.enabled=true",
             "-Dsun.java2d.d3d=true",

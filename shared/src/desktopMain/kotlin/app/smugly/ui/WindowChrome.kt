@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -42,6 +43,7 @@ import app.smugly.ui.theme.SmuglyTextMuted
 import app.smugly.ui.theme.SmuglyTextSecondary
 import java.awt.Cursor
 import java.awt.MouseInfo
+import java.awt.Window
 
 /**
  * The window's own title bar, drawn by us.
@@ -60,55 +62,27 @@ fun FrameWindowScope.WindowChrome(
     onToggleMaximize: () -> Unit,
     onClose: () -> Unit
 ) {
+    // Capture AWT window once: pointerInput keys on [maximized] only, so the gesture body must not
+    // close over recomposing Compose state beyond that.
+    val awtWindow = window
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(BarHeight)
             .background(SmuglyBg)
-            // Drag and double-click are one gesture stream, so they are handled together. Compose's
-            // WindowDraggableArea plus a separate tap detector does not work: the inner detector
-            // consumes the press first and the window then refuses to move at all.
+            // Drag and double-click are one gesture stream. Compose's WindowDraggableArea plus a
+            // separate tap detector does not work: the inner detector consumes the press first and
+            // the window then refuses to move at all.
+            //
+            // Gesture logic lives in a top-level suspend fun (not a deeply nested lambda) so the
+            // class file is `WindowChromeKt` / a shallow synthetic — nested `$1$1$1` classes were
+            // the ones that blew up with NoClassDefFoundError after jar/CDS churn on mouse-move.
             .pointerInput(maximized) {
-                var lastClickAt = 0L
-                awaitEachGesture {
-                    val down = awaitFirstDown()
-                    // Screen coordinates, not deltas inside this component: the component moves
-                    // with the window, so its own coordinates chase the pointer and the drag
-                    // feeds on itself.
-                    val startPointer = MouseInfo.getPointerInfo()?.location
-                    val startX = window.x
-                    val startY = window.y
-                    var moved = false
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
-                        val now = MouseInfo.getPointerInfo()?.location ?: continue
-                        if (startPointer == null) continue
-                        val dx = now.x - startPointer.x
-                        val dy = now.y - startPointer.y
-                        if (!moved && (kotlin.math.abs(dx) > 2 || kotlin.math.abs(dy) > 2)) moved = true
-                        if (moved) {
-                            change.consume()
-                            // A maximized window has no position to nudge; the drag is taken as a
-                            // request to get it back, which is what the caption does too.
-                            if (maximized) {
-                                onToggleMaximize()
-                                break
-                            }
-                            window.setLocation(startX + dx, startY + dy)
-                        }
-                    }
-                    if (!moved) {
-                        val at = System.currentTimeMillis()
-                        if (at - lastClickAt < DoubleClickMs) {
-                            lastClickAt = 0
-                            onToggleMaximize()
-                        } else {
-                            lastClickAt = at
-                        }
-                    }
-                }
+                titleBarDragGesture(
+                    awtWindow = awtWindow,
+                    maximized = maximized,
+                    onToggleMaximize = onToggleMaximize
+                )
             },
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -144,6 +118,57 @@ fun FrameWindowScope.WindowChrome(
             hoverColor = SmuglyAccent,
             onClick = onClose
         )
+    }
+}
+
+/**
+ * Title-bar drag + double-click maximise. Kept as a file-level suspend function so the compiler
+ * emits a stable method instead of a chain of anonymous inner classes that AppCDS/jar swaps
+ * sometimes fail to resolve mid-gesture (`WindowChromeKt$WindowChrome$1$1$1`).
+ */
+private suspend fun PointerInputScope.titleBarDragGesture(
+    awtWindow: Window,
+    maximized: Boolean,
+    onToggleMaximize: () -> Unit
+) {
+    var lastClickAt = 0L
+    awaitEachGesture {
+        val down = awaitFirstDown()
+        // Screen coordinates, not deltas inside this component: the component moves with the
+        // window, so its own coordinates chase the pointer and the drag feeds on itself.
+        val startPointer = MouseInfo.getPointerInfo()?.location
+        val startX = awtWindow.x
+        val startY = awtWindow.y
+        var moved = false
+        while (true) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+            val now = MouseInfo.getPointerInfo()?.location ?: continue
+            if (startPointer == null) continue
+            val dx = now.x - startPointer.x
+            val dy = now.y - startPointer.y
+            if (!moved && (kotlin.math.abs(dx) > 2 || kotlin.math.abs(dy) > 2)) moved = true
+            if (moved) {
+                change.consume()
+                // A maximized window has no position to nudge; the drag is taken as a request to
+                // restore, which is what the system caption does too.
+                if (maximized) {
+                    onToggleMaximize()
+                    break
+                }
+                awtWindow.setLocation(startX + dx, startY + dy)
+            }
+        }
+        if (!moved) {
+            val at = System.currentTimeMillis()
+            if (at - lastClickAt < DoubleClickMs) {
+                lastClickAt = 0
+                onToggleMaximize()
+            } else {
+                lastClickAt = at
+            }
+        }
     }
 }
 

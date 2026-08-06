@@ -46,16 +46,28 @@ fun main() {
     // up, so the first drawer → Settings click is not a multi-hundred-ms ClassLoader stall.
     DesktopUiWarmup.start()
 
-    // Software rendering by default — a deliberate memory-over-smoothness choice, measured on
-    // Windows at DIRECT3D 223 MB / SOFTWARE 133 MB working set. It was briefly DIRECT3D while the
-    // window itself animated its geometry; that animation is gone (see WindowAnimation), and the
-    // GPU path also left a much larger white gap while a live resize outran the swapchain.
+    // Render API: **GPU by default** so the UI tracks the display (user's RTX / 100 Hz panel —
+    // SOFTWARE was pegging ~24 FPS and felt dead). Measured trade-off on this machine:
+    //   SOFTWARE  ~130 MB WS, ~20–40 FPS feel under load
+    //   DIRECT3D  ~200–230 MB WS, display-refresh pacing with vsync
+    // Window geometry animation is gone (see WindowAnimation); white resize flashes are handled
+    // by the dark AWT erase brush below, not by forcing software.
     //
-    // Switch without rebuilding:
-    //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D
+    // Override without rebuilding:
+    //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=SOFTWARE   (lower RAM)
+    //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=OPENGL
     if (System.getProperty("skiko.renderApi").isNullOrBlank()) {
-        System.setProperty("skiko.renderApi", "SOFTWARE")
+        val os = System.getProperty("os.name").orEmpty()
+        System.setProperty(
+            "skiko.renderApi",
+            when {
+                os.startsWith("Windows", ignoreCase = true) -> "DIRECT3D"
+                os.contains("Mac", ignoreCase = true) -> "METAL"
+                else -> "OPENGL"
+            }
+        )
     }
+    // Lock presentation to the monitor refresh (100 Hz here → up to 100 FPS, no free tearing).
     System.setProperty("skiko.vsync.enabled", "true")
     System.setProperty("sun.java2d.d3d", "true")
     System.setProperty("sun.java2d.noddraw", "false")
@@ -313,6 +325,31 @@ private fun installDesktopCrashHandler() {
     val previous = Thread.getDefaultUncaughtExceptionHandler()
     Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
         writeDesktopCrash(thread.name, throwable)
+        // Compose's DesktopCoroutineExceptionHandler shows only throwable.message in a tiny
+        // JOptionPane — for NoClassDefFoundError that is just a mangled class name
+        // ("WindowChromeKt$WindowChrome$1$1$1"). Prefer the real cause line when present.
+        val friendly = buildString {
+            append(throwable.javaClass.simpleName)
+            val msg = throwable.message?.takeIf { it.isNotBlank() }
+            val cause = throwable.cause?.let { c ->
+                c.javaClass.simpleName + (c.message?.let { ": $it" } ?: "")
+            }
+            when {
+                msg != null && cause != null -> append(": $msg\n($cause)")
+                msg != null -> append(": $msg")
+                cause != null -> append(": $cause")
+            }
+            append("\n\nDetails: %USERPROFILE%\\.smugly\\desktop-crash.log".replace("%USERPROFILE%", System.getProperty("user.home")))
+        }
+        // If Compose already painted a dialog, this is a second one only for non-Compose threads.
+        // Still worth writing the log (above); avoid double popups when previous is Compose's.
+        if (previous == null) {
+            runCatching {
+                javax.swing.JOptionPane.showMessageDialog(
+                    null, friendly, "Smugly error", javax.swing.JOptionPane.ERROR_MESSAGE
+                )
+            }
+        }
         previous?.uncaughtException(thread, throwable)
     }
 }

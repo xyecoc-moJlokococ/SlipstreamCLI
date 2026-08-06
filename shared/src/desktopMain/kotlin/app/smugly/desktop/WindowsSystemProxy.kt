@@ -181,19 +181,61 @@ object WindowsSystemProxy {
     /**
      * Tell WinINET the settings changed. Without this, already-running processes keep using the old
      * proxy until they happen to re-read it, which makes connect/disconnect look broken.
-     * 39 = INTERNET_OPTION_SETTINGS_CHANGED, 37 = INTERNET_OPTION_REFRESH.
+     *
+     * Options: 39 = SETTINGS_CHANGED, 37 = REFRESH, 95 = PROXY_SETTINGS_CHANGED (Win8+).
+     *
+     * Must run from a **.ps1 file**, not `powershell -Command "…"`. Passing the DllImport line
+     * through -Command strips the quotes around `"wininet.dll"`, Add-Type fails to compile, and we
+     * logged "WinINET refresh failed" even though the registry write itself succeeded (measured).
      */
     private fun notifyWinInet() {
-        val script = """
-            ${'$'}sig = '[DllImport("wininet.dll", SetLastError=true)] public static extern bool InternetSetOption(IntPtr h, int o, IntPtr b, int l);'
-            ${'$'}t = Add-Type -MemberDefinition ${'$'}sig -Name WinINetProxy -Namespace Smugly -PassThru
-            ${'$'}t::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
-            ${'$'}t::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
-        """.trimIndent()
-        runCommand(
-            listOf("powershell", "-NoProfile", "-NonInteractive", "-Command", script),
-            timeoutMs = 15_000
-        ) ?: PlatformLog.log(LogLevel.WARN, TAG, "WinINET refresh failed; apps may lag behind")
+        val script = File(AppPaths.filesDir(), "wininet-refresh.ps1")
+        val ok = runCatching {
+            script.parentFile?.mkdirs()
+            // Type name is unique so a sticky PowerShell host (if any) cannot collide.
+            // ${'$'} — literal '$' for PowerShell; do not use $$ (Kotlin 2.x multi-dollar rules).
+            script.writeText(
+                """
+                |${'$'}ErrorActionPreference = 'Stop'
+                |${'$'}code = @'
+                |using System;
+                |using System.Runtime.InteropServices;
+                |public static class SmuglyWinINetNotify {
+                |  [DllImport("wininet.dll", SetLastError=true)]
+                |  public static extern bool InternetSetOption(IntPtr h, int opt, IntPtr buf, int len);
+                |}
+                |'@
+                |if (-not ([System.Management.Automation.PSTypeName]'SmuglyWinINetNotify').Type) {
+                |  Add-Type -TypeDefinition ${'$'}code
+                |}
+                |[void][SmuglyWinINetNotify]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0)
+                |[void][SmuglyWinINetNotify]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0)
+                |[void][SmuglyWinINetNotify]::InternetSetOption([IntPtr]::Zero, 95, [IntPtr]::Zero, 0)
+                |exit 0
+                """.trimMargin()
+            )
+            val out = runCommand(
+                listOf(
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", script.absolutePath
+                ),
+                timeoutMs = 15_000
+            )
+            out != null
+        }.getOrElse { e ->
+            PlatformLog.log(LogLevel.WARN, TAG, "WinINET refresh threw: ${e.message}")
+            false
+        }
+        runCatching { script.delete() }
+        if (!ok) {
+            PlatformLog.log(
+                LogLevel.WARN, TAG,
+                "WinINET refresh failed; registry was updated but some apps may lag until restart"
+            )
+        }
     }
 
     private fun runCommand(cmd: List<String>, timeoutMs: Long = 8_000): String? = runCatching {
@@ -201,8 +243,19 @@ object WindowsSystemProxy {
         val text = p.inputStream.bufferedReader().readText()
         if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
             p.destroyForcibly()
+            PlatformLog.log(LogLevel.WARN, TAG, "command timed out: ${cmd.take(3).joinToString(" ")}…")
             return null
         }
-        if (p.exitValue() != 0) null else text
+        if (p.exitValue() != 0) {
+            val snippet = text.trim().take(400)
+            PlatformLog.log(
+                LogLevel.WARN, TAG,
+                "command exit=${p.exitValue()}: ${cmd.take(4).joinToString(" ")}" +
+                    if (snippet.isNotEmpty()) " — $snippet" else ""
+            )
+            null
+        } else {
+            text
+        }
     }.getOrNull()
 }

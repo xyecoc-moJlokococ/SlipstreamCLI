@@ -9,11 +9,10 @@
 # scratch. That is what makes the first click on a menu item — which pulls in a whole screen's worth
 # of Compose classes — stop being noticeably slower than the rest.
 #
-# skiko.renderApi is deliberately NOT passed here. DesktopMain defaults it to SOFTWARE, and leaving
-# the property unset on the command line is what keeps that overridable:
-#   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=DIRECT3D
-# Measured trade-off — SOFTWARE 121-136 MB working set, DIRECT3D 223 MB, OPENGL 234 MB. GPU buys
-# smoother animation; for a UI this static it was not worth ~90 MB.
+# skiko.renderApi is deliberately NOT passed here. DesktopMain picks DIRECT3D on Windows (GPU /
+# display refresh). Leave unset so that default applies and stays overridable:
+#   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=SOFTWARE
+# Measured trade-off — SOFTWARE ~130 MB WS but ~24 FPS feel; DIRECT3D ~220 MB WS, smooth on 100 Hz.
 #
 # Memory flags are sized from what the app actually uses, not guessed. Measured with
 # `jcmd <pid> GC.heap_info` on a 16 GB machine: the JVM had committed a 254 MB heap (the default

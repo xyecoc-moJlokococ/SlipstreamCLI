@@ -2,8 +2,9 @@
 # Build the desktop app and stage a Windows-runnable classpath.
 #
 # Gradle has to run under WSL because :shared is a KMP module with an Android target and there is
-# no Android SDK on the Windows side. `stageWindowsRuntime` compensates by pulling in the Windows
-# Skiko native alongside the Linux one. Launch the result with run-desktop-windows.cmd.
+# no Android SDK on the Windows side. `stageWindowsRuntime` pulls the Windows Skiko native and
+# strips linux/mac Skiko jars so the staged classpath is Windows-only. Launch with
+# run-desktop-windows.cmd.
 set -euo pipefail
 
 SRC=/mnt/c/Users/newbie/Documents/vphysics-compile/SlipstreamCLI
