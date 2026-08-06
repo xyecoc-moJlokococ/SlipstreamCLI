@@ -26,11 +26,19 @@ object SubscriptionParser {
         val info: SubscriptionInfo = SubscriptionInfo()
     )
 
+    /** One config link plus the category it was listed under ("" = none). */
+    data class CategorizedLink(val uri: String, val categoryId: String = "")
+
     data class Parsed(
         val metadata: Metadata,
-        /** Config links in the order the panel listed them. */
-        val links: List<String>
-    )
+        /** Config links in the order the panel listed them, each tagged with its category. */
+        val entries: List<CategorizedLink>,
+        /** Categories the body declared, in declaration order. */
+        val categories: List<SubscriptionCategory> = emptyList()
+    ) {
+        /** Just the URIs — most callers do not care which group a link came from. */
+        val links: List<String> get() = entries.map { it.uri }
+    }
 
     private val LINK_SCHEMES = listOf(
         "vless://", "vmess://", "trojan://", "ss://", "ssr://",
@@ -50,7 +58,8 @@ object SubscriptionParser {
         // Headers win: they are the primary channel, inline keys are the fallback for panels
         // that cannot set them.
         val metadata = merge(primary = fromHeaders, fallback = inline)
-        return Parsed(metadata, extractLinks(decodedBody))
+        val grouped = extractCategorized(decodedBody)
+        return Parsed(metadata, grouped.links, grouped.categories)
     }
 
     /**
@@ -167,12 +176,74 @@ object SubscriptionParser {
     }
 
     /** Config links, ignoring metadata/comment lines. */
-    fun extractLinks(body: String): List<String> =
-        body.lineSequence()
-            .map { it.trim() }
-            .filter { line -> line.isNotEmpty() && LINK_SCHEMES.any { line.startsWith(it, ignoreCase = true) } }
-            .distinct()
-            .toList()
+    fun extractLinks(body: String): List<String> = extractCategorized(body).links.map { it.uri }
+
+    /** True when [text] is a single config URI of a scheme some client can actually run. */
+    fun isConfigLink(text: String): Boolean {
+        val trimmed = text.trim()
+        return trimmed.isNotEmpty() && LINK_SCHEMES.any { trimmed.startsWith(it, ignoreCase = true) }
+    }
+
+    /** Links plus the categories declared around them. */
+    data class CategorizedBody(
+        val links: List<CategorizedLink>,
+        val categories: List<SubscriptionCategory>
+    )
+
+    /** `#category:` and friends; the panel may spell them with any punctuation (see [normalizeKey]). */
+    private val CATEGORY_KEYS = setOf("category", "group", "folder", "section")
+    private val CATEGORY_DESCRIPTION_KEYS = setOf(
+        "categorydescription", "groupdescription", "folderdescription", "sectiondescription",
+        "categorydesc", "groupdesc", "description", "desc"
+    )
+
+    /**
+     * Split a link list into groups.
+     *
+     * A `#category: Name` line opens a category and everything below it belongs to that category
+     * until the next one; `#category-description: …` (or plain `#description:`) attaches a blurb to
+     * the category currently open. A `#category:` with no value closes the group, so a panel can
+     * emit ungrouped servers after grouped ones. Both values accept `base64:…`, since panels that
+     * cannot be trusted with UTF-8 headers usually cannot be trusted with UTF-8 bodies either.
+     *
+     * A body with no such lines parses exactly as it always did: every link, no categories.
+     */
+    fun extractCategorized(body: String): CategorizedBody {
+        val links = ArrayList<CategorizedLink>()
+        val seen = HashSet<String>()
+        val categories = LinkedHashMap<String, SubscriptionCategory>()
+        var current = ""
+        for (raw in body.lineSequence()) {
+            val line = raw.trim()
+            if (line.isEmpty()) continue
+            if (line.startsWith("#")) {
+                val content = line.removePrefix("#").trim()
+                val colon = content.indexOf(':')
+                if (colon <= 0) continue
+                val key = normalizeKey(content.substring(0, colon))
+                val value = decodeText(content.substring(colon + 1))
+                when (key) {
+                    in CATEGORY_KEYS -> {
+                        current = if (value.isBlank()) "" else {
+                            val id = subscriptionCategoryId(value)
+                            categories.getOrPut(id) { SubscriptionCategory(id, value) }
+                            id
+                        }
+                    }
+                    in CATEGORY_DESCRIPTION_KEYS -> {
+                        // A description with no category open has nothing to describe.
+                        categories[current]?.let { categories[current] = it.copy(description = value) }
+                    }
+                }
+                continue
+            }
+            if (LINK_SCHEMES.none { line.startsWith(it, ignoreCase = true) }) continue
+            // Same link twice is the same server; the first listing (and its category) wins.
+            if (!seen.add(line)) continue
+            links.add(CategorizedLink(line, current))
+        }
+        return CategorizedBody(links, categories.values.toList())
+    }
 
     /**
      * Most panels base64 the whole body. Decode only when the result actually looks like a config

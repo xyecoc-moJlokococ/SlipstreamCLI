@@ -77,6 +77,7 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.layout.PinnableContainer
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -776,6 +777,11 @@ fun ProfileCard(
     enableReorder: Boolean = true,
     /** Measured round trip to this profile's own server, or null when never measured. */
     latency: app.smugly.ui.LatencyUi? = null,
+    /**
+     * Card fill. Inside a category panel the cards sit on [SmuglyCard] already, so they are drawn
+     * a shade lighter — otherwise the group would be one flat slab with no rows in it.
+     */
+    containerColor: Color = SmuglyCard,
     /** Applied to the card's root — the list uses it to animate the row into its new slot. */
     modifier: Modifier = Modifier
 ) {
@@ -851,15 +857,52 @@ fun ProfileCard(
     )
     val translationY = if (isDragging) dragOffsetY else gapAnim
 
-    // Where the card sits, so the finger's position inside it can be turned into a screen one.
-    // The list needs that: judging auto-scroll by the CARD means one picked up near an edge
-    // scrolls the instant it is touched, and a finger carried off the list stops steering at all.
-    val cardRootY = remember { floatArrayOf(0f) }
+    // Layout coords of the *untranslated* row. Must sit outside graphicsLayer: the list scrolls
+    // and reorders under the finger during a drag, and any root Y built from layout origin + local
+    // offset that also includes translationY feeds the card's own motion back into the next frame.
+    // localToRoot(pointer) is the true finger position even when this slot jumps — unlike summing
+    // drag deltas, which pick up every layout shift as a fake finger move and break auto-scroll.
+    var rowCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     Row(
         modifier = modifier
-            .onGloballyPositioned { cardRootY[0] = it.positionInRoot().y }
             .fillMaxWidth()
             .padding(bottom = 8.dp)
+            .onGloballyPositioned { rowCoords = it }
+            // Gesture outside graphicsLayer so scale/translation never warp deltas or hit-testing.
+            // Once claimed, the pointer keeps delivering events past the original bounds.
+            .then(
+                if (enableReorder) {
+                    Modifier.pointerInput(Unit) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                // One tick the moment the card is picked up, so reordering is
+                                // confirmed by feel rather than by watching the card move.
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                pinned = pinnable?.pin()
+                                val rootY = rowCoords
+                                    ?.takeIf { it.isAttached }
+                                    ?.localToRoot(offset)
+                                    ?.y
+                                    ?: offset.y
+                                dragStartNow(rootY)
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                val coords = rowCoords?.takeIf { it.isAttached }
+                                // Absolute root Y only. dragAmount is still passed for callers that
+                                // want a delta, but list reorder must not accumulate it: when the
+                                // LazyColumn scrolls/swaps this node, dragAmount includes the
+                                // layout jump as if the finger moved.
+                                if (coords != null) {
+                                    dragNow(dragAmount.y, coords.localToRoot(change.position).y)
+                                }
+                            },
+                            onDragEnd = { unpin(); dragEndNow() },
+                            onDragCancel = { unpin(); dragCancelNow() }
+                        )
+                    }
+                } else Modifier
+            )
             .zIndex(if (isDragging) 2f else 0f)
             .graphicsLayer {
                 this.translationY = translationY
@@ -869,34 +912,16 @@ fun ProfileCard(
                 shadowElevation = elev
             }
             .clip(shape)
-            .background(SmuglyCard)
+            .background(containerColor)
             // Always draw border; alpha/color animates so selection "moves" smoothly.
             .border(1.dp, borderColor, shape)
             .then(
                 if (enableReorder) {
-                    Modifier
-                        // Open hand while hovering a reorderable card; closed/move while dragging.
-                        .pointerHoverIcon(
-                            if (isDragging) PointerIconGrabbing else PointerIconGrab,
-                            overrideDescendants = isDragging
-                        )
-                        .pointerInput(Unit) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = { offset ->
-                                    // One tick the moment the card is picked up, so reordering is
-                                    // confirmed by feel rather than by watching the card move.
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    pinned = pinnable?.pin()
-                                    dragStartNow(cardRootY[0] + offset.y)
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragNow(dragAmount.y, cardRootY[0] + change.position.y)
-                                },
-                                onDragEnd = { unpin(); dragEndNow() },
-                                onDragCancel = { unpin(); dragCancelNow() }
-                            )
-                        }
+                    // Open hand while hovering a reorderable card; closed/move while dragging.
+                    Modifier.pointerHoverIcon(
+                        if (isDragging) PointerIconGrabbing else PointerIconGrab,
+                        overrideDescendants = isDragging
+                    )
                 } else Modifier
             )
             // The card is a selectable surface, not a button — arrow cursor unless reorder is on.

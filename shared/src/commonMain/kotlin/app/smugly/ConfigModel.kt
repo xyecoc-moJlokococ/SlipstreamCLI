@@ -51,7 +51,12 @@ data class ConfigProfile(
      * refreshing a subscription replaces exactly the profiles carrying its id and leaves the rest
      * untouched.
      */
-    val subscriptionId: String? = null
+    val subscriptionId: String? = null,
+    /**
+     * Sub-group inside that subscription's folder (see `SubscriptionCategory`), or null when the
+     * panel does not group its servers. Only meaningful together with [subscriptionId].
+     */
+    val categoryId: String? = null
 )
 
 object DnsResolverPool {
@@ -96,8 +101,24 @@ data class GlobalSettings(
      * Stored by identity rather than by tab number so reordering the tabs cannot land the user
      * in a different folder than the one they left.
      */
-    val lastFolderId: String = ""
+    val lastFolderId: String = "",
+    /**
+     * Categories the user folded away, as `subscriptionId/categoryId`. Kept across restarts: a
+     * group the user closed should stay closed, exactly like the folder they left open.
+     */
+    val collapsedCategories: Set<String> = emptySet()
 )
+
+/**
+ * [GlobalSettings.collapsedCategories] as one stored string, and back. Ids are slugs and UUIDs, so
+ * a newline can never appear inside one.
+ */
+object CollapsedCategories {
+    fun encode(ids: Set<String>): String = ids.joinToString("\n")
+
+    fun decode(raw: String?): Set<String> =
+        raw.orEmpty().lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+}
 
 enum class AppLanguage { SYSTEM, EN, RU }
 

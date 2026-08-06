@@ -94,6 +94,9 @@ object SubscriptionManager {
                     ?.times(60)
                     ?: subscription.updateIntervalMinutes,
                 info = parsed.metadata.info,
+                // Replaced, not merged: the panel decides which groups exist, and a category it
+                // dropped must stop being offered here too.
+                categories = parsed.categories,
                 lastError = ""
             ),
             entries = parsed.entries

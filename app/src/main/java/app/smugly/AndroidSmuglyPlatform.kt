@@ -43,6 +43,8 @@ class AndroidSmuglyPlatform(
 ) : SmuglyPlatform {
     private val handler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArrayList<(ConnectUiState) -> Unit>()
+    /** UI listeners for storage written from outside Compose — see [notifyDataChanged]. */
+    private val dataListeners = CopyOnWriteArrayList<() -> Unit>()
     @Volatile private var proxyStarted = false
     @Volatile private var connecting = false
     @Volatile private var stopping = false
@@ -471,6 +473,20 @@ class AndroidSmuglyPlatform(
 
     override fun toast(message: String) {
         handler.post { Toast.makeText(activity, message, Toast.LENGTH_SHORT).show() }
+    }
+
+    override fun observeDataChanged(onChange: () -> Unit): () -> Unit {
+        dataListeners.add(onChange)
+        return { dataListeners.remove(onChange) }
+    }
+
+    /**
+     * Profiles / subscriptions were written from outside the Compose tree — the `install-sub`
+     * deep link does its fetch on its own thread, and nothing else was telling the UI. The folder
+     * showed up empty and stayed that way until the app was restarted.
+     */
+    fun notifyDataChanged() {
+        handler.post { dataListeners.forEach { it() } }
     }
 
     override fun validateXrayConfig(json: String): String? = XrayBridge.validateConfig(json)

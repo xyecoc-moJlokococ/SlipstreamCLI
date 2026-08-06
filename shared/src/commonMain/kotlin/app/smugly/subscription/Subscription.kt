@@ -31,6 +31,11 @@ data class Subscription(
     val allowReorder: Boolean = false,
     /** Whether the traffic / expiry card is drawn above the folder's servers. */
     val showInfo: Boolean = true,
+    /**
+     * Sub-groups the panel published, in the order it listed them. Empty for a subscription that
+     * does not use them — then the folder is a plain list of servers, exactly as before.
+     */
+    val categories: List<SubscriptionCategory> = emptyList(),
     /** Message from the last failed refresh; blank when the last refresh worked. */
     val lastError: String = ""
 ) {
@@ -44,6 +49,47 @@ data class Subscription(
         if (lastUpdatedMs <= 0) return true
         return nowMs - lastUpdatedMs >= updateIntervalMinutes * 60_000
     }
+}
+
+/**
+ * A sub-group inside one subscription folder: "Повседневный обход", "Обход БС (s3-fuckup)", …
+ *
+ * The panel owns these — it decides which servers belong to which group and what each one is for.
+ * [description] is optional and is the whole point of the feature: a category can explain, in the
+ * app, what its servers actually do. A blank one simply renders as a heading.
+ */
+data class SubscriptionCategory(
+    /**
+     * Identifies the group within its subscription. Derived from [name] unless the panel sent an
+     * explicit id, so the same category keeps its identity (and its collapsed state) across a
+     * refresh even though every profile is rebuilt.
+     */
+    val id: String,
+    val name: String,
+    val description: String = ""
+)
+
+/**
+ * Category id for a group the panel named but did not give an id.
+ *
+ * Case- and punctuation-insensitive so "Обход БС (s3-fuckup)" and "обход бс (s3 fuckup)" are the
+ * same group; a name that survives none of that (emoji only, say) falls back to the raw text, which
+ * is still stable.
+ */
+fun subscriptionCategoryId(name: String): String {
+    val slug = buildString {
+        var pendingSeparator = false
+        for (ch in name.trim().lowercase()) {
+            if (ch.isLetterOrDigit()) {
+                if (pendingSeparator && isNotEmpty()) append('-')
+                pendingSeparator = false
+                append(ch)
+            } else {
+                pendingSeparator = true
+            }
+        }
+    }
+    return slug.ifBlank { name.trim() }
 }
 
 /**

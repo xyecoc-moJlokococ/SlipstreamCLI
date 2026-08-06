@@ -101,6 +101,15 @@ interface SmuglyPlatform {
      * Android may leave the default no-op and keep system Toast in [toast].
      */
     fun observeToast(onToast: (String) -> Unit): () -> Unit = { }
+
+    /**
+     * Profiles / subscriptions were written outside the UI and it should reload.
+     *
+     * The `install-sub` deep link is the case that needs it: the host activity does the fetch on
+     * its own thread, so nothing in the composition knows the folder it created has filled up.
+     * Platforms that cannot write behind the UI's back leave the default, which never fires.
+     */
+    fun observeDataChanged(onChange: () -> Unit): () -> Unit = { }
     fun validateXrayConfig(json: String): String?
     fun formatXrayJson(json: String): String?
     fun localDnsResolver(): String?

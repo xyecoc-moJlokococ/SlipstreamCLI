@@ -143,6 +143,71 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun categoryMarkersGroupTheLinksBelowThem() {
+        val body = buildString {
+            appendLine("#profile-title: Name VPN")
+            appendLine("#category: Повседневный обход")
+            appendLine("#category-description: Быстрые серверы для обычного интернета")
+            appendLine(vless)
+            appendLine("#category: Обход БС (s3-fuckup)")
+            appendLine("s3fu://import?config=abc")
+            appendLine(vless2)
+        }
+        val parsed = SubscriptionParser.parse(body)
+        // Metadata still parses; the markers are additional, not a different format.
+        assertEquals("Name VPN", parsed.metadata.title)
+        assertEquals(
+            listOf("Повседневный обход", "Обход БС (s3-fuckup)"),
+            parsed.categories.map { it.name }
+        )
+        assertEquals(
+            "Быстрые серверы для обычного интернета",
+            parsed.categories.first().description
+        )
+        // Blank by design: the panel gave the second group no description, and none is invented.
+        assertEquals("", parsed.categories[1].description)
+        val everyday = parsed.categories[0].id
+        val bypass = parsed.categories[1].id
+        assertEquals(
+            listOf(everyday, bypass, bypass),
+            parsed.entries.map { it.categoryId }
+        )
+    }
+
+    @Test
+    fun emptyCategoryMarkerClosesTheGroup() {
+        val body = "#group: Grouped\n$vless\n#group:\n$vless2"
+        val parsed = SubscriptionParser.parse(body)
+        assertEquals(1, parsed.categories.size)
+        assertEquals(subscriptionCategoryId("Grouped"), parsed.entries[0].categoryId)
+        assertEquals("", parsed.entries[1].categoryId)
+    }
+
+    @Test
+    fun categoryValuesMayBeBase64() {
+        // Same escape hatch as every other text field panels send.
+        val body = "#category: base64:0J/QvtCy0YHQtdC00L3QtdCy0L3Ri9C5\n$vless"
+        val parsed = SubscriptionParser.parse(body)
+        assertEquals("Повседневный", parsed.categories.single().name)
+    }
+
+    @Test
+    fun bodiesWithoutCategoryMarkersDeclareNone() {
+        val parsed = SubscriptionParser.parse("$vless\n$vless2")
+        assertTrue(parsed.categories.isEmpty())
+        assertTrue(parsed.entries.all { it.categoryId.isEmpty() })
+    }
+
+    @Test
+    fun categoryIdsIgnoreCaseAndPunctuation() {
+        assertEquals(
+            subscriptionCategoryId("Обход БС (s3-fuckup)"),
+            subscriptionCategoryId("обход бс   s3 fuckup")
+        )
+        assertTrue(subscriptionCategoryId("Повседневный обход").isNotBlank())
+    }
+
+    @Test
     fun quotaAndExpiryHelpers() {
         val info = SubscriptionInfo(
             uploadBytes = 25,

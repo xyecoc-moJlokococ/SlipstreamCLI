@@ -51,6 +51,10 @@ class ComposeMainActivity : ComponentActivity() {
         if (app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)) {
             Thread({
                 val error = platform.addSubscription(text)
+                // The fetch happened off the composition's back: without this the folder it just
+                // created stays on screen empty, showing the record as it looked before the
+                // servers arrived, until the app is restarted.
+                platform.notifyDataChanged()
                 runOnUiThread {
                     android.widget.Toast.makeText(
                         this,
@@ -64,7 +68,7 @@ class ComposeMainActivity : ComponentActivity() {
 
         val imported = ConfigStore.importProfile(this, data)
         if (imported != null) {
-            // Profiles refresh on next composition / navigation; toast confirms.
+            platform.notifyDataChanged()
             android.widget.Toast.makeText(
                 this,
                 t(S.TOAST_PROFILE_IMPORTED),

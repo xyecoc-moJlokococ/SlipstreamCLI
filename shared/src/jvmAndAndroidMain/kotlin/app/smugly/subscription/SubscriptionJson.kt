@@ -19,6 +19,19 @@ object SubscriptionJson {
         .put("allowReorder", sub.allowReorder)
         .put("showInfo", sub.showInfo)
         .put(
+            "categories",
+            JSONArray().apply {
+                sub.categories.forEach {
+                    put(
+                        JSONObject()
+                            .put("id", it.id)
+                            .put("name", it.name)
+                            .put("description", it.description)
+                    )
+                }
+            }
+        )
+        .put(
             "info",
             JSONObject()
                 .put("uploadBytes", sub.info.uploadBytes)
@@ -52,6 +65,14 @@ object SubscriptionJson {
             lastError = json.optString("lastError"),
             allowReorder = json.optBoolean("allowReorder", false),
             showInfo = json.optBoolean("showInfo", true),
+            categories = json.optJSONArray("categories")?.let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val name = obj.optString("name")
+                    val id = obj.optString("id").ifBlank { subscriptionCategoryId(name) }
+                    if (id.isBlank()) null else SubscriptionCategory(id, name, obj.optString("description"))
+                }
+            } ?: emptyList(),
             info = SubscriptionInfo(
                 uploadBytes = info.optLong("uploadBytes", 0),
                 downloadBytes = info.optLong("downloadBytes", 0),

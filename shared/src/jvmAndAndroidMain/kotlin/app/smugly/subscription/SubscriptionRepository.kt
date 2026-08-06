@@ -247,6 +247,7 @@ class SubscriptionRepository(private val storage: Storage) {
 
     private fun toProfile(entry: SubscriptionContent.Entry, subscriptionId: String): ConfigProfile? {
         val base = storage.baseConfig()
+        val category = entry.categoryId.ifBlank { null }
         return when (entry) {
             is SubscriptionContent.Entry.XrayJson -> ConfigProfile(
                 id = storage.newId(),
@@ -255,10 +256,11 @@ class SubscriptionRepository(private val storage: Storage) {
                     protocol = Config.TunnelProtocol.XRAY,
                     xrayConfigJson = entry.json
                 ),
-                subscriptionId = subscriptionId
+                subscriptionId = subscriptionId,
+                categoryId = category
             )
             is SubscriptionContent.Entry.Link -> storage.profileFromLink(entry.uri, entry.name)
-                ?.copy(id = storage.newId(), subscriptionId = subscriptionId)
+                ?.copy(id = storage.newId(), subscriptionId = subscriptionId, categoryId = category)
                 ?.let { profile ->
                     // Prefer the panel's label over whatever the parser derived.
                     if (entry.name.isNotBlank()) profile.copy(name = entry.name) else profile

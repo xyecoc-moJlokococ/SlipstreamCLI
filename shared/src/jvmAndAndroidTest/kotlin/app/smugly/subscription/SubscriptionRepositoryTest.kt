@@ -211,6 +211,40 @@ class SubscriptionRepositoryTest {
     }
 
     @Test
+    fun categoriesLandOnTheFolderAndOnEveryProfile() {
+        payload = """
+            {"categories":[
+              {"name":"Повседневный обход","description":"Обычный интернет",
+               "configs":[${config("Spain")}]},
+              {"name":"Обход БС","configs":[${config("Estonia")}]}
+            ]}
+        """.trimIndent()
+        val added = repo.add(url("/sub"))
+        assertTrue(added.isSuccess, "add failed: ${added.error}")
+
+        val stored = repo.list().single()
+        assertEquals(listOf("Повседневный обход", "Обход БС"), stored.categories.map { it.name })
+        assertEquals("Обычный интернет", stored.categories.first().description)
+        assertEquals(
+            listOf(stored.categories[0].id, stored.categories[1].id),
+            repo.profilesOf(stored.id).map { it.categoryId }
+        )
+    }
+
+    @Test
+    fun droppingCategoriesFromThePanelClearsThemHere() {
+        payload = """{"categories":[{"name":"Everyday","configs":[${config("Spain")}]}]}"""
+        val added = repo.add(url("/sub"))
+        assertEquals(1, repo.list().single().categories.size)
+
+        // The panel goes back to a plain list: the folder must stop offering a group that is gone.
+        payload = "[${config("Spain")}]"
+        repo.refresh(added.subscription.id)
+        assertTrue(repo.list().single().categories.isEmpty())
+        assertNull(repo.profilesOf(added.subscription.id).single().categoryId)
+    }
+
+    @Test
     fun aUserChosenNameSurvivesRefresh() {
         payloadHeaders = mapOf("profile-title" to "Panel name")
         val added = repo.add(url("/sub"), name = "My own")

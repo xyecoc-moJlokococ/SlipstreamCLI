@@ -153,6 +153,122 @@ class SubscriptionContentTest {
     }
 
     @Test
+    fun namedNodesHoldingConfigsBecomeCategories() {
+        val body = """
+            {"categories":[
+              {"name":"Повседневный обход","description":"Обычный интернет",
+               "configs":[${xrayConfig("Spain", listOf("proxy"))}]},
+              {"name":"Обход БС (s3-fuckup)",
+               "configs":[${xrayConfig("Estonia", listOf("proxy"))}]}
+            ]}
+        """.trimIndent()
+        val parsed = SubscriptionContent.parse(body)
+        assertEquals(
+            listOf("Повседневный обход", "Обход БС (s3-fuckup)"),
+            parsed.categories.map { it.name }
+        )
+        assertEquals("Обычный интернет", parsed.categories.first().description)
+        assertEquals(listOf("Spain", "Estonia"), parsed.entries.map { it.name })
+        assertEquals(
+            listOf(parsed.categories[0].id, parsed.categories[1].id),
+            parsed.entries.map { it.categoryId }
+        )
+    }
+
+    @Test
+    fun aConfigMayNameItsOwnCategory() {
+        // Flat list shape: the grouping is a field on the server, not the envelope.
+        val spain = JSONObject(xrayConfig("Spain", listOf("proxy")))
+            .put("category", "Повседневный обход")
+            .put("category-description", "Обычный интернет")
+        val estonia = JSONObject(xrayConfig("Estonia", listOf("proxy"))).put("group", "Обход БС")
+        val parsed = SubscriptionContent.parse("[$spain,$estonia]")
+        assertEquals(listOf("Повседневный обход", "Обход БС"), parsed.categories.map { it.name })
+        assertEquals("Обычный интернет", parsed.categories.first().description)
+        assertEquals(
+            listOf(subscriptionCategoryId("Повседневный обход"), subscriptionCategoryId("Обход БС")),
+            parsed.entries.map { it.categoryId }
+        )
+    }
+
+    @Test
+    fun aDeclarationBlockSuppliesDescriptionsForAFlatList() {
+        val spain = JSONObject(xrayConfig("Spain", listOf("proxy"))).put("category", "Everyday")
+        val body = """
+            {"categories":[{"name":"Everyday","description":"Just browsing"}],
+             "configs":[$spain]}
+        """.trimIndent()
+        val parsed = SubscriptionContent.parse(body)
+        assertEquals("Just browsing", parsed.categories.single().description)
+        assertEquals(parsed.categories.single().id, parsed.entries.single().categoryId)
+    }
+
+    @Test
+    fun declaredCategoriesKeepTheirOrderEvenWhenServersArriveOutOfIt() {
+        val a = JSONObject(xrayConfig("A", listOf("proxy"))).put("category", "Second")
+        val b = JSONObject(xrayConfig("B", listOf("proxy"))).put("category", "First")
+        val body = """
+            {"categories":[{"name":"First"},{"name":"Second"}],"configs":[$a,$b]}
+        """.trimIndent()
+        // The panel listed them in this order; that is the order the folder shows.
+        assertEquals(listOf("First", "Second"), SubscriptionContent.parse(body).categories.map { it.name })
+    }
+
+    @Test
+    fun aPlainListStillDeclaresNoCategories() {
+        val body = "[${xrayConfig("Spain", listOf("proxy"))},${xrayConfig("Estonia", listOf("proxy"))}]"
+        val parsed = SubscriptionContent.parse(body)
+        assertTrue(parsed.categories.isEmpty())
+        assertTrue(parsed.entries.all { it.categoryId.isEmpty() })
+    }
+
+    @Test
+    fun theDocumentItselfIsNotACategory() {
+        // A subscription-wide name describes the whole list; wrapping every server in one group
+        // out of it would be a category the panel never asked for.
+        val body = """{"name":"Балдёжный VPN","configs":[${xrayConfig("Spain", listOf("proxy"))}]}"""
+        val parsed = SubscriptionContent.parse(body)
+        assertTrue(parsed.categories.isEmpty())
+        assertEquals("", parsed.entries.single().categoryId)
+    }
+
+    @Test
+    fun aWrapperWithoutConfigsCannotInventAGroup() {
+        val body = """
+            {"meta":{"name":"Not a group","note":"x"},"configs":[${xrayConfig("Spain", listOf("proxy"))}]}
+        """.trimIndent()
+        assertTrue(SubscriptionContent.parse(body).categories.isEmpty())
+    }
+
+    @Test
+    fun jsonGroupsMayHoldPlainLinksToo() {
+        // s3fu / Slipstream exist only as links — a JSON payload has to be able to carry them, or
+        // a panel could group its Xray servers but not the tunnels the groups are usually about.
+        val body = """
+            {"categories":[
+              {"name":"Повседневный обход","configs":[${xrayConfig("Spain", listOf("proxy"))}]},
+              {"name":"Обход БС (s3-fuckup)","description":"Через S3",
+               "links":["s3fu://import?endpoint=https%3A%2F%2Fs3.example.com&bucket=b&psk=deadbeef#S3"]},
+              {"name":"Обход БС (Slipstream)",
+               "servers":[{"name":"DNS-туннель","link":"slipstream://import?domain=ee.example.com"}]}
+            ]}
+        """.trimIndent()
+        val parsed = SubscriptionContent.parse(body)
+        assertEquals(
+            listOf("Повседневный обход", "Обход БС (s3-fuckup)", "Обход БС (Slipstream)"),
+            parsed.categories.map { it.name }
+        )
+        assertEquals(3, parsed.entries.size)
+        assertEquals(listOf("Spain", "S3", "DNS-туннель"), parsed.entries.map { it.name })
+        assertEquals(
+            parsed.categories.map { it.id },
+            parsed.entries.map { it.categoryId }
+        )
+        assertTrue(parsed.entries[1] is SubscriptionContent.Entry.Link)
+        assertTrue(parsed.entries[2] is SubscriptionContent.Entry.Link)
+    }
+
+    @Test
     fun nestedOutboundsDoNotBecomeSeparateServers() {
         // One config with three proxy outbounds is one server, not three.
         val body = "[" + xrayConfig("Spain", listOf("p1", "p2", "p3")) + "]"

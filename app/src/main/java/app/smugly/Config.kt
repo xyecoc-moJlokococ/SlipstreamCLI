@@ -26,6 +26,7 @@ object ConfigStore {
     private const val KEY_GLOBAL_LANGUAGE = "globalLanguage"
     private const val KEY_GLOBAL_HOME_FOLDER_INDEX = "globalHomeFolderIndex"
     private const val KEY_GLOBAL_LAST_FOLDER_ID = "globalLastFolderId"
+    private const val KEY_GLOBAL_COLLAPSED_CATEGORIES = "globalCollapsedCategories"
     private const val KEY_GLOBAL_DNS_RESOLVER_POOL = "globalDnsResolverPool"
 
     fun load(context: Context): Config {
@@ -235,7 +236,10 @@ object ConfigStore {
                     ?: DnsResolverPool.DEFAULT_RAW
             ),
             homeFolderIndex = p.getInt(KEY_GLOBAL_HOME_FOLDER_INDEX, 0),
-            lastFolderId = p.getString(KEY_GLOBAL_LAST_FOLDER_ID, "") ?: ""
+            lastFolderId = p.getString(KEY_GLOBAL_LAST_FOLDER_ID, "") ?: "",
+            collapsedCategories = CollapsedCategories.decode(
+                p.getString(KEY_GLOBAL_COLLAPSED_CATEGORIES, "")
+            )
         )
     }
 
@@ -252,6 +256,10 @@ object ConfigStore {
             .putString(KEY_GLOBAL_DNS_RESOLVER_POOL, DnsResolverPool.normalize(settings.dnsResolverPool))
             .putInt(KEY_GLOBAL_HOME_FOLDER_INDEX, settings.homeFolderIndex)
             .putString(KEY_GLOBAL_LAST_FOLDER_ID, settings.lastFolderId)
+            .putString(
+                KEY_GLOBAL_COLLAPSED_CATEGORIES,
+                CollapsedCategories.encode(settings.collapsedCategories)
+            )
             .putInt("listenPort", settings.listenPort)
             .putString("mode", settings.mode.name)
             .apply()
@@ -657,13 +665,15 @@ object ConfigStore {
             .put("config", configToJson(profile.config))
             // Only for imported profiles, so exported links stay clean.
             .apply { profile.subscriptionId?.let { put("subscriptionId", it) } }
+            .apply { profile.categoryId?.let { put("categoryId", it) } }
 
     private fun profileFromJson(json: JSONObject): ConfigProfile =
         ConfigProfile(
             id = json.optString("id").ifBlank { newProfileId() },
             name = json.optString("name").ifBlank { t(S.PROFILE_NAME_DEFAULT_IMPORTED) },
             config = configFromJson(json.optJSONObject("config") ?: JSONObject()),
-            subscriptionId = json.optString("subscriptionId").ifBlank { null }
+            subscriptionId = json.optString("subscriptionId").ifBlank { null },
+            categoryId = json.optString("categoryId").ifBlank { null }
         )
 
     private fun configToJson(config: Config): JSONObject =

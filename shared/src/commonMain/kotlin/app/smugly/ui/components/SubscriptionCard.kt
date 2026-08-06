@@ -1,6 +1,9 @@
 package app.smugly.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -27,6 +30,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
@@ -37,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -222,6 +227,101 @@ fun SubscriptionCard(
     }
 }
 
+/**
+ * One sub-group inside a subscription folder: its name, what it is for, and its servers — drawn as
+ * a single panel rather than a heading floating above loose cards, so it is obvious at a glance
+ * which servers the description is talking about.
+ *
+ * The description is the reason categories exist at all — a panel can say, in the app, what
+ * "Обход БС (s3-fuckup)" is actually for. It is optional, and a category without one is just a
+ * heading: nothing is invented to fill the space.
+ *
+ * Tapping the header folds the group away, so a long everyday list does not bury the two servers a
+ * user came for. Folding happens **inside** the panel ([AnimatedVisibility] clips it), which is
+ * also what keeps the cards from sliding out over the next group's text on the way.
+ */
+@Composable
+fun CategorySection(
+    name: String,
+    description: String,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    // Points down when the group is open and right when it is folded; it travels rather than
+    // swapping, so the state change reads as one movement.
+    val angle by animateFloatAsState(
+        targetValue = if (collapsed) -90f else 0f,
+        animationSpec = tween(CategoryFoldMs, easing = FastOutSlowInEasing),
+        label = "categoryChevron"
+    )
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(SmuglyCard)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .handClickable(onClick = onToggle)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    color = SmuglyTextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (description.isNotBlank()) {
+                    Text(
+                        text = description,
+                        color = SmuglyTextMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+            Icon(
+                Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = SmuglyTextSecondary,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .height(18.dp)
+                    .graphicsLayer { rotationZ = angle }
+            )
+        }
+        AnimatedVisibility(
+            visible = !collapsed,
+            // Towards the top, i.e. **under the heading** — the default anchors the content to the
+            // bottom, so folding pulled the first servers out of sight first and left the last one
+            // sitting under the title until the very end. Folding should look like the group
+            // sliding up into the row you just tapped.
+            enter = expandVertically(
+                animationSpec = tween(CategoryFoldMs, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Top
+            ),
+            exit = shrinkVertically(
+                animationSpec = tween(CategoryFoldMs, easing = FastOutSlowInEasing),
+                shrinkTowards = Alignment.Top
+            )
+        ) {
+            Column(Modifier.padding(horizontal = 8.dp)) { content() }
+        }
+    }
+}
+
+/** How long a category takes to fold away — and how long its chevron takes to turn. */
+private const val CategoryFoldMs = 180
+
 /** `https://host/long/path?token=…` -> `host`, so an unnamed folder still reads as a name. */
 private fun hostOf(url: String): String {
     val afterScheme = url.substringAfter("://", url)
@@ -277,7 +377,7 @@ private fun subtitle(subscription: Subscription, nowMs: Long): String {
  * than computed from an equal-width grid.
  *
  * Gestures:
- * - Tap / LMB click → select tab
+ * - Tap / LMB click → select tab; on the tab that is **already open**, the folder menu
  * - Long-press + drag (touch **and** mouse) → reorder tabs
  * - Long-press on touch → also opens the folder menu (dismissed once the tab moves)
  * - Right-click on desktop → folder menu (Edit / Delete subscription)
@@ -316,6 +416,7 @@ fun FolderTabs(
     // the spot, and run with no visuals at all — the tab did not follow the finger and the new
     // position simply appeared on release.
     val namesNow by rememberUpdatedState(names)
+    val selectedNow by rememberUpdatedState(selectedIndex)
     val selectNow by rememberUpdatedState(onSelect)
     val menuNow by rememberUpdatedState(onMenu)
     val moveNow by rememberUpdatedState(onMove)
@@ -419,10 +520,35 @@ fun FolderTabs(
     val indicatorX = indicatorAnimX.value
     val indicatorWidth = indicatorAnimW.value
     val rowScroll = rememberScrollState()
+    /** Width of the visible strip, in px — the row scrolls, so its own size is the viewport. */
+    var rowWidth by remember { mutableStateOf(0) }
+    // Bring the open folder's tab into view. Swiping the pager past the edge of the strip used to
+    // leave the tabs where they were: the folder changed, the underline travelled off-screen, and
+    // the row still showed the folders you had left. Follows any selection, not just a swipe —
+    // launching into a folder that was saved from the far end lands on it already visible.
+    LaunchedEffect(selectedIndex, target.first, target.second, rowWidth, rowScroll.maxValue) {
+        if (dragging || rowWidth <= 0) return@LaunchedEffect
+        val (tabX, tabWidth) = spans.getOrNull(selectedIndex) ?: return@LaunchedEffect
+        if (tabWidth <= 0f) return@LaunchedEffect
+        // Stop a little short of the edge so the neighbouring tab peeks out and the row still
+        // reads as scrollable.
+        val margin = with(density) { 28.dp.toPx() }
+        val from = rowScroll.value.toFloat()
+        val scrollTo = when {
+            tabX - margin < from -> tabX - margin
+            tabX + tabWidth + margin > from + rowWidth -> tabX + tabWidth + margin - rowWidth
+            else -> return@LaunchedEffect
+        }
+        rowScroll.animateScrollTo(
+            scrollTo.coerceIn(0f, rowScroll.maxValue.toFloat()).toInt(),
+            tween(TabIndicatorMs, easing = FastOutSlowInEasing)
+        )
+    }
     Column(modifier = modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { rowWidth = it.size.width }
             // Only scrollable when the tabs actually overflow. A scrollable that has nothing
             // to scroll still competes for the same horizontal drag as the reorder gesture,
             // and it wins as soon as the finger moves — the row twitched sideways and the tab
@@ -490,7 +616,19 @@ fun FolderTabs(
                         } else Modifier
                     )
                     .pointerInput(index) {
-                        detectTapGestures(onTap = { selectNow(index) })
+                        detectTapGestures(
+                            onTap = {
+                                // Tapping the folder you are already in opens its menu — the same
+                                // panel a long-press opens. Selecting it again does nothing
+                                // visible, so the tap is free, and the management actions stop
+                                // being hidden behind a gesture nobody discovers.
+                                if (index == selectedNow) {
+                                    menuNow(index, anchor[0], anchor[1])
+                                } else {
+                                    selectNow(index)
+                                }
+                            }
+                        )
                     }
                     // Long-press + drag reorders on every platform (phone and mouse).
                     .pointerInput(index, names.size, isDesktop) {

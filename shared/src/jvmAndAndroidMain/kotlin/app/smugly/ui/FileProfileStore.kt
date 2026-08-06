@@ -132,7 +132,10 @@ class FileProfileStore(
                 json.optString("dnsResolverPool", DnsResolverPool.DEFAULT_RAW)
             ),
             homeFolderIndex = json.optInt("homeFolderIndex", 0),
-            lastFolderId = json.optString("lastFolderId", "")
+            lastFolderId = json.optString("lastFolderId", ""),
+            collapsedCategories = app.smugly.CollapsedCategories.decode(
+                json.optString("collapsedCategories", "")
+            )
         )
     }
 
@@ -149,6 +152,10 @@ class FileProfileStore(
             .put("dnsResolverPool", settings.dnsResolverPool)
             .put("homeFolderIndex", settings.homeFolderIndex)
             .put("lastFolderId", settings.lastFolderId)
+            .put(
+                "collapsedCategories",
+                app.smugly.CollapsedCategories.encode(settings.collapsedCategories)
+            )
         settingsFile.writeText(json.toString(2))
     }
 }

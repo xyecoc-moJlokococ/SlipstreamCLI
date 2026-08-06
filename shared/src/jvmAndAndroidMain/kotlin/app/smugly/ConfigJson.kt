@@ -80,13 +80,15 @@ object ConfigJson {
             .put("config", configToJson(profile.config))
             // Omitted for hand-made profiles so exported links stay clean and importable elsewhere.
             .apply { profile.subscriptionId?.let { put("subscriptionId", it) } }
+            .apply { profile.categoryId?.let { put("categoryId", it) } }
 
     fun profileFromJson(json: JSONObject): ConfigProfile =
         ConfigProfile(
             id = json.optString("id").ifBlank { "imported" },
             name = json.optString("name").ifBlank { "Imported" },
             config = configFromJson(json.optJSONObject("config") ?: JSONObject()),
-            subscriptionId = json.optString("subscriptionId").ifBlank { null }
+            subscriptionId = json.optString("subscriptionId").ifBlank { null },
+            categoryId = json.optString("categoryId").ifBlank { null }
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
