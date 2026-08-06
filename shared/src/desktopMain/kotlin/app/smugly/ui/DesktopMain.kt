@@ -53,13 +53,16 @@ fun main() {
     // Class-load Settings / editor / Material bits on a background thread while the window comes
     // up, so the first drawer → Settings click is not a multi-hundred-ms ClassLoader stall.
     DesktopUiWarmup.start()
+    // Skiko defaults clear-to-white when the D3D surface grows; set dark clear before any layer
+    // is created (skiko#1042 / CMP-7919). Combined with WindowsResizeArtifacts on the HWND.
+    WindowsResizeArtifacts.installSkikoClearColor()
 
     // Render API: **GPU by default** so the UI tracks the display (user's RTX / 100 Hz panel —
     // SOFTWARE was pegging ~24 FPS and felt dead). Measured trade-off on this machine:
     //   SOFTWARE  ~130 MB WS, ~20–40 FPS feel under load
     //   DIRECT3D  ~200–230 MB WS, display-refresh pacing with vsync
-    // Window geometry animation is gone (see WindowAnimation); white resize flashes are handled
-    // by the dark AWT erase brush below, not by forcing software.
+    // Window geometry animation is gone (see WindowAnimation); white resize strips are handled
+    // by dark class brush + Skiko changeSize/Present on resize (see WindowsResizeArtifacts).
     //
     // Override without rebuilding:
     //   set JAVA_TOOL_OPTIONS=-Dskiko.renderApi=SOFTWARE   (lower RAM)
@@ -117,7 +120,62 @@ fun main() {
         }
     }
 
-    fun paintWindowDark(window: java.awt.Window) {
+    /**
+     * Instant GDI fill of the whole client area. Under DIRECT3D the swapchain lags behind
+     * HWND growth; Windows (or a white component brush) shows through as a white L-strip.
+     * Filling with [darkAwt] first means the strip is #111 until Skiko redraws — same as the
+     * app background, so the flash is invisible.
+     */
+    fun fillClientDarkGdi(window: java.awt.Window) {
+        if (window.width <= 0 || window.height <= 0) return
+        runCatching {
+            val g = window.graphics ?: return
+            try {
+                g.color = darkAwt
+                g.fillRect(0, 0, window.width, window.height)
+            } finally {
+                g.dispose()
+            }
+        }
+    }
+
+    /**
+     * Stretch content-pane children and Skiko/HardwareLayer surfaces to fill their parent.
+     * Name-matching alone missed some wrappers; we also force-fill any direct child of the
+     * content pane / layered pane.
+     */
+    fun fillSurfaces(component: java.awt.Component) {
+        if (component !is java.awt.Container) return
+        val w = component.width
+        val h = component.height
+        if (w <= 0 || h <= 0) return
+        val parentName = component.javaClass.name
+        val parentIsShell =
+            component is javax.swing.JRootPane ||
+                parentName.contains("JLayeredPane", ignoreCase = true) ||
+                (component.parent is javax.swing.JRootPane && component is javax.swing.JPanel)
+        for (child in component.components) {
+            runCatching { child.background = darkAwt }
+            if (child is JComponent) runCatching { child.isOpaque = true }
+            val n = child.javaClass.name
+            val isSkiko = n.contains("Skia", ignoreCase = true) ||
+                n.contains("Compose", ignoreCase = true) ||
+                n.contains("Canvas", ignoreCase = true) ||
+                n.contains("HardwareLayer", ignoreCase = true) ||
+                n.contains("Skiko", ignoreCase = true)
+            if (isSkiko || parentIsShell) {
+                if (child.x != 0 || child.y != 0 || child.width != w || child.height != h) {
+                    child.setBounds(0, 0, w, h)
+                }
+            }
+            fillSurfaces(child)
+        }
+    }
+
+    fun paintWindowDark(window: java.awt.Window, relayout: Boolean = false) {
+        // GDI first — covers white strips before anything else runs (needs dark class brush,
+        // no WS_EX_NOREDIRECTIONBITMAP — see WindowsResizeArtifacts / Raph Levien).
+        fillClientDarkGdi(window)
         window.background = darkAwt
         if (window is javax.swing.RootPaneContainer) {
             window.contentPane?.background = darkAwt
@@ -126,6 +184,13 @@ fun main() {
             (window.contentPane as? JComponent)?.isOpaque = true
             window.rootPane?.isOpaque = true
             (window.layeredPane as? JComponent)?.isOpaque = true
+            // Undecorated: content pane must match client size.
+            val cp = window.contentPane
+            if (cp != null && window.width > 0 && window.height > 0) {
+                if (cp.width != window.width || cp.height != window.height) {
+                    cp.setBounds(0, 0, window.width, window.height)
+                }
+            }
             val glass = window.rootPane?.glassPane
             if (glass is JComponent) {
                 glass.background = darkAwt
@@ -133,6 +198,19 @@ fun main() {
             }
         }
         tintTreeDark(window)
+        if (relayout) {
+            runCatching { window.doLayout() }
+            window.components.forEach { c -> runCatching { c.doLayout() } }
+            fillSurfaces(window)
+            runCatching { window.revalidate() }
+        } else {
+            fillSurfaces(window)
+        }
+        // MS D2D resize path: ResizeBuffers + full Present same frame (via Skiko reflection).
+        WindowsResizeArtifacts.forceSkikoPresent(window)
+        // Second GDI pass after layout — catches any strip still left before the next vsync.
+        fillClientDarkGdi(window)
+        runCatching { window.repaint() }
     }
 
     try {
@@ -214,30 +292,38 @@ fun main() {
                     // to fade from.
                     WindowAnimation.prepareForOpen(window)
                     paintWindowDark(window)
+                    // HWND exists after addNotify — apply brush/DWM as soon as we can.
+                    WindowsResizeArtifacts.applyTo(window)
                     fitWindowToScreen(window)
 
-                    // Debounce: one light paint after resize settles (~80ms).
-                    // Live drag used to call setSize+revalidate+repaint twice per event → freeze.
-                    val resizeSettle = Timer(80) {
-                        paintWindowDark(window)
+                    // Live resize: only dark-fill + skiko bounds (cheap). Full revalidate once
+                    // the drag settles — that used to freeze for seconds when fired every event.
+                    val resizeSettle = Timer(60) {
+                        paintWindowDark(window, relayout = true)
                     }.apply {
                         isRepeats = false
                     }
 
                     val onResize = object : ComponentAdapter() {
                         override fun componentResized(e: ComponentEvent?) {
-                            // Coalesce: restart timer; run once when user stops dragging.
+                            // During drag: keep newly exposed strips dark and the Skiko surface
+                            // matched to the content pane so DIRECT3D does not flash white/desktop.
+                            paintWindowDark(window, relayout = false)
                             if (resizeSettle.isRunning) resizeSettle.restart()
                             else resizeSettle.start()
                         }
 
                         override fun componentShown(e: ComponentEvent?) {
-                            paintWindowDark(window)
+                            paintWindowDark(window, relayout = true)
                         }
                     }
                     val onWindow = object : WindowAdapter() {
                         override fun windowOpened(e: WindowEvent?) {
-                            paintWindowDark(window)
+                            paintWindowDark(window, relayout = true)
+                            // DWM/Win32: dark class brush on all HWNDs incl. late Skiko layers
+                            // (SO 63096226; no NOREDIRECTIONBITMAP — Raph / GDI gap fill).
+                            WindowsResizeArtifacts.applyTo(window)
+                            WindowsResizeArtifacts.forceSkikoPresent(window)
                             // Clamp here, not only in DisposableEffect: at composition time the
                             // frame has not been given its final size yet, so anything decided
                             // then gets overwritten when the window is realised.
@@ -248,7 +334,7 @@ fun main() {
                         }
 
                         override fun windowStateChanged(e: WindowEvent?) {
-                            // Maximize/restore — single deferred paint, not a storm.
+                            paintWindowDark(window, relayout = false)
                             if (resizeSettle.isRunning) resizeSettle.restart()
                             else resizeSettle.start()
                         }

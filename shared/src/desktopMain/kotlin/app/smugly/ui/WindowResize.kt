@@ -133,6 +133,94 @@ private fun resize(
 
     if (x != window.x || y != window.y || w != window.width || h != window.height) {
         window.setBounds(x, y, w, h)
+        // setBounds grows the HWND immediately; Skiko's heavyweight surface lags under DIRECT3D
+        // and leaves a white/transparent strip (desktop showing through) until the next full
+        // layout. Match content-pane children to the new size and repaint once per frame
+        // (this function is already frame-throttled by the grip handler).
+        syncSurfaceAfterResize(window)
+    }
+}
+
+/** #111111 — same as SmuglyBg; used for GDI fill so resize strips match the app. */
+private val RESIZE_FILL = java.awt.Color(0x11, 0x11, 0x11)
+
+/**
+ * After a manual [Window.setBounds] from the grips:
+ * 1) GDI-fill the whole client with dark (gap between HWND and swapchain — SO 63096226),
+ * 2) stretch content-pane children / Skiko layers to the new size,
+ * 3) Skiko `changeSize` + `redrawImmediately` (MS: ResizeBuffers then full Present same frame),
+ * 4) repaint.
+ * Already frame-throttled by the grip handler (~60 Hz).
+ */
+private fun syncSurfaceAfterResize(window: Window) {
+    runCatching {
+        // 1) Instant dark fill — covers the HWND/swapchain gap while Skiko catches up.
+        //    Only works without WS_EX_NOREDIRECTIONBITMAP (see WindowsResizeArtifacts).
+        if (window.width > 0 && window.height > 0) {
+            window.graphics?.let { g ->
+                try {
+                    g.color = RESIZE_FILL
+                    g.fillRect(0, 0, window.width, window.height)
+                } finally {
+                    g.dispose()
+                }
+            }
+        }
+        window.background = RESIZE_FILL
+        if (window is javax.swing.RootPaneContainer) {
+            val cp = window.contentPane
+            if (cp != null && window.width > 0 && window.height > 0) {
+                cp.background = RESIZE_FILL
+                if (cp is javax.swing.JComponent) cp.isOpaque = true
+                // Undecorated: client area == window size.
+                cp.setBounds(0, 0, window.width, window.height)
+                // Every direct child of the content pane must cover it (Compose panel, etc.).
+                for (child in cp.components) {
+                    child.background = RESIZE_FILL
+                    if (child is javax.swing.JComponent) child.isOpaque = true
+                    child.setBounds(0, 0, cp.width, cp.height)
+                }
+                cp.doLayout()
+                expandSkiko(cp)
+            }
+        }
+        // 3) ResizeBuffers + Present in one shot (learn.microsoft D2D resize guidance).
+        WindowsResizeArtifacts.forceSkikoPresent(window)
+        // GDI again after layout (covers any remaining strip before the next vsync).
+        if (window.width > 0 && window.height > 0) {
+            window.graphics?.let { g ->
+                try {
+                    g.color = RESIZE_FILL
+                    g.fillRect(0, 0, window.width, window.height)
+                } finally {
+                    g.dispose()
+                }
+            }
+        }
+        window.repaint()
+    }
+}
+
+private fun expandSkiko(component: java.awt.Component) {
+    if (component !is java.awt.Container) return
+    val w = component.width
+    val h = component.height
+    if (w <= 0 || h <= 0) return
+    for (child in component.components) {
+        val n = child.javaClass.name
+        val match =
+            n.contains("Skia", ignoreCase = true) ||
+                n.contains("Compose", ignoreCase = true) ||
+                n.contains("Canvas", ignoreCase = true) ||
+                n.contains("HardwareLayer", ignoreCase = true) ||
+                n.contains("Skiko", ignoreCase = true)
+        if (match) {
+            child.setBounds(0, 0, w, h)
+            child.background = RESIZE_FILL
+            if (child is javax.swing.JComponent) child.isOpaque = true
+            child.repaint()
+        }
+        expandSkiko(child)
     }
 }
 

@@ -54,8 +54,8 @@ kotlin {
         }
     }
 
+    // Compose Multiplatform 1.11+ dropped Apple x86_64 (iosX64); arm64 + sim only.
     listOf(
-        iosX64(),
         iosArm64(),
         iosSimulatorArm64()
     ).forEach { target ->
@@ -121,12 +121,10 @@ kotlin {
             dependsOn(jvmAndAndroidTest)
         }
 
-        val iosX64Main by getting
         val iosArm64Main by getting
         val iosSimulatorArm64Main by getting
         val iosMain by creating {
             dependsOn(commonMain)
-            iosX64Main.dependsOn(this)
             iosArm64Main.dependsOn(this)
             iosSimulatorArm64Main.dependsOn(this)
         }
