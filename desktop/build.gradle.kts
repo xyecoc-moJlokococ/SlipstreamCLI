@@ -101,8 +101,9 @@ compose.desktop {
         jvmArgs += listOf(
             "-Dskiko.vsync.enabled=true",
             "-Dsun.java2d.d3d=true",
-            "-Dsun.awt.noerasebackground=false",
-            "-Dsun.awt.erasebackgroundonresize=true",
+            // No AWT erase on resize — races with Skiko Present and flickers the whole window.
+            "-Dsun.awt.noerasebackground=true",
+            "-Dsun.awt.erasebackgroundonresize=false",
             "-Xms32m",
             "-Xmx256m",
             "-XX:+UseSerialGC",
