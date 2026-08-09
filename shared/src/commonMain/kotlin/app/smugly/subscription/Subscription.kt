@@ -58,6 +58,10 @@ data class Subscription(
  * The panel owns these — it decides which servers belong to which group and what each one is for.
  * [description] is optional and is the whole point of the feature: a category can explain, in the
  * app, what its servers actually do. A blank one simply renders as a heading.
+ *
+ * [defaultOpen] is the panel's optional "main" category marker: applied **once on first import**
+ * (only that group starts expanded, the rest collapsed). When none is marked, every category
+ * starts open. Later refreshes leave the user's open/closed state alone.
  */
 data class SubscriptionCategory(
     /**
@@ -67,8 +71,44 @@ data class SubscriptionCategory(
      */
     val id: String,
     val name: String,
-    val description: String = ""
+    val description: String = "",
+    /** Panel wants this group open by default (and every other group closed). */
+    val defaultOpen: Boolean = false
 )
+
+/**
+ * Collapse keys (`subscriptionId/categoryId`) implied by the panel's default-open marker.
+ *
+ * - No category has [SubscriptionCategory.defaultOpen] → empty set (all open).
+ * - At least one is marked → every other category of this subscription is collapsed; the first
+ *   marked one stays open if the panel somehow sent two.
+ */
+fun defaultCollapsedCategoryKeys(
+    subscriptionId: String,
+    categories: List<SubscriptionCategory>
+): Set<String> {
+    if (categories.isEmpty()) return emptySet()
+    val openId = categories.firstOrNull { it.defaultOpen }?.id ?: return emptySet()
+    return categories
+        .asSequence()
+        .filter { it.id != openId }
+        .map { "$subscriptionId/${it.id}" }
+        .toSet()
+}
+
+/**
+ * Drop any prior collapse state for [subscriptionId], then seed the panel's default
+ * (all open when no marker, otherwise only the marked category open).
+ */
+fun applyCategoryCollapseDefaults(
+    subscriptionId: String,
+    categories: List<SubscriptionCategory>,
+    current: Set<String>
+): Set<String> {
+    val prefix = "$subscriptionId/"
+    val without = current.filterNot { it.startsWith(prefix) }.toSet()
+    return without + defaultCollapsedCategoryKeys(subscriptionId, categories)
+}
 
 /**
  * Category id for a group the panel named but did not give an id.

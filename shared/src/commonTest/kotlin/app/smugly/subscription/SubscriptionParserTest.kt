@@ -208,6 +208,44 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun defaultCategoryMarkerOpensOnlyThatGroup() {
+        val body = buildString {
+            appendLine("#category: Everyday")
+            appendLine(vless)
+            appendLine("#category: Bypass")
+            appendLine(vless2)
+            appendLine("#default-category: Everyday")
+        }
+        val parsed = SubscriptionParser.parse(body)
+        assertTrue(parsed.categories[0].defaultOpen)
+        assertTrue(!parsed.categories[1].defaultOpen)
+        val keys = defaultCollapsedCategoryKeys("sub-1", parsed.categories)
+        assertEquals(setOf("sub-1/${parsed.categories[1].id}"), keys)
+    }
+
+    @Test
+    fun defaultOpenTruthyFlagMarksTheCurrentCategory() {
+        val body = buildString {
+            appendLine("#category: Everyday")
+            appendLine("#default-open: true")
+            appendLine(vless)
+            appendLine("#category: Bypass")
+            appendLine(vless2)
+        }
+        val parsed = SubscriptionParser.parse(body)
+        assertTrue(parsed.categories.single { it.name == "Everyday" }.defaultOpen)
+        assertTrue(parsed.categories.none { it.name == "Bypass" && it.defaultOpen })
+    }
+
+    @Test
+    fun withoutDefaultMarkerAllCategoriesStartOpen() {
+        val body = "#category: A\n$vless\n#category: B\n$vless2"
+        val parsed = SubscriptionParser.parse(body)
+        assertTrue(parsed.categories.none { it.defaultOpen })
+        assertTrue(defaultCollapsedCategoryKeys("sub", parsed.categories).isEmpty())
+    }
+
+    @Test
     fun quotaAndExpiryHelpers() {
         val info = SubscriptionInfo(
             uploadBytes = 25,

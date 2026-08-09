@@ -27,6 +27,7 @@ object SubscriptionJson {
                             .put("id", it.id)
                             .put("name", it.name)
                             .put("description", it.description)
+                            .put("defaultOpen", it.defaultOpen)
                     )
                 }
             }
@@ -70,7 +71,16 @@ object SubscriptionJson {
                     val obj = arr.optJSONObject(i) ?: return@mapNotNull null
                     val name = obj.optString("name")
                     val id = obj.optString("id").ifBlank { subscriptionCategoryId(name) }
-                    if (id.isBlank()) null else SubscriptionCategory(id, name, obj.optString("description"))
+                    if (id.isBlank()) {
+                        null
+                    } else {
+                        SubscriptionCategory(
+                            id = id,
+                            name = name,
+                            description = obj.optString("description"),
+                            defaultOpen = obj.optBoolean("defaultOpen", false)
+                        )
+                    }
                 }
             } ?: emptyList(),
             info = SubscriptionInfo(

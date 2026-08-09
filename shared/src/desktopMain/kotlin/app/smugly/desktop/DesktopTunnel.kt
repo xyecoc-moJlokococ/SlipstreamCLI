@@ -229,7 +229,7 @@ object DesktopTunnel {
 
     /** cdnfu client TOML — mirrors configs/client.toml shape. */
     private fun writeCdnfuConfig(c: Config, socksPort: Int): File {
-        require(c.cdnfuUrl.isNotBlank()) { "CDN URL is empty" }
+        require(c.cdnfuUrl.isNotBlank()) { "URL is empty" }
         require(c.cdnfuPsk.isNotBlank()) { "CDN PSK is empty" }
         val placement = c.cdnfuXhttpPlacement.trim().ifBlank { "cookie" }
         val toml = buildString {

@@ -1735,7 +1735,6 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
             onChange(c.copy(cdnfuXhttpPlacement = options[i]))
         }
     }
-    HintText(t(S.CDNFU_HINT_STEALTH))
     LabeledField(t(S.CDNFU_DOWNLINK)) {
         val options = listOf("poll", "stream", "auto")
         val cur = c.cdnfuDownlinkMode.ifBlank { "poll" }
@@ -1744,7 +1743,6 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
             onChange(c.copy(cdnfuDownlinkMode = options[i]))
         }
     }
-    HintText(t(S.CDNFU_HINT_DOWNLINK))
     // Android VPN always runs multipath=1 (parallel paths starved the session pool under
     // browsers/speedtests). Show the effective value; editing only re-saves 1.
     LabeledField(t(S.CDNFU_MULTIPATH)) {
@@ -1754,7 +1752,6 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
             number = true
         )
     }
-    HintText(t(S.CDNFU_HINT_MULTIPATH))
 }
 
 /**

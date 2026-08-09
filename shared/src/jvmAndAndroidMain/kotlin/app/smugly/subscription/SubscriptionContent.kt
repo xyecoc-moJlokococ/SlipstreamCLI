@@ -86,6 +86,22 @@ object SubscriptionContent {
     /** Where a labelled object keeps its config URI. */
     private val LINK_KEYS = listOf("link", "uri", "url", "config", "server")
 
+    /**
+     * On a category object: truthy means this group starts open (others collapse).
+     * Spelling is deliberately loose — same spirit as every other panel field.
+     */
+    private val DEFAULT_OPEN_FLAG_KEYS = listOf(
+        "defaultopen", "default", "openbydefault", "defaultexpanded", "main", "isdefault"
+    )
+
+    /**
+     * On the document root: names the category that should start open
+     * (`"defaultCategory": "Повседневный обход"`).
+     */
+    private val DEFAULT_OPEN_NAME_KEYS = listOf(
+        "defaultcategory", "defaultopen", "maincategory", "opendefault"
+    )
+
     /** Guards against a pathological or hostile document. */
     private const val MAX_DEPTH = 8
     private const val MAX_ENTRIES = 500
@@ -105,7 +121,10 @@ object SubscriptionContent {
                 } else {
                     textParse.metadata
                 }
-                return Parsed(metadata, walk.entries, walk.categoriesInOrder())
+                // Root-level "defaultCategory": "Name" is an alternative to a flag on the group.
+                val rootDefault = (root as? JSONObject)?.let { pick(scalarFields(it), DEFAULT_OPEN_NAME_KEYS) }
+                val categories = SubscriptionParser.markDefaultOpen(walk.categoriesInOrder(), rootDefault)
+                return Parsed(metadata, walk.entries, categories)
             }
         }
 
@@ -140,14 +159,21 @@ object SubscriptionContent {
         /**
          * Record a category and return its id. A later non-blank description wins over a blank one,
          * so a declaration block and a group node can each supply half of the same category.
+         * Once [defaultOpen] is true it sticks — a second mention without the flag must not clear it.
          */
-        fun register(name: String, description: String, explicitId: String? = null): String {
+        fun register(
+            name: String,
+            description: String,
+            explicitId: String? = null,
+            defaultOpen: Boolean = false
+        ): String {
             val id = explicitId?.trim()?.ifBlank { null } ?: subscriptionCategoryId(name)
             val existing = categories[id]
             categories[id] = SubscriptionCategory(
                 id = id,
                 name = existing?.name?.ifBlank { name } ?: name,
-                description = description.ifBlank { existing?.description.orEmpty() }
+                description = description.ifBlank { existing?.description.orEmpty() },
+                defaultOpen = defaultOpen || existing?.defaultOpen == true
             )
             return id
         }
@@ -194,7 +220,8 @@ object SubscriptionContent {
                 register(
                     name = name,
                     description = pick(fields, DESCRIPTION_KEYS).orEmpty(),
-                    explicitId = fields[SubscriptionParser.normalizeKey("id")]
+                    explicitId = fields[SubscriptionParser.normalizeKey("id")],
+                    defaultOpen = isDefaultOpenFlag(fields)
                 )
             } else {
                 category
@@ -202,7 +229,7 @@ object SubscriptionContent {
             for (key in node.keys()) collect(node.opt(key), here, depth + 1)
         }
 
-        /** `{"categories": [{"name": …, "description": …}]}` and its map-shaped twin. */
+        /** `{"categories": [{"name": …, "description": …, "defaultOpen": true}]}` and map shape. */
         private fun declare(node: Any?) {
             when (node) {
                 is JSONArray -> for (i in 0 until node.length()) declare(node.opt(i))
@@ -213,7 +240,8 @@ object SubscriptionContent {
                         register(
                             name = name,
                             description = pick(fields, DESCRIPTION_KEYS).orEmpty(),
-                            explicitId = fields[SubscriptionParser.normalizeKey("id")]
+                            explicitId = fields[SubscriptionParser.normalizeKey("id")],
+                            defaultOpen = isDefaultOpenFlag(fields)
                         )
                         return
                     }
@@ -226,7 +254,8 @@ object SubscriptionContent {
                                 register(
                                     name = pick(inner, GROUP_NAME_KEYS) ?: key,
                                     description = pick(inner, DESCRIPTION_KEYS).orEmpty(),
-                                    explicitId = key
+                                    explicitId = key,
+                                    defaultOpen = isDefaultOpenFlag(inner)
                                 )
                             }
                             is JSONArray -> Unit
@@ -236,6 +265,14 @@ object SubscriptionContent {
                 }
             }
         }
+
+        private fun isDefaultOpenFlag(fields: Map<String, String>): Boolean =
+            DEFAULT_OPEN_FLAG_KEYS.any { key ->
+                fields[SubscriptionParser.normalizeKey(key)]
+                    ?.trim()
+                    ?.lowercase()
+                    ?.let { it == "true" || it == "1" || it == "yes" || it == "on" } == true
+            }
 
         /** An object wrapping a single config URI, or null when it is not one. */
         private fun linkEntry(obj: JSONObject, inherited: String): Entry.Link? {

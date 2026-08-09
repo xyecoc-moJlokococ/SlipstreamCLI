@@ -523,6 +523,16 @@ class DesktopPlatform(
                 override fun profileFromLink(uri: String, name: String): ConfigProfile? =
                     parseProfileFromText(uri, preferredName = name)
 
+                override fun loadCollapsedCategories(): Set<String> =
+                    store.loadGlobalSettings().collapsedCategories
+
+                override fun saveCollapsedCategories(ids: Set<String>) {
+                    val current = store.loadGlobalSettings()
+                    if (current.collapsedCategories != ids) {
+                        store.saveGlobalSettings(current.copy(collapsedCategories = ids))
+                    }
+                }
+
                 override fun fetchRoutes(): List<app.smugly.subscription.SubscriptionFetcher.ProxySpec?> =
                     buildList {
                         // Both ways are tried: the panel may be blocked here (needs the tunnel)

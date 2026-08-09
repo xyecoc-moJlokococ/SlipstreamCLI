@@ -35,6 +35,13 @@ class SubscriptionRepository(private val storage: Storage) {
          * tunnel it hands out, so the platform gets to put its own proxy first.
          */
         fun fetchRoutes(): List<SubscriptionFetcher.ProxySpec?> = listOf(null)
+
+        /**
+         * Which category panels are folded (`subscriptionId/categoryId`). Used to seed the panel's
+         * default-open marker after a refresh. Defaults keep older test fakes compiling.
+         */
+        fun loadCollapsedCategories(): Set<String> = emptySet()
+        fun saveCollapsedCategories(ids: Set<String>) {}
     }
 
     data class ImportResult(
@@ -155,6 +162,9 @@ class SubscriptionRepository(private val storage: Storage) {
         val existing = find(id)
             ?: return ImportResult(Subscription(id = id, name = "", url = ""), 0, "unknown subscription")
         if (existing.url.isBlank()) return ImportResult(existing, 0, "folder has no subscription link")
+        // Panel defaults only matter the first time this folder is filled: after that the user
+        // may have opened/closed groups on purpose, and a refresh must not undo that.
+        val firstSuccessfulFetch = existing.lastUpdatedMs <= 0
 
         val result = SubscriptionManager.refresh(existing, storage.nowMs(), storage.fetchRoutes())
         persist(result.subscription)
@@ -168,6 +178,12 @@ class SubscriptionRepository(private val storage: Storage) {
             return ImportResult(failed, 0, message)
         }
         replaceGroup(existing.id, profiles)
+        if (firstSuccessfulFetch) {
+            seedCategoryCollapse(existing.id, result.subscription.categories)
+        } else {
+            // Drop keys for categories the panel no longer ships; leave the rest as the user left them.
+            pruneGoneCategoryCollapse(existing.id, result.subscription.categories)
+        }
         return ImportResult(result.subscription, profiles.size)
     }
 
@@ -186,6 +202,35 @@ class SubscriptionRepository(private val storage: Storage) {
     fun delete(id: String) {
         storage.saveSubscriptions(storage.loadSubscriptions().filterNot { it.id == id })
         storage.writeProfiles(storage.loadProfiles().filterNot { it.subscriptionId == id })
+        // Drop fold state that pointed at categories of a folder that no longer exists.
+        val prefix = "$id/"
+        storage.saveCollapsedCategories(
+            storage.loadCollapsedCategories().filterNot { it.startsWith(prefix) }.toSet()
+        )
+    }
+
+    /** First successful fetch only: apply the panel's default-open rule. */
+    private fun seedCategoryCollapse(subscriptionId: String, categories: List<SubscriptionCategory>) {
+        val next = applyCategoryCollapseDefaults(
+            subscriptionId = subscriptionId,
+            categories = categories,
+            current = storage.loadCollapsedCategories()
+        )
+        storage.saveCollapsedCategories(next)
+    }
+
+    /**
+     * Later refreshes: keep the user's fold state, but forget keys for categories that disappeared
+     * from the payload so they cannot reappear as phantom closed groups later.
+     */
+    private fun pruneGoneCategoryCollapse(subscriptionId: String, categories: List<SubscriptionCategory>) {
+        val prefix = "$subscriptionId/"
+        val live = categories.mapTo(HashSet()) { "$subscriptionId/${it.id}" }
+        val current = storage.loadCollapsedCategories()
+        val next = current.filterTo(HashSet()) { key ->
+            !key.startsWith(prefix) || key in live
+        }
+        if (next != current) storage.saveCollapsedCategories(next)
     }
 
     fun setEnabled(id: String, enabled: Boolean) {

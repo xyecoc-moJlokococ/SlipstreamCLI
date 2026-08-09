@@ -521,6 +521,19 @@ class AndroidSmuglyPlatform(
                 override fun profileFromLink(uri: String, name: String): ConfigProfile? =
                     ConfigStore.parseProfileFromLink(activity, uri)
 
+                override fun loadCollapsedCategories(): Set<String> =
+                    ConfigStore.loadGlobalSettings(activity).collapsedCategories
+
+                override fun saveCollapsedCategories(ids: Set<String>) {
+                    val current = ConfigStore.loadGlobalSettings(activity)
+                    if (current.collapsedCategories != ids) {
+                        ConfigStore.saveGlobalSettings(
+                            activity,
+                            current.copy(collapsedCategories = ids)
+                        )
+                    }
+                }
+
                 /**
                  * Always try **both** ways round: the panel may be blocked in this country (so it
                  * needs the tunnel) or, just as often, may be reachable only outside it (so the

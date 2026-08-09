@@ -274,4 +274,36 @@ class SubscriptionContentTest {
         val body = "[" + xrayConfig("Spain", listOf("p1", "p2", "p3")) + "]"
         assertEquals(1, SubscriptionContent.parse(body).entries.size)
     }
+
+    @Test
+    fun defaultOpenFlagOnCategoryCollapsesTheOthers() {
+        val body = """
+            {"categories":[
+              {"name":"Everyday","defaultOpen":true,"configs":[${xrayConfig("Spain", listOf("proxy"))}]},
+              {"name":"Bypass","configs":[${xrayConfig("Estonia", listOf("proxy"))}]}
+            ]}
+        """.trimIndent()
+        val parsed = SubscriptionContent.parse(body)
+        assertEquals(listOf("Everyday", "Bypass"), parsed.categories.map { it.name })
+        assertTrue(parsed.categories[0].defaultOpen)
+        assertTrue(!parsed.categories[1].defaultOpen)
+        assertEquals(
+            setOf("sid/${parsed.categories[1].id}"),
+            defaultCollapsedCategoryKeys("sid", parsed.categories)
+        )
+    }
+
+    @Test
+    fun rootDefaultCategoryNameMarksThatGroup() {
+        val spain = JSONObject(xrayConfig("Spain", listOf("proxy"))).put("category", "Everyday")
+        val est = JSONObject(xrayConfig("Estonia", listOf("proxy"))).put("category", "Bypass")
+        val body = """
+            {"defaultCategory":"Bypass",
+             "categories":[{"name":"Everyday"},{"name":"Bypass"}],
+             "configs":[$spain,$est]}
+        """.trimIndent()
+        val parsed = SubscriptionContent.parse(body)
+        assertTrue(parsed.categories.single { it.name == "Bypass" }.defaultOpen)
+        assertTrue(!parsed.categories.single { it.name == "Everyday" }.defaultOpen)
+    }
 }

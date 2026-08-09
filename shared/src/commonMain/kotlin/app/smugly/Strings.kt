@@ -63,7 +63,7 @@ enum class S(val en: String, val ru: String) {
     S3_PSK_HINT("64 hex chars", "64 hex-символа"),
 
     // cdn-fuckup (XHTTP packet-up)
-    CDNFU_URL("CDN URL", "CDN URL"),
+    CDNFU_URL("URL", "URL"),
     CDNFU_URL_HINT("https://edge.example/", "https://edge.example/"),
     CDNFU_PSK("PSK", "PSK"),
     CDNFU_PSK_HINT("passphrase", "пароль (PSK)"),
@@ -74,12 +74,6 @@ enum class S(val en: String, val ru: String) {
     CDNFU_XHTTP_PLACEMENT("XHTTP placement", "XHTTP placement"),
     CDNFU_DOWNLINK("Downlink", "Downlink"),
     CDNFU_MULTIPATH("Multipath paths", "Multipath paths"),
-    CDNFU_HINT_STEALTH("Stealth: cookie meta + POST body. Use query placement if the edge strips cookies.", "Stealth: meta в cookie + POST body. Query — если edge режет cookies."),
-    CDNFU_HINT_DOWNLINK("poll — short GETs (safe behind buffering reverse proxies). stream — one long GET (faster on flushing edges).", "poll — короткие GET (за buffering reverse-proxy). stream — один длинный GET (быстрее на flushing edge)."),
-    CDNFU_HINT_MULTIPATH(
-        "Android always uses 1 path (stable under speedtests/browsers). Higher values deadlocked the session pool.",
-        "На Android всегда 1 path (стабильно под speedtest/браузером). Больше — deadlock пула сессий."
-    ),
 
     // Xray
     XRAY_SECTION("Xray configuration", "Конфигурация Xray"),

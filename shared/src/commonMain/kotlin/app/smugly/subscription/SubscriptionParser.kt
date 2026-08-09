@@ -196,6 +196,14 @@ object SubscriptionParser {
         "categorydescription", "groupdescription", "folderdescription", "sectiondescription",
         "categorydesc", "groupdesc", "description", "desc"
     )
+    /**
+     * Marks which category should start open (the rest collapse). Value is either the category
+     * name, or a truthy flag (`true` / `1` / `yes`) for the category currently open.
+     */
+    private val DEFAULT_OPEN_KEYS = setOf(
+        "defaultcategory", "defaultopen", "categorydefault", "opendefault",
+        "defaultexpanded", "maincategory"
+    )
 
     /**
      * Split a link list into groups.
@@ -206,6 +214,9 @@ object SubscriptionParser {
      * emit ungrouped servers after grouped ones. Both values accept `base64:…`, since panels that
      * cannot be trusted with UTF-8 headers usually cannot be trusted with UTF-8 bodies either.
      *
+     * An optional `#default-category: Name` (or `#default-open: true` while a category is open)
+     * marks the group the panel wants expanded by default; without it every category starts open.
+     *
      * A body with no such lines parses exactly as it always did: every link, no categories.
      */
     fun extractCategorized(body: String): CategorizedBody {
@@ -213,6 +224,7 @@ object SubscriptionParser {
         val seen = HashSet<String>()
         val categories = LinkedHashMap<String, SubscriptionCategory>()
         var current = ""
+        var defaultOpenName: String? = null
         for (raw in body.lineSequence()) {
             val line = raw.trim()
             if (line.isEmpty()) continue
@@ -234,6 +246,12 @@ object SubscriptionParser {
                         // A description with no category open has nothing to describe.
                         categories[current]?.let { categories[current] = it.copy(description = value) }
                     }
+                    in DEFAULT_OPEN_KEYS -> {
+                        // First marker wins — panels should only name one main group.
+                        if (defaultOpenName == null) {
+                            defaultOpenName = resolveDefaultOpenValue(value, current, categories)
+                        }
+                    }
                 }
                 continue
             }
@@ -242,7 +260,42 @@ object SubscriptionParser {
             if (!seen.add(line)) continue
             links.add(CategorizedLink(line, current))
         }
-        return CategorizedBody(links, categories.values.toList())
+        val list = markDefaultOpen(categories.values.toList(), defaultOpenName)
+        return CategorizedBody(links, list)
+    }
+
+    /** `true`/`1`/`yes` → the open category; otherwise the value is a category name. */
+    private fun resolveDefaultOpenValue(
+        value: String,
+        currentId: String,
+        categories: Map<String, SubscriptionCategory>
+    ): String? {
+        if (value.isBlank()) return null
+        if (isTruthy(value)) return categories[currentId]?.name
+        return value
+    }
+
+    private fun isTruthy(value: String): Boolean {
+        val v = value.trim().lowercase()
+        return v == "true" || v == "1" || v == "yes" || v == "on"
+    }
+
+    /**
+     * Attach [SubscriptionCategory.defaultOpen] to the category whose name (or id) matches
+     * [defaultOpenName]. Unknown names are ignored so a typo cannot invent a ghost group.
+     */
+    internal fun markDefaultOpen(
+        categories: List<SubscriptionCategory>,
+        defaultOpenName: String?
+    ): List<SubscriptionCategory> {
+        if (defaultOpenName.isNullOrBlank() || categories.isEmpty()) return categories
+        val wantedId = subscriptionCategoryId(defaultOpenName)
+        val matchId = categories.firstOrNull {
+            it.id == defaultOpenName ||
+                it.id == wantedId ||
+                it.name.equals(defaultOpenName, ignoreCase = true)
+        }?.id ?: return categories
+        return categories.map { if (it.id == matchId) it.copy(defaultOpen = true) else it }
     }
 
     /**

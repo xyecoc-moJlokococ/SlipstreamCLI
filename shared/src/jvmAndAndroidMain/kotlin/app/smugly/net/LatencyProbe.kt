@@ -68,9 +68,9 @@ object LatencyProbe {
 
     private fun measureCdnfu(config: Config): Int {
         val endpoint = config.cdnfuUrl.trim()
-        require(endpoint.isNotEmpty()) { "no CDN URL configured" }
+        require(endpoint.isNotEmpty()) { "no URL configured" }
         val uri = URI(if (endpoint.contains("://")) endpoint else "https://$endpoint")
-        val host = uri.host ?: error("bad CDN URL '$endpoint'")
+        val host = uri.host ?: error("bad URL '$endpoint'")
         val port = if (uri.port > 0) uri.port else if (uri.scheme == "http") 80 else 443
         return tcpRoundTrip(host, port)
     }

@@ -385,7 +385,7 @@ class TinyVpnService : VpnService() {
                 "dl=${config.cdnfuDownlinkMode} mp=${config.cdnfuMultipath}"
         )
         try {
-            require(config.cdnfuUrl.isNotBlank()) { "CDN URL is empty" }
+            require(config.cdnfuUrl.isNotBlank()) { "URL is empty" }
             require(config.cdnfuPsk.isNotBlank()) { "PSK is empty" }
             require(CdnfuBridge.isLoaded()) { "libcdnfu failed to load" }
             resetTrafficBase()

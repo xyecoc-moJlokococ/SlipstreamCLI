@@ -18,6 +18,7 @@ class SubscriptionRepositoryTest {
     private class FakeStorage : SubscriptionRepository.Storage {
         var subs = mutableListOf<Subscription>()
         var profiles = mutableListOf<ConfigProfile>()
+        var collapsed = mutableSetOf<String>()
         var now = 1_000_000L
         private var seq = 0
 
@@ -38,6 +39,10 @@ class SubscriptionRepositoryTest {
             } else {
                 null
             }
+        override fun loadCollapsedCategories(): Set<String> = collapsed.toSet()
+        override fun saveCollapsedCategories(ids: Set<String>) {
+            collapsed = ids.toMutableSet()
+        }
     }
 
     private lateinit var server: HttpServer
@@ -193,10 +198,8 @@ class SubscriptionRepositoryTest {
         assertEquals(0, sub.updateIntervalMinutes)
         assertTrue(sub.allowReorder)
         assertTrue(repo.refreshDue().isEmpty(), "empty folder is never due")
-
         storage.now += 25L * 60 * 60 * 1000
-        assertEquals(1, repo.refreshDue().size)
-        assertEquals(added.subscription.id, repo.list().single().id)
+        assertTrue(repo.refreshDue().isEmpty(), "empty folder stays never-due after time passes")
     }
 
     @Test
@@ -270,5 +273,85 @@ class SubscriptionRepositoryTest {
         val added = repo.add(url("/sub"), name = "My own")
         repo.refresh(added.subscription.id)
         assertEquals("My own", repo.list().single().name)
+    }
+
+    @Test
+    fun defaultOpenCategoryCollapsesTheOthersOnImport() {
+        payload = """
+            {"categories":[
+              {"name":"Everyday","defaultOpen":true,"configs":[${config("Spain")}]},
+              {"name":"Bypass","configs":[${config("Estonia")}]}
+            ]}
+        """.trimIndent()
+        val added = repo.add(url("/sub"))
+        assertTrue(added.isSuccess, "add failed: ${added.error}")
+        val sub = repo.list().single()
+        assertTrue(sub.categories[0].defaultOpen)
+        // Only the non-default group is folded.
+        assertEquals(
+            setOf("${sub.id}/${sub.categories[1].id}"),
+            storage.collapsed
+        )
+    }
+
+    @Test
+    fun withoutDefaultOpenMarkerAllCategoriesStartExpanded() {
+        payload = """
+            {"categories":[
+              {"name":"Everyday","configs":[${config("Spain")}]},
+              {"name":"Bypass","configs":[${config("Estonia")}]}
+            ]}
+        """.trimIndent()
+        // Pretend the user had something folded before the import.
+        storage.collapsed.add("stale/old")
+        val added = repo.add(url("/sub"))
+        val sub = repo.list().single()
+        // Keys for this subscription are cleared (all open); unrelated keys stay.
+        assertTrue(storage.collapsed.none { it.startsWith(sub.id + "/") })
+        assertTrue("stale/old" in storage.collapsed)
+    }
+
+    @Test
+    fun refreshDoesNotReseedCategoryCollapse() {
+        payload = """
+            {"categories":[
+              {"name":"Everyday","defaultOpen":true,"configs":[${config("Spain")}]},
+              {"name":"Bypass","configs":[${config("Estonia")}]}
+            ]}
+        """.trimIndent()
+        val added = repo.add(url("/sub"))
+        val subId = added.subscription.id
+        val everyday = repo.list().single().categories[0].id
+        val bypass = repo.list().single().categories[1].id
+        // Import folded Bypass; user then opens Bypass and folds Everyday instead.
+        storage.collapsed = mutableSetOf("$subId/$everyday")
+        assertTrue("$subId/$bypass" !in storage.collapsed)
+
+        repo.refresh(subId)
+        // Same payload again — user's fold choice must survive.
+        assertEquals(setOf("$subId/$everyday"), storage.collapsed)
+    }
+
+    @Test
+    fun refreshDropsCollapseKeysForCategoriesThePanelRemoved() {
+        payload = """
+            {"categories":[
+              {"name":"Everyday","defaultOpen":true,"configs":[${config("Spain")}]},
+              {"name":"Bypass","configs":[${config("Estonia")}]}
+            ]}
+        """.trimIndent()
+        val added = repo.add(url("/sub"))
+        val subId = added.subscription.id
+        val bypass = repo.list().single().categories[1].id
+        assertTrue("$subId/$bypass" in storage.collapsed)
+
+        // Panel drops Bypass; its collapse key must not linger.
+        payload = """
+            {"categories":[
+              {"name":"Everyday","defaultOpen":true,"configs":[${config("Spain")}]}
+            ]}
+        """.trimIndent()
+        repo.refresh(subId)
+        assertTrue(storage.collapsed.none { it.startsWith("$subId/") })
     }
 }
