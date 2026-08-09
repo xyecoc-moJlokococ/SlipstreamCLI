@@ -17,6 +17,7 @@ import androidx.core.content.FileProvider
 import app.smugly.tunnel.HevSocks5Tunnel
 import app.smugly.tunnel.MiniSlipstreamSocksBridge
 import app.smugly.tunnel.ResolverListConfig
+import app.smugly.tunnel.CdnfuBridge
 import app.smugly.tunnel.S3fuBridge
 import app.smugly.tunnel.SlipstreamBridge
 import app.smugly.tunnel.XrayBridge
@@ -147,6 +148,7 @@ class AndroidSmuglyPlatform(
         publish()
         if (c.mode == Config.Mode.VPN ||
             c.protocol == Config.TunnelProtocol.S3FU ||
+            c.protocol == Config.TunnelProtocol.CDNFU ||
             c.protocol == Config.TunnelProtocol.XRAY
         ) {
             val prep = VpnService.prepare(activity)
@@ -297,6 +299,7 @@ class AndroidSmuglyPlatform(
         proxyStarted ||
             runCatching { SlipstreamBridge.isRunning() }.getOrDefault(false) ||
             runCatching { S3fuBridge.isRunning() }.getOrDefault(false) ||
+            runCatching { CdnfuBridge.isRunning() }.getOrDefault(false) ||
             runCatching { XrayBridge.isRunning() }.getOrDefault(false) ||
             HevSocks5Tunnel.isRunning()
 
@@ -403,6 +406,7 @@ class AndroidSmuglyPlatform(
         val b64 = Base64.getUrlEncoder().withoutPadding().encodeToString(compact.toByteArray())
         val scheme = when (profile.config.protocol) {
             Config.TunnelProtocol.S3FU -> "s3fu"
+            Config.TunnelProtocol.CDNFU -> "cdnfu"
             Config.TunnelProtocol.XRAY -> "xray"
             else -> "slipstream"
         }

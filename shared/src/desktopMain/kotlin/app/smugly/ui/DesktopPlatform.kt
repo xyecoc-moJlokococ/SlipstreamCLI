@@ -5,7 +5,10 @@ import app.smugly.ConfigJson
 import app.smugly.ConfigProfile
 import app.smugly.GlobalSettings
 import app.smugly.S
+import app.smugly.VlessLinkParser
+import app.smugly.XrayConfigBuilder
 import app.smugly.currentHostPlatform
+import app.smugly.defaultConfig
 import app.smugly.desktop.DesktopTunnel
 import app.smugly.desktop.EngineBinaries
 import app.smugly.platform.PlatformLog
@@ -247,30 +250,106 @@ class DesktopPlatform(
     }
 
     override fun importFromText(text: String): List<ConfigProfile> {
-        val parsed = parseProfileFromText(text) ?: return emptyList()
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        // Multi-link paste (subscription body or clipboard with several vless:// lines).
+        if (VlessLinkParser.looksLikeLink(trimmed)) {
+            val links = VlessLinkParser.findAll(trimmed)
+            if (links.isNotEmpty()) {
+                return links.mapNotNull { raw ->
+                    parseProfileFromText(raw)?.let { addProfile(it.name, it.config) }
+                }
+            }
+        }
+        val parsed = parseProfileFromText(trimmed) ?: return emptyList()
         return listOf(addProfile(parsed.name, parsed.config))
     }
 
     /**
      * Parse without storing — the subscription repository writes its group itself and only needs
-     * the parsed object. Minimal JSON profile import for desktop (Android has the full
-     * ConfigStore parser). The returned profile's id is a placeholder; callers assign one.
+     * the parsed object. Supports `vless://…` (Xray) and JSON profile blobs.
+     * The returned profile's id is a placeholder; callers assign one.
      */
-    private fun parseProfileFromText(text: String): ConfigProfile? {
+    private fun parseProfileFromText(text: String, preferredName: String = ""): ConfigProfile? {
         val trimmed = text.trim()
-        if (trimmed.isEmpty() || !trimmed.startsWith("{")) return null
+        if (trimmed.isEmpty()) return null
+
+        // vless://uuid@host:port?…#remarks  — primary subscription format (Happ / Marzban / …).
+        if (trimmed.startsWith("vless://", ignoreCase = true)) {
+            val link = VlessLinkParser.parse(trimmed) ?: return null
+            val listen = runCatching { store.loadGlobalSettings().listenPort }.getOrDefault(1080)
+            val base = defaultConfig(listenPort = listen, mode = Config.Mode.PROXY)
+            return ConfigProfile(
+                id = "",
+                name = preferredName.ifBlank { link.remarks }.ifBlank { link.server },
+                config = base.copy(
+                    protocol = Config.TunnelProtocol.XRAY,
+                    xrayConfigJson = XrayConfigBuilder.build(link, listen)
+                )
+            )
+        }
+
+        // slipstream / s3fu / xray deep links with base64 config=
+        if (trimmed.startsWith("xray://", ignoreCase = true) ||
+            trimmed.startsWith("slipstream://", ignoreCase = true) ||
+            trimmed.startsWith("s3fu://", ignoreCase = true)
+        ) {
+            return parseDeepLinkProfile(trimmed, preferredName)
+        }
+
+        if (!trimmed.startsWith("{")) return null
         return runCatching {
             val json = JSONObject(trimmed)
             if (json.has("config")) {
-                ConfigJson.profileFromJson(json)
+                ConfigJson.profileFromJson(json).let { p ->
+                    if (preferredName.isNotBlank()) p.copy(name = preferredName) else p
+                }
+            } else if (json.has("outbounds")) {
+                // Bare Xray config document from a panel.
+                val listen = runCatching { store.loadGlobalSettings().listenPort }.getOrDefault(1080)
+                val base = defaultConfig(listenPort = listen, mode = Config.Mode.PROXY)
+                val name = preferredName
+                    .ifBlank { json.optString("remarks") }
+                    .ifBlank { json.optString("name") }
+                    .ifBlank { XrayConfigBuilder.describeServer(trimmed) }
+                    .orEmpty()
+                    .ifBlank { "Xray" }
+                ConfigProfile(
+                    id = "",
+                    name = name,
+                    config = base.copy(
+                        protocol = Config.TunnelProtocol.XRAY,
+                        xrayConfigJson = XrayConfigBuilder.withSocksPort(trimmed, listen)
+                    )
+                )
             } else {
                 ConfigProfile(
                     id = "",
-                    name = json.optString("name").ifBlank { "Imported" },
+                    name = preferredName.ifBlank { json.optString("name") }.ifBlank { "Imported" },
                     config = ConfigJson.configFromJson(json)
                 )
             }
         }.getOrNull()
+    }
+
+    /** `xray://import?config=<urlsafe-b64-json>` and siblings. */
+    private fun parseDeepLinkProfile(uri: String, preferredName: String): ConfigProfile? {
+        val q = uri.substringAfter('?', "")
+        if (q.isEmpty()) return null
+        val params = q.split('&').mapNotNull { part ->
+            val eq = part.indexOf('=')
+            if (eq <= 0) null
+            else part.substring(0, eq) to part.substring(eq + 1)
+        }.toMap()
+        val b64 = params["config"] ?: params["profile"] ?: params["data"] ?: return null
+        val jsonText = runCatching {
+            val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
+            String(Base64.getUrlDecoder().decode(padded))
+        }.getOrNull() ?: runCatching {
+            val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
+            String(Base64.getDecoder().decode(padded))
+        }.getOrNull() ?: return null
+        return parseProfileFromText(jsonText, preferredName)
     }
 
     override fun exportProfileLink(profile: ConfigProfile): String {
@@ -278,6 +357,7 @@ class DesktopPlatform(
         val b64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray())
         val scheme = when (profile.config.protocol) {
             Config.TunnelProtocol.S3FU -> "s3fu"
+            Config.TunnelProtocol.CDNFU -> "cdnfu"
             Config.TunnelProtocol.XRAY -> "xray"
             else -> "slipstream"
         }
@@ -441,7 +521,7 @@ class DesktopPlatform(
                 // Parse only — importFromText persists what it parses, which would leave one
                 // extra Home copy of every server behind on each refresh.
                 override fun profileFromLink(uri: String, name: String): ConfigProfile? =
-                    parseProfileFromText(uri)
+                    parseProfileFromText(uri, preferredName = name)
 
                 override fun fetchRoutes(): List<app.smugly.subscription.SubscriptionFetcher.ProxySpec?> =
                     buildList {

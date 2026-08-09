@@ -188,6 +188,11 @@ object DesktopTunnel {
             val cfg = writeS3fuConfig(config, socksPort)
             EngineSpec("s3fu", listOf(exe.absolutePath, "--client", "--config", cfg.absolutePath), exe.parentFile)
         }
+        Config.TunnelProtocol.CDNFU -> {
+            val exe = EngineBinaries.require("cdnfu")
+            val cfg = writeCdnfuConfig(config, socksPort)
+            EngineSpec("cdnfu", listOf(exe.absolutePath, "--config", cfg.absolutePath), exe.parentFile)
+        }
         Config.TunnelProtocol.XRAY -> {
             val exe = EngineBinaries.require("xray")
             ensureXrayGeodata(exe.parentFile)
@@ -197,7 +202,7 @@ object DesktopTunnel {
         }
         Config.TunnelProtocol.SLIPSTREAM -> error(
             "The Slipstream DNS engine has no Windows build yet — it needs picoquic built with " +
-                "MSVC + CMake. Use an S3 or Xray profile on desktop for now."
+                "MSVC + CMake. Use an S3, CDN, or Xray profile on desktop for now."
         )
     }
 
@@ -218,6 +223,49 @@ object DesktopTunnel {
             appendLine("socks_listen = ${tomlString("127.0.0.1:$socksPort")}")
         }
         val f = File(engineConfigDir(), "s3fu-client.toml")
+        f.writeText(toml)
+        return f
+    }
+
+    /** cdnfu client TOML — mirrors configs/client.toml shape. */
+    private fun writeCdnfuConfig(c: Config, socksPort: Int): File {
+        require(c.cdnfuUrl.isNotBlank()) { "CDN URL is empty" }
+        require(c.cdnfuPsk.isNotBlank()) { "CDN PSK is empty" }
+        val placement = c.cdnfuXhttpPlacement.trim().ifBlank { "cookie" }
+        val toml = buildString {
+            appendLine("listen = ${tomlString("127.0.0.1:$socksPort")}")
+            appendLine("url = ${tomlString(c.cdnfuUrl.trim())}")
+            appendLine("psk = ${tomlString(c.cdnfuPsk.trim())}")
+            appendLine()
+            appendLine("[path]")
+            appendLine("mimic = ${tomlString(c.cdnfuMimic.trim().ifBlank { "mixed" })}")
+            appendLine()
+            appendLine("[uplink]")
+            appendLine("method = ${tomlString(c.cdnfuUplinkMethod.trim().ifBlank { "POST" })}")
+            appendLine("path = ${tomlString(c.cdnfuUplinkPath.trim().ifBlank { "api" })}")
+            appendLine("data = ${tomlString(c.cdnfuUplinkData.trim().ifBlank { "body" })}")
+            appendLine("pipeline = 8")
+            appendLine()
+            appendLine("[xhttp]")
+            appendLine("session_placement = ${tomlString(placement)}")
+            appendLine("seq_placement = ${tomlString(placement)}")
+            appendLine("pad_placement = ${tomlString(placement)}")
+            appendLine("data_placement = ${tomlString(placement)}")
+            appendLine()
+            appendLine("[downlink]")
+            appendLine("mode = ${tomlString(c.cdnfuDownlinkMode.trim().ifBlank { "poll" })}")
+            appendLine()
+            appendLine("[tls]")
+            appendLine("chrome = 137")
+            appendLine("http1_only = true")
+            appendLine()
+            appendLine("[multipath]")
+            appendLine("paths = ${c.cdnfuMultipath.coerceIn(1, 32).takeIf { c.cdnfuMultipath > 0 } ?: 4}")
+            appendLine()
+            appendLine("[pool]")
+            appendLine("size = 32")
+        }
+        val f = File(engineConfigDir(), "cdnfu-client.toml")
         f.writeText(toml)
         return f
     }
@@ -362,7 +410,7 @@ object EngineBinaries {
 
     /** Engines present right now — used by Diagnostics so a missing binary is obvious. */
     fun report(): String = buildString {
-        listOf("s3fu", "xray").forEach { name ->
+        listOf("s3fu", "cdnfu", "xray").forEach { name ->
             val f = find(name)
             appendLine(if (f != null) "$name: ${f.absolutePath}" else "$name: NOT FOUND")
         }

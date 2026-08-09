@@ -42,6 +42,15 @@ object ConfigJson {
             .put("s3Prefix", config.s3Prefix)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
+            .put("cdnfuUrl", config.cdnfuUrl)
+            .put("cdnfuPsk", config.cdnfuPsk)
+            .put("cdnfuMimic", config.cdnfuMimic)
+            .put("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
+            .put("cdnfuUplinkPath", config.cdnfuUplinkPath)
+            .put("cdnfuUplinkData", config.cdnfuUplinkData)
+            .put("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
+            .put("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
+            .put("cdnfuMultipath", config.cdnfuMultipath)
 
     fun configFromJson(json: JSONObject): Config =
         Config(
@@ -71,6 +80,15 @@ object ConfigJson {
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
+            cdnfuUrl = json.optString("cdnfuUrl", ""),
+            cdnfuPsk = json.optString("cdnfuPsk", ""),
+            cdnfuMimic = json.optString("cdnfuMimic", "").ifBlank { "mixed" },
+            cdnfuUplinkMethod = json.optString("cdnfuUplinkMethod", "").ifBlank { "POST" },
+            cdnfuUplinkPath = json.optString("cdnfuUplinkPath", "").ifBlank { "api" },
+            cdnfuUplinkData = json.optString("cdnfuUplinkData", "").ifBlank { "body" },
+            cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
+            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "poll" },
+            cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
 
     fun profileToJson(profile: ConfigProfile): JSONObject =

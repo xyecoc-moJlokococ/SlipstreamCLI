@@ -47,6 +47,7 @@ enum class S(val en: String, val ru: String) {
     PROTOCOL("Protocol", "Протокол"),
     PROTOCOL_SLIPSTREAM("Slipstream (DNS)", "Slipstream (DNS)"),
     PROTOCOL_S3FU("S3 (s3-fuckup)", "S3 (s3-fuckup)"),
+    PROTOCOL_CDNFU("CDN (cdn-fuckup)", "CDN (cdn-fuckup)"),
     PROTOCOL_XRAY("Xray", "Xray"),
     /** Profile-card subtitle: the component actually carrying the traffic. */
     PROTOCOL_XRAY_CORE("Xray-core", "Xray-core"),
@@ -60,6 +61,25 @@ enum class S(val en: String, val ru: String) {
     S3_PREFIX_HINT("s3fu", "s3fu"),
     S3_PSK("PSK", "PSK"),
     S3_PSK_HINT("64 hex chars", "64 hex-символа"),
+
+    // cdn-fuckup (XHTTP packet-up)
+    CDNFU_URL("CDN URL", "CDN URL"),
+    CDNFU_URL_HINT("https://edge.example/", "https://edge.example/"),
+    CDNFU_PSK("PSK", "PSK"),
+    CDNFU_PSK_HINT("passphrase", "пароль (PSK)"),
+    CDNFU_MIMIC("Path mimic", "Mimic путей"),
+    CDNFU_UPLINK_METHOD("Uplink method", "Метод uplink"),
+    CDNFU_UPLINK_PATH("Uplink path", "Путь uplink"),
+    CDNFU_UPLINK_DATA("Uplink data", "Данные uplink"),
+    CDNFU_XHTTP_PLACEMENT("XHTTP placement", "XHTTP placement"),
+    CDNFU_DOWNLINK("Downlink", "Downlink"),
+    CDNFU_MULTIPATH("Multipath paths", "Multipath paths"),
+    CDNFU_HINT_STEALTH("Stealth: cookie meta + POST body. Use query placement if the edge strips cookies.", "Stealth: meta в cookie + POST body. Query — если edge режет cookies."),
+    CDNFU_HINT_DOWNLINK("poll — short GETs (safe behind buffering reverse proxies). stream — one long GET (faster on flushing edges).", "poll — короткие GET (за buffering reverse-proxy). stream — один длинный GET (быстрее на flushing edge)."),
+    CDNFU_HINT_MULTIPATH(
+        "Android always uses 1 path (stable under speedtests/browsers). Higher values deadlocked the session pool.",
+        "На Android всегда 1 path (стабильно под speedtest/браузером). Больше — deadlock пула сессий."
+    ),
 
     // Xray
     XRAY_SECTION("Xray configuration", "Конфигурация Xray"),
@@ -246,7 +266,18 @@ enum class S(val en: String, val ru: String) {
     FOLDER_NEW_TITLE("New folder", "Новая папка"),
     FOLDER_EDIT_TITLE("Folder settings", "Настройки папки"),
     FOLDER_NAME("Folder name", "Название папки"),
-    FOLDER_URL("Subscription link (optional)", "Ссылка на подписку (необязательно)"),
+    FOLDER_NAME_HINT("My folder", "Моя папка"),
+    FOLDER_DEFAULT_EMPTY_NAME("Folder", "Папка"),
+    FOLDER_SOURCE("Folder source", "Источник папки"),
+    FOLDER_SOURCE_EMPTY("Empty", "Пустая"),
+    FOLDER_SOURCE_LINK("From link", "Из ссылки"),
+    FOLDER_SOURCE_FILE("From file", "Из файла"),
+    FOLDER_SOURCE_FILE_HINT(
+        "Pick a subscription file or a list of configs. Servers land in a new folder.",
+        "Выберите файл подписки или список конфигов. Серверы попадут в новую папку."
+    ),
+    FOLDER_PICK_FILE_BTN("Choose file", "Выбрать файл"),
+    FOLDER_URL("Subscription link", "Ссылка на подписку"),
     FOLDER_UPDATES_ENABLED("Allow updating", "Разрешить обновление"),
     FOLDER_AUTO_UPDATE("Update automatically", "Обновлять автоматически"),
     FOLDER_ALLOW_REORDER("Allow reordering profiles", "Разрешить перетаскивание профилей"),
@@ -274,11 +305,13 @@ enum class S(val en: String, val ru: String) {
     TOAST_SUBSCRIPTION_ADDED("Subscription imported", "Подписка импортирована"),
     TOAST_SUBSCRIPTION_UPDATED("Subscription updated", "Подписка обновлена"),
     TOAST_SUBSCRIPTION_FAILED("Subscription failed", "Ошибка подписки"),
+    TOAST_FOLDER_SAVED("Folder saved", "Папка сохранена"),
 
     // Default profile names
     PROFILE_NAME_DEFAULT_IMPORTED("Profile", "Профиль"),
     PROFILE_NAME_DEFAULT("Slipstream profile", "Профиль Slipstream"),
     PROFILE_NAME_DEFAULT_S3FU("S3 profile", "S3-профиль"),
+    PROFILE_NAME_DEFAULT_CDNFU("CDN profile", "CDN-профиль"),
     PROFILE_NAME_DEFAULT_XRAY("Xray profile", "Профиль Xray"),
 }
 

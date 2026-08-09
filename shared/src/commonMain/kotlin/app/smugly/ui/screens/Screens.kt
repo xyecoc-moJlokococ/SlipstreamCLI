@@ -916,6 +916,10 @@ fun HomeScreen(
                 onSave = {
                     onSaveFolder(it)
                     folderEditorOpen = false
+                },
+                onImportFile = {
+                    folderEditorOpen = false
+                    onImportFile()
                 }
             )
         }
@@ -939,9 +943,10 @@ fun HomeScreen(
             onDismiss = { addMenu = false }
         ) {
             MenuRow(t(S.MENU_NEW_PROFILE)) { addMenu = false; onAddNew() }
+            // One "New folder" entry — source (empty / link / file) is chosen inside the dialog.
             MenuRow(t(S.MENU_NEW_FOLDER)) {
                 addMenu = false
-                folderDraft = FolderDraft()
+                folderDraft = FolderDraft.newFolder()
                 folderEditorOpen = true
             }
 
@@ -1354,12 +1359,14 @@ fun ProfileEditorScreen(
     val protocolOptions = listOf(
         t(S.PROTOCOL_SLIPSTREAM),
         t(S.PROTOCOL_S3FU),
+        t(S.PROTOCOL_CDNFU),
         t(S.PROTOCOL_XRAY)
     )
     val protocolIndex = when (c.protocol) {
         Config.TunnelProtocol.SLIPSTREAM -> 0
         Config.TunnelProtocol.S3FU -> 1
-        Config.TunnelProtocol.XRAY -> 2
+        Config.TunnelProtocol.CDNFU -> 2
+        Config.TunnelProtocol.XRAY -> 3
     }
     // Protocol list uses the same overlay as the + menu — never expands layout / pushes fields.
     var protocolMenuOpen by remember { mutableStateOf(false) }
@@ -1466,6 +1473,9 @@ fun ProfileEditorScreen(
                         Config.TunnelProtocol.S3FU -> S3fuEditor(c) {
                             onChange(draft.copy(config = it))
                         }
+                        Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) {
+                            onChange(draft.copy(config = it))
+                        }
                         Config.TunnelProtocol.XRAY -> { /* handled above */ }
                     }
                 }
@@ -1484,7 +1494,8 @@ fun ProfileEditorScreen(
                     protocolMenuOpen = false
                     val p = when (idx) {
                         1 -> Config.TunnelProtocol.S3FU
-                        2 -> Config.TunnelProtocol.XRAY
+                        2 -> Config.TunnelProtocol.CDNFU
+                        3 -> Config.TunnelProtocol.XRAY
                         else -> Config.TunnelProtocol.SLIPSTREAM
                     }
                     onChange(draft.copy(config = c.copy(protocol = p)))
@@ -1675,6 +1686,75 @@ private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
     LabeledField(t(S.S3_PSK)) {
         SmuglyTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
     }
+}
+
+@Composable
+private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
+    LabeledField(t(S.CDNFU_URL)) {
+        SmuglyTextField(c.cdnfuUrl, { onChange(c.copy(cdnfuUrl = it)) }, hint = t(S.CDNFU_URL_HINT))
+    }
+    LabeledField(t(S.CDNFU_PSK)) {
+        SmuglyTextField(c.cdnfuPsk, { onChange(c.copy(cdnfuPsk = it)) }, hint = t(S.CDNFU_PSK_HINT), password = true)
+    }
+    LabeledField(t(S.CDNFU_MIMIC)) {
+        val options = listOf("mixed", "image", "video", "static")
+        val idx = options.indexOf(c.cdnfuMimic.lowercase()).coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuMimic = options[i]))
+        }
+    }
+    LabeledField(t(S.CDNFU_UPLINK_METHOD)) {
+        val options = listOf("POST", "PUT", "GET", "auto")
+        val cur = c.cdnfuUplinkMethod.ifBlank { "POST" }
+        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuUplinkMethod = options[i]))
+        }
+    }
+    LabeledField(t(S.CDNFU_UPLINK_PATH)) {
+        val options = listOf("api", "asset", "auto")
+        val cur = c.cdnfuUplinkPath.ifBlank { "api" }
+        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuUplinkPath = options[i]))
+        }
+    }
+    LabeledField(t(S.CDNFU_UPLINK_DATA)) {
+        val options = listOf("body", "cookie", "query", "auto")
+        val cur = c.cdnfuUplinkData.ifBlank { "body" }
+        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuUplinkData = options[i]))
+        }
+    }
+    LabeledField(t(S.CDNFU_XHTTP_PLACEMENT)) {
+        val options = listOf("cookie", "query")
+        val cur = c.cdnfuXhttpPlacement.ifBlank { "cookie" }
+        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuXhttpPlacement = options[i]))
+        }
+    }
+    HintText(t(S.CDNFU_HINT_STEALTH))
+    LabeledField(t(S.CDNFU_DOWNLINK)) {
+        val options = listOf("poll", "stream", "auto")
+        val cur = c.cdnfuDownlinkMode.ifBlank { "poll" }
+        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
+        PillSelector(options, idx) { i ->
+            onChange(c.copy(cdnfuDownlinkMode = options[i]))
+        }
+    }
+    HintText(t(S.CDNFU_HINT_DOWNLINK))
+    // Android VPN always runs multipath=1 (parallel paths starved the session pool under
+    // browsers/speedtests). Show the effective value; editing only re-saves 1.
+    LabeledField(t(S.CDNFU_MULTIPATH)) {
+        SmuglyTextField(
+            "1",
+            { onChange(c.copy(cdnfuMultipath = 1)) },
+            number = true
+        )
+    }
+    HintText(t(S.CDNFU_HINT_MULTIPATH))
 }
 
 /**

@@ -59,6 +59,8 @@ android {
             // libs3fu.so is staged here by the cargoBuildS3fu task (kept separate from the
             // rust-android plugin's managed dir so the plugin never clobbers it).
             jniLibs.srcDir("build/s3fuJniLibs")
+            // libcdnfu.so staged by cargoBuildCdnfu (cdn-fuckup XHTTP packet-up).
+            jniLibs.srcDir("build/cdnfuJniLibs")
         }
     }
 
@@ -175,6 +177,19 @@ val cargoBuildS3fu by tasks.registering(Exec::class) {
     }
 }
 
+// Build libcdnfu.so (cdn-fuckup XHTTP packet-up) for arm64. Same pattern as s3fu:
+// separate workspace at ../../../cdn-fuckup, staged outside the rust-android dir.
+val cargoBuildCdnfu by tasks.registering(Exec::class) {
+    val moduleDir = file("$projectDir/../../../cdn-fuckup")
+    val outDir = file("$projectDir/build/cdnfuJniLibs/arm64-v8a")
+    workingDir = moduleDir
+    commandLine("bash", "${moduleDir.absolutePath}/build-android.sh")
+    doFirst {
+        outDir.mkdirs()
+        environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        environment("CDNFU_OUT_DIR", outDir.absolutePath)
+    }
+}
 
 // Build libxray.aar (Xray-core via gomobile bind). Unlike the Rust crates this is
 // NOT rebuilt on every build -- a gomobile bind of the whole Xray dependency tree
@@ -192,5 +207,6 @@ val buildXrayAar by tasks.registering(Exec::class) {
 tasks.named("preBuild") {
     dependsOn("cargoBuildArm64")
     dependsOn(cargoBuildS3fu)
+    dependsOn(cargoBuildCdnfu)
     dependsOn(buildXrayAar)
 }

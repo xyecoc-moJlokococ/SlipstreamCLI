@@ -69,6 +69,15 @@ object ConfigStore {
             s3Prefix = p.getString("s3Prefix", "")?.takeIf { it.isNotBlank() } ?: "s3fu",
             s3Psk = p.getString("s3Psk", "") ?: "",
             xrayConfigJson = p.getString("xrayConfigJson", "") ?: "",
+            cdnfuUrl = p.getString("cdnfuUrl", "") ?: "",
+            cdnfuPsk = p.getString("cdnfuPsk", "") ?: "",
+            cdnfuMimic = p.getString("cdnfuMimic", "")?.ifBlank { "mixed" } ?: "mixed",
+            cdnfuUplinkMethod = p.getString("cdnfuUplinkMethod", "")?.ifBlank { "POST" } ?: "POST",
+            cdnfuUplinkPath = p.getString("cdnfuUplinkPath", "")?.ifBlank { "api" } ?: "api",
+            cdnfuUplinkData = p.getString("cdnfuUplinkData", "")?.ifBlank { "body" } ?: "body",
+            cdnfuXhttpPlacement = p.getString("cdnfuXhttpPlacement", "")?.ifBlank { "cookie" } ?: "cookie",
+            cdnfuDownlinkMode = p.getString("cdnfuDownlinkMode", "")?.ifBlank { "poll" } ?: "poll",
+            cdnfuMultipath = p.getInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
     }
 
@@ -276,6 +285,7 @@ object ConfigStore {
      * Build a shareable deep link for [profile].
      * - Slipstream (DNS) profiles → `slipstream://import?...`
      * - S3FU profiles → `s3fu://import?...`
+     * - CDNFU profiles → `cdnfu://import?...`
      *
      * The full config is carried as a URL-safe base64 JSON blob so every field round-trips
      * (client knobs, s3 credentials, etc.). A human-readable `name` query param is included.
@@ -283,6 +293,7 @@ object ConfigStore {
     fun exportProfileLink(profile: ConfigProfile): String {
         val scheme = when (profile.config.protocol) {
             Config.TunnelProtocol.S3FU -> "s3fu"
+            Config.TunnelProtocol.CDNFU -> "cdnfu"
             Config.TunnelProtocol.XRAY -> "xray"
             else -> "slipstream"
         }
@@ -367,7 +378,7 @@ object ConfigStore {
     /**
      * Import a profile from free-form text (clipboard paste or file contents). Accepts:
      * - one or more vless:// links (each becomes an Xray profile)
-     * - a slipstream://, s3fu:// or xray:// link (or one embedded in surrounding text)
+     * - a slipstream://, s3fu://, cdnfu:// or xray:// link (or one embedded in surrounding text)
      * - a JSON profile blob ({"name", "config": {...}}) or bare config JSON ({"domain": ...})
      * - a raw Xray config JSON ({"inbounds": ..., "outbounds": ...})
      * - a base64 / query-string payload understood by the link parser
@@ -385,11 +396,12 @@ object ConfigStore {
             importVlessProfiles(context, trimmed).lastOrNull()?.let { return it }
         }
 
-        // 1) Explicit or embedded slipstream:// / s3fu:// / xray:// URI.
+        // 1) Explicit or embedded slipstream:// / s3fu:// / cdnfu:// / xray:// URI.
         val uriText = PROFILE_URI_IN_TEXT.find(trimmed)?.value
             ?: trimmed.takeIf {
                 it.startsWith("slipstream:", ignoreCase = true) ||
                     it.startsWith("s3fu:", ignoreCase = true) ||
+                    it.startsWith("cdnfu:", ignoreCase = true) ||
                     it.startsWith("xray:", ignoreCase = true)
             }?.lineSequence()?.firstOrNull()
         if (uriText != null) {
@@ -406,7 +418,8 @@ object ConfigStore {
                         return addProfile(context, parsed.name, parsed.config)
                     }
                     json.has("domain") || json.has("resolverHost") ||
-                        json.has("s3Endpoint") || json.has("protocol") -> {
+                        json.has("s3Endpoint") || json.has("cdnfuUrl") ||
+                        json.has("protocol") -> {
                         val config = configFromJson(json)
                         return addProfile(context, defaultProfileName(config), config)
                     }
@@ -436,7 +449,7 @@ object ConfigStore {
     }
 
     private val PROFILE_URI_IN_TEXT =
-        Regex("(?:slipstream|s3fu|xray):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
+        Regex("(?:slipstream|s3fu|cdnfu|xray):[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
 
     /**
      * Schemes other clients use for protocols this app does not speak. `vless://` is absent on
@@ -449,7 +462,7 @@ object ConfigStore {
     )
 
     /**
-     * Parse a slipstream://, s3fu:// or xray:// deep link into a name + config.
+     * Parse a slipstream://, s3fu://, cdnfu:// or xray:// deep link into a name + config.
      * Prefers a full base64 JSON config payload (export format); falls back to legacy
      * query-param forms used by the bot / hand-written links.
      *
@@ -458,7 +471,9 @@ object ConfigStore {
      */
     private fun parseProfileLink(uri: Uri, base: Config): ImportedProfile? {
         val scheme = uri.scheme?.lowercase() ?: return null
-        if (scheme != "slipstream" && scheme != "s3fu" && scheme != "xray") return null
+        if (scheme != "slipstream" && scheme != "s3fu" && scheme != "cdnfu" && scheme != "xray") {
+            return null
+        }
 
         val params = linkedMapOf<String, String>()
         uri.queryParameterNames.forEach { key ->
@@ -477,12 +492,14 @@ object ConfigStore {
                     json.has("domain") || json.has("resolverHost") ||
                         json.has("s3Endpoint") || json.has("protocol") ||
                         json.has("s3Bucket") || json.has("s3Psk") ||
+                        json.has("cdnfuUrl") || json.has("cdnfuPsk") ||
                         json.has("xrayConfigJson") -> configFromJson(json)
                     else -> null
                 }
                 if (config != null) {
                     val forced = when (scheme) {
                         "s3fu" -> config.copy(protocol = Config.TunnelProtocol.S3FU)
+                        "cdnfu" -> config.copy(protocol = Config.TunnelProtocol.CDNFU)
                         "xray" -> config.copy(protocol = Config.TunnelProtocol.XRAY)
                         else -> config
                     }
@@ -500,6 +517,11 @@ object ConfigStore {
         // s3fu query-param form (hand-written / bot links without full JSON blob).
         if (scheme == "s3fu") {
             return parseS3fuQueryParams(params, base)
+        }
+
+        // cdnfu query-param form: url + psk (+ optional knobs).
+        if (scheme == "cdnfu") {
+            return parseCdnfuQueryParams(params, base)
         }
 
         // xray:// only ever carries the exported JSON blob handled above; there is
@@ -547,6 +569,37 @@ object ConfigStore {
         val name = first("name", "profilename")
             ?: legacyLogin?.takeIf { it.isNotBlank() }
             ?: config.s3Bucket.takeIf { it.isNotBlank() }
+            ?: defaultProfileName(config)
+        return ImportedProfile(name, config)
+    }
+
+    private fun parseCdnfuQueryParams(params: Map<String, String>, base: Config): ImportedProfile? {
+        fun first(vararg keys: String): String? =
+            keys.firstNotNullOfOrNull { params[it.lowercase()]?.takeIf { v -> v.isNotBlank() } }
+
+        val url = first("url", "cdnfuurl", "cdn_url", "endpoint", "host")
+        val psk = first("psk", "cdnfupsk", "cdn_psk", "password", "pass")
+        if (url.isNullOrBlank() && psk.isNullOrBlank()) return null
+        val config = base.copy(
+            protocol = Config.TunnelProtocol.CDNFU,
+            cdnfuUrl = url ?: base.cdnfuUrl,
+            cdnfuPsk = psk ?: base.cdnfuPsk,
+            cdnfuMimic = first("mimic", "path_mimic") ?: base.cdnfuMimic.ifBlank { "mixed" },
+            cdnfuUplinkMethod = first("method", "uplink_method") ?: base.cdnfuUplinkMethod.ifBlank { "POST" },
+            cdnfuUplinkPath = first("uplink_path", "path") ?: base.cdnfuUplinkPath.ifBlank { "api" },
+            cdnfuUplinkData = first("uplink_data", "data") ?: base.cdnfuUplinkData.ifBlank { "body" },
+            cdnfuXhttpPlacement = first("xhttp", "placement", "xhttp_placement")
+                ?: base.cdnfuXhttpPlacement.ifBlank { "cookie" },
+            cdnfuDownlinkMode = first("downlink", "dl", "downlink_mode")
+                ?: base.cdnfuDownlinkMode.ifBlank { "poll" },
+            cdnfuMultipath = first("multipath", "mp", "paths")?.toIntOrNull()?.coerceIn(0, 32)
+                ?: base.cdnfuMultipath
+        )
+        val name = first("name", "profilename")
+            ?: runCatching {
+                java.net.URI(if (config.cdnfuUrl.contains("://")) config.cdnfuUrl else "https://${config.cdnfuUrl}")
+                    .host
+            }.getOrNull()?.takeIf { !it.isNullOrBlank() }
             ?: defaultProfileName(config)
         return ImportedProfile(name, config)
     }
@@ -644,6 +697,15 @@ object ConfigStore {
             .putString("s3Prefix", config.s3Prefix)
             .putString("s3Psk", config.s3Psk)
             .putString("xrayConfigJson", config.xrayConfigJson)
+            .putString("cdnfuUrl", config.cdnfuUrl)
+            .putString("cdnfuPsk", config.cdnfuPsk)
+            .putString("cdnfuMimic", config.cdnfuMimic)
+            .putString("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
+            .putString("cdnfuUplinkPath", config.cdnfuUplinkPath)
+            .putString("cdnfuUplinkData", config.cdnfuUplinkData)
+            .putString("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
+            .putString("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
+            .putInt("cdnfuMultipath", config.cdnfuMultipath)
             .apply()
     }
 
@@ -702,6 +764,15 @@ object ConfigStore {
             .put("s3Prefix", config.s3Prefix)
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
+            .put("cdnfuUrl", config.cdnfuUrl)
+            .put("cdnfuPsk", config.cdnfuPsk)
+            .put("cdnfuMimic", config.cdnfuMimic)
+            .put("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
+            .put("cdnfuUplinkPath", config.cdnfuUplinkPath)
+            .put("cdnfuUplinkData", config.cdnfuUplinkData)
+            .put("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
+            .put("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
+            .put("cdnfuMultipath", config.cdnfuMultipath)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -731,6 +802,15 @@ object ConfigStore {
             s3Prefix = json.optString("s3Prefix", "").ifBlank { "s3fu" },
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
+            cdnfuUrl = json.optString("cdnfuUrl", ""),
+            cdnfuPsk = json.optString("cdnfuPsk", ""),
+            cdnfuMimic = json.optString("cdnfuMimic", "").ifBlank { "mixed" },
+            cdnfuUplinkMethod = json.optString("cdnfuUplinkMethod", "").ifBlank { "POST" },
+            cdnfuUplinkPath = json.optString("cdnfuUplinkPath", "").ifBlank { "api" },
+            cdnfuUplinkData = json.optString("cdnfuUplinkData", "").ifBlank { "body" },
+            cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
+            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "poll" },
+            cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
@@ -741,6 +821,13 @@ object ConfigStore {
     private fun defaultProfileName(config: Config): String = when (config.protocol) {
         Config.TunnelProtocol.S3FU ->
             config.s3Bucket.ifBlank { t(S.PROFILE_NAME_DEFAULT_S3FU) }
+        Config.TunnelProtocol.CDNFU ->
+            runCatching {
+                java.net.URI(
+                    if (config.cdnfuUrl.contains("://")) config.cdnfuUrl else "https://${config.cdnfuUrl}"
+                ).host
+            }.getOrNull()?.takeIf { !it.isNullOrBlank() }
+                ?: config.cdnfuUrl.ifBlank { t(S.PROFILE_NAME_DEFAULT_CDNFU) }
         Config.TunnelProtocol.XRAY ->
             XrayConfigBuilder.describeServer(config.xrayConfigJson) ?: t(S.PROFILE_NAME_DEFAULT_XRAY)
         else ->

@@ -189,6 +189,7 @@ fun emptyDraft(base: Config = defaultConfig(mode = Config.Mode.PROXY)): EditorDr
  */
 fun profileSubtitle(profile: ConfigProfile): String = when (profile.config.protocol) {
     Config.TunnelProtocol.S3FU -> t(S.PROTOCOL_S3FU)
+    Config.TunnelProtocol.CDNFU -> t(S.PROTOCOL_CDNFU)
     Config.TunnelProtocol.XRAY -> t(S.PROTOCOL_XRAY_CORE)
     Config.TunnelProtocol.SLIPSTREAM -> t(S.PROTOCOL_SLIPSTREAM)
 }

@@ -173,6 +173,26 @@ class SubscriptionRepositoryTest {
     fun refreshDuePicksOnlyStaleOnes() {
         val added = repo.add(url("/sub"))
         assertTrue(repo.refreshDue().isEmpty(), "just-added subscription is not due")
+    }
+
+    @Test
+    fun empty_folder_without_url_is_allowed() {
+        val err = repo.save(
+            id = null,
+            name = "Manual",
+            rawUrl = "",
+            enabled = true,
+            updateIntervalMinutes = 60,
+            allowReorder = true,
+            showInfo = false
+        )
+        assertNull(err)
+        val sub = repo.list().single { it.name == "Manual" }
+        assertEquals("", sub.url)
+        assertTrue(!sub.enabled, "empty folders cannot auto-update")
+        assertEquals(0, sub.updateIntervalMinutes)
+        assertTrue(sub.allowReorder)
+        assertTrue(repo.refreshDue().isEmpty(), "empty folder is never due")
 
         storage.now += 25L * 60 * 60 * 1000
         assertEquals(1, repo.refreshDue().size)

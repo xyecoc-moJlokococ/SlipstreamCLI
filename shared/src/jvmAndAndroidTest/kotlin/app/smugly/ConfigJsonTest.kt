@@ -38,4 +38,22 @@ class ConfigJsonTest {
         assertEquals("s3fu", c.s3Prefix)
         assertTrue(c.domain.isEmpty())
     }
+
+    @Test
+    fun cdnfu_roundtrip() {
+        val original = defaultConfig().copy(
+            protocol = Config.TunnelProtocol.CDNFU,
+            cdnfuUrl = "https://jarvis-media.ru/",
+            cdnfuPsk = "cdnfu-lab-jarvis-2026",
+            cdnfuMimic = "mixed",
+            cdnfuUplinkMethod = "POST",
+            cdnfuUplinkPath = "api",
+            cdnfuUplinkData = "body",
+            cdnfuXhttpPlacement = "cookie",
+            cdnfuDownlinkMode = "poll",
+            cdnfuMultipath = 4
+        )
+        val restored = ConfigJson.configFromJson(ConfigJson.configToJson(original))
+        assertEquals(original, restored)
+    }
 }

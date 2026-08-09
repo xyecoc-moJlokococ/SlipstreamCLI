@@ -21,6 +21,7 @@ import android.os.Process
 import android.os.SystemClock
 import app.smugly.tunnel.HevSocks5Tunnel
 import app.smugly.tunnel.MiniSlipstreamSocksBridge
+import app.smugly.tunnel.CdnfuBridge
 import app.smugly.tunnel.S3fuBridge
 import app.smugly.tunnel.ResolverListConfig
 import app.smugly.tunnel.SlipstreamBridge
@@ -161,6 +162,10 @@ class TinyVpnService : VpnService() {
         val rawConfig = ConfigStore.effectiveConfig(this)
         if (rawConfig.protocol == Config.TunnelProtocol.S3FU) {
             startS3fuTunnelWorker(generation, rawConfig)
+            return
+        }
+        if (rawConfig.protocol == Config.TunnelProtocol.CDNFU) {
+            startCdnfuTunnelWorker(generation, rawConfig)
             return
         }
         if (rawConfig.protocol == Config.TunnelProtocol.XRAY) {
@@ -365,6 +370,115 @@ class TinyVpnService : VpnService() {
     }
 
     /**
+     * CDNFU protocol path: native cdn-fuckup XHTTP packet-up client as local SOCKS5,
+     * then hev-socks5-tunnel on top — same shape as S3FU. TLS to the CDN edge leaves
+     * the device outside the TUN via addDisallowedApplication.
+     */
+    private fun startCdnfuTunnelWorker(generation: Int, config: Config) {
+        currentConfig = config
+        tunnelActive = true
+        AppLog.i(
+            TAG,
+            "CDNFU start url=${config.cdnfuUrl} mimic=${config.cdnfuMimic} " +
+                "method=${config.cdnfuUplinkMethod} path=${config.cdnfuUplinkPath} " +
+                "data=${config.cdnfuUplinkData} xhttp=${config.cdnfuXhttpPlacement} " +
+                "dl=${config.cdnfuDownlinkMode} mp=${config.cdnfuMultipath}"
+        )
+        try {
+            require(config.cdnfuUrl.isNotBlank()) { "CDN URL is empty" }
+            require(config.cdnfuPsk.isNotBlank()) { "PSK is empty" }
+            require(CdnfuBridge.isLoaded()) { "libcdnfu failed to load" }
+            resetTrafficBase()
+
+            // "auto" on phone used to leave GET/query defaults that fight cookie stealth and
+            // multipath — pin the lab-proven shape unless the profile names a real mode.
+            fun cdnKnob(raw: String, fallback: String): String {
+                val v = raw.trim()
+                return if (v.isEmpty() || v.equals("auto", ignoreCase = true)) fallback else v
+            }
+            val uplinkMethod = cdnKnob(config.cdnfuUplinkMethod, "POST")
+            val uplinkPath = cdnKnob(config.cdnfuUplinkPath, "api")
+            val uplinkData = cdnKnob(config.cdnfuUplinkData, "body")
+            val xhttpPlacement = cdnKnob(config.cdnfuXhttpPlacement, "cookie")
+            val downlinkMode = cdnKnob(config.cdnfuDownlinkMode, "poll")
+            // Force single path on the phone. Multipath=4 under a speedtest/browser
+            // (dozens of parallel connects) exhausted the session pool and hung every flow
+            // with SOCKS open but zero bytes — "check internet connection" on Ookla.
+            // (Desktop multipath can still be used via the native CLI.)
+            val multipath = 1
+
+            val socksPort = config.listenPort
+            AppLog.i(
+                TAG,
+                "CDNFU knobs method=$uplinkMethod path=$uplinkPath data=$uplinkData " +
+                    "xhttp=$xhttpPlacement dl=$downlinkMode mp=$multipath mapdns=on"
+            )
+            CdnfuBridge.startClient(
+                url = config.cdnfuUrl.trim(),
+                psk = config.cdnfuPsk.trim(),
+                mimic = config.cdnfuMimic.trim().ifBlank { "mixed" },
+                socksListen = "127.0.0.1:$socksPort",
+                uplinkMethod = uplinkMethod,
+                uplinkPath = uplinkPath,
+                uplinkData = uplinkData,
+                xhttpPlacement = xhttpPlacement,
+                downlinkMode = downlinkMode,
+                multipathPaths = multipath
+            ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            if (!waitForLocalPort(socksPort, CDNFU_SOCKS_READY_TIMEOUT_MS) { CdnfuBridge.isRunning() }) {
+                error(
+                    CdnfuBridge.lastError()
+                        ?: "cdnfu SOCKS proxy did not come up on 127.0.0.1:$socksPort"
+                )
+            }
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            val builder = Builder()
+                .setSession("Smugly")
+                .setMtu(1500)
+                .addAddress("10.255.0.2", 32)
+                .addAddress("fd00::2", 128)
+                .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
+                // mapdns answers here; apps must NOT use 1.1.1.1 (each DNS query was a full
+                // XHTTP UDP session and made the tunnel unusable).
+                .addDnsServer(HevSocks5Tunnel.MAPDNS_ADDRESS)
+            runCatching { builder.addDisallowedApplication(packageName) }
+                .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
+            tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
+
+            // mapdns: hostname restored on SOCKS CONNECT. rejectNonDnsUdp drops QUIC noise that
+            // would otherwise open dozens of UDP packet-up sessions.
+            HevSocks5Tunnel.start(
+                tunFd = tunFd ?: error("TUN fd is null"),
+                socksAddress = "127.0.0.1",
+                socksPort = socksPort,
+                username = null,
+                password = null,
+                udpMode = "udp",
+                mapDns = true,
+                rejectNonDnsUdp = true
+            ).getOrThrow()
+            if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
+
+            maybeUpdateTrafficNotification(0, 0, force = true)
+            AppLog.i(TAG, "CDNFU VPN connected socks=127.0.0.1:$socksPort")
+            handler.removeCallbacks(diagnostics)
+            handler.post(diagnostics)
+        } catch (e: Throwable) {
+            AppLog.e(TAG, "CDNFU VPN start failed", e)
+            runCatching { HevSocks5Tunnel.stop() }
+            runCatching { CdnfuBridge.stopClient() }
+            runCatching { tunFd?.close() }
+            tunFd = null
+            tunnelActive = false
+            stopTunnel()
+        }
+    }
+
+    /**
      * XRAY protocol path: the profile is a literal Xray JSON config. Start the
      * core, then layer the existing tun2socks (hev) onto the SOCKS inbound it
      * exposes -- structurally identical to the S3FU path. The app already excludes
@@ -535,6 +649,21 @@ class TinyVpnService : VpnService() {
         }
     }
 
+    /** Lightweight diagnostics for the CDNFU path. */
+    private fun writeCdnfuDiagnostics() {
+        val hev = HevSocks5Tunnel.stats()
+        maybeUpdateTrafficNotification(hev.rxBytes, hev.txBytes)
+        val running = CdnfuBridge.isRunning()
+        AppLog.i(
+            TAG,
+            "diag[cdnfu] running=$running hevRunning=${HevSocks5Tunnel.isRunning()} " +
+                "tunRx=${hev.rxBytes} tunTx=${hev.txBytes}"
+        )
+        if (!running && tunnelActive) {
+            AppLog.w(TAG, "cdnfu client stopped while tunnel active; lastError=${CdnfuBridge.lastError() ?: "none"}")
+        }
+    }
+
     private fun startSlipstreamWithTransportFallback(
         config: Config,
         choice: ResolverChoice,
@@ -612,6 +741,7 @@ class TinyVpnService : VpnService() {
             !MiniSlipstreamSocksBridge.isRunning() &&
             !SlipstreamBridge.isRunning() &&
             !S3fuBridge.isRunning() &&
+            !CdnfuBridge.isRunning() &&
             !XrayBridge.isRunning()
         ) {
             AppLog.i(TAG, "VPN already stopped")
@@ -649,6 +779,8 @@ class TinyVpnService : VpnService() {
                         .onFailure { AppLog.w(TAG, "native stop failed: ${it.message}") }
                     runCatching { S3fuBridge.stopClient() }
                         .onFailure { AppLog.w(TAG, "s3fu stop failed: ${it.message}") }
+                    runCatching { CdnfuBridge.stopClient() }
+                        .onFailure { AppLog.w(TAG, "cdnfu stop failed: ${it.message}") }
                     runCatching { XrayBridge.stopClient() }
                         .onFailure { AppLog.w(TAG, "xray stop failed: ${it.message}") }
                     runCatching { MiniSlipstreamSocksBridge.stop() }
@@ -706,6 +838,10 @@ class TinyVpnService : VpnService() {
     private fun writeDiagnostics() {
         if (currentConfig?.protocol == Config.TunnelProtocol.S3FU) {
             writeS3fuDiagnostics()
+            return
+        }
+        if (currentConfig?.protocol == Config.TunnelProtocol.CDNFU) {
+            writeCdnfuDiagnostics()
             return
         }
         if (currentConfig?.protocol == Config.TunnelProtocol.XRAY) {
@@ -1767,6 +1903,7 @@ class TinyVpnService : VpnService() {
         /** How long a restart waits for the previous tunnel's native cleanup to finish. */
         private const val TEARDOWN_WAIT_MS = 10_000L
         private const val S3FU_SOCKS_READY_TIMEOUT_MS = 8_000L
+        private const val CDNFU_SOCKS_READY_TIMEOUT_MS = 12_000L
         private const val XRAY_SOCKS_READY_TIMEOUT_MS = 8_000L
     }
 }

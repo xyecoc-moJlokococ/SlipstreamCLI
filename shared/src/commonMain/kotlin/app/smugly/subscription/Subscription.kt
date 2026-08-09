@@ -25,10 +25,11 @@ data class Subscription(
     /** Metadata from the most recent successful fetch. */
     val info: SubscriptionInfo = SubscriptionInfo(),
     /**
-     * Whether profiles in this folder may be dragged into a different order. Off by default for a
-     * subscription: a refresh replaces the group wholesale, so a hand-made order would not survive.
+     * Whether profiles in this folder may be dragged into a different order. On by default —
+     * users expect to rearrange servers; a subscription refresh still rewrites the group, but
+     * hand-made order between refreshes is useful.
      */
-    val allowReorder: Boolean = false,
+    val allowReorder: Boolean = true,
     /** Whether the traffic / expiry card is drawn above the folder's servers. */
     val showInfo: Boolean = true,
     /**

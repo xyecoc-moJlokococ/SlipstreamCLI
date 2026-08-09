@@ -5,6 +5,10 @@ import app.smugly.util.AppLog
 
 object HevSocks5Tunnel {
     private const val TAG = "HevSocks5Tunnel"
+    /** Local DNS the VPN hands to apps when mapdns is on. */
+    const val MAPDNS_ADDRESS = "10.255.0.1"
+    private const val MAPDNS_NETWORK = "198.18.0.0"
+    private const val MAPDNS_NETMASK = "255.254.0.0"
     @Volatile private var loaded = false
 
     init {
@@ -27,15 +31,29 @@ object HevSocks5Tunnel {
         // How UDP is carried to the SOCKS proxy: 'tcp' = hev's UDP-in-TCP scheme
         // (what MiniSlipstreamSocksBridge speaks), 'udp' = standard SOCKS5 UDP
         // ASSOCIATE (what the s3fu client implements natively).
-        udpMode: String = "tcp"
+        udpMode: String = "tcp",
+        /**
+         * Local fake-IP DNS (hev mapdns). Apps query [mapDnsAddress]; hostnames are restored
+         * on SOCKS CONNECT so the tunnel never has to carry raw DNS UDP. Essential for
+         * protocols where every UDP datagram is an expensive remote session (cdn-fuckup).
+         */
+        mapDns: Boolean = false,
+        mapDnsAddress: String = MAPDNS_ADDRESS,
+        /** Drop non-DNS UDP at hev (QUIC noise, etc.). DNS itself is handled by mapdns when on. */
+        rejectNonDnsUdp: Boolean = false
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("hev-socks5-tunnel is not loaded"))
         if (isRunning()) stop()
-        val config = buildConfig(socksAddress, socksPort, username, password, udpMode)
-        AppLog.i(TAG, "start tun2socks socks=$socksAddress:$socksPort")
+        val config = buildConfig(
+            socksAddress, socksPort, username, password, udpMode, mapDns, mapDnsAddress
+        )
+        AppLog.i(
+            TAG,
+            "start tun2socks socks=$socksAddress:$socksPort udp=$udpMode mapDns=$mapDns rejectNonDnsUdp=$rejectNonDnsUdp"
+        )
         AppLog.d(TAG, config)
         nativeSetRejectQuic(true)
-        nativeSetRejectNonDnsUdp(false)
+        nativeSetRejectNonDnsUdp(rejectNonDnsUdp)
         val code = nativeStart(config, tunFd.fd)
         return if (code == 0) Result.success(Unit) else Result.failure(RuntimeException("hev start error $code"))
     }
@@ -60,7 +78,15 @@ object HevSocks5Tunnel {
         )
     }
 
-    private fun buildConfig(address: String, port: Int, username: String?, password: String?, udpMode: String): String = buildString {
+    private fun buildConfig(
+        address: String,
+        port: Int,
+        username: String?,
+        password: String?,
+        udpMode: String,
+        mapDns: Boolean,
+        mapDnsAddress: String
+    ): String = buildString {
         val udp = if (udpMode == "udp") "udp" else "tcp"
         appendLine("tunnel:")
         appendLine("  mtu: 1500")
@@ -74,6 +100,16 @@ object HevSocks5Tunnel {
         if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
             appendLine("  username: '${username.replace("'", "''")}'")
             appendLine("  password: '${password.replace("'", "''")}'")
+        }
+        if (mapDns) {
+            // Fake-IP DNS: answers on mapDnsAddress; SOCKS CONNECT gets the real hostname.
+            appendLine()
+            appendLine("mapdns:")
+            appendLine("  address: $mapDnsAddress")
+            appendLine("  port: 53")
+            appendLine("  network: $MAPDNS_NETWORK")
+            appendLine("  netmask: $MAPDNS_NETMASK")
+            appendLine("  cache-size: 10000")
         }
         appendLine()
         appendLine("misc:")

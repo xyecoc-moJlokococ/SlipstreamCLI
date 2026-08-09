@@ -94,24 +94,38 @@ class SubscriptionRepository(private val storage: Storage) {
         // hand-made profiles, and demanding a subscription URL made that impossible. Only a
         // non-empty link has to look like one.
         val url = if (rawUrl.isBlank()) {
-            if (name.isBlank()) return "folder needs a name"
             ""
         } else {
             SubscriptionManager.normalizeSubscriptionUrl(rawUrl) ?: return "not a subscription URL"
+        }
+        // Empty folders need a display name; subscription folders can take the panel title later.
+        val resolvedName = name.trim().ifBlank {
+            if (url.isBlank()) "Folder" else ""
+        }
+        if (url.isBlank() && resolvedName.isBlank()) return "folder needs a name"
+        // No URL → nothing to refresh. Force updates off so auto-refresh never targets empties.
+        val resolvedEnabled = if (url.isBlank()) false else enabled
+        val resolvedInterval = if (url.isBlank() || !resolvedEnabled) {
+            0L
+        } else if (updateIntervalMinutes > 0) {
+            updateIntervalMinutes
+        } else {
+            0L
         }
         val existing = id?.let { find(it) }
             // Re-adding a URL that is already here edits that folder instead of making a twin.
             ?: storage.loadSubscriptions().firstOrNull { url.isNotBlank() && it.url == url }
         val updated = (existing ?: Subscription(
             id = storage.newId(),
-            name = name,
+            name = resolvedName,
             url = url,
-            addedAtMs = storage.nowMs()
+            addedAtMs = storage.nowMs(),
+            allowReorder = true
         )).copy(
-            name = name,
+            name = resolvedName.ifBlank { existing?.name.orEmpty() },
             url = url,
-            enabled = enabled,
-            updateIntervalMinutes = updateIntervalMinutes,
+            enabled = resolvedEnabled,
+            updateIntervalMinutes = resolvedInterval,
             allowReorder = allowReorder,
             showInfo = showInfo
         )

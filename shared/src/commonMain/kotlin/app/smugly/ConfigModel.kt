@@ -32,14 +32,36 @@ data class Config(
     /** The whole s3fu credential: it authenticates and derives the user's object
      *  namespace, so there is no separate login. */
     val s3Psk: String = "",
-    val xrayConfigJson: String = ""
+    val xrayConfigJson: String = "",
+    // ---- cdn-fuckup (XHTTP packet-up over CDN / reverse proxy) ----
+    /** Base URL of the edge, e.g. `https://jarvis-media.ru/`. */
+    val cdnfuUrl: String = "",
+    /** ChaCha20-Poly1305 passphrase (empty = VLESS uuid mode, not used in UI). */
+    val cdnfuPsk: String = "",
+    /** Path cover: image | video | static | mixed. */
+    val cdnfuMimic: String = "mixed",
+    /** Uplink HTTP method: POST | PUT | GET | … (blank → auto). */
+    val cdnfuUplinkMethod: String = "POST",
+    /** Uplink path family: auto | asset | api. */
+    val cdnfuUplinkPath: String = "api",
+    /** Where ciphertext rides: body | query | cookie | auto. */
+    val cdnfuUplinkData: String = "body",
+    /** XHTTP meta placement for session/seq/pad: cookie | query. */
+    val cdnfuXhttpPlacement: String = "cookie",
+    /** Downlink: poll (safe behind buffering edges) | stream | auto. */
+    val cdnfuDownlinkMode: String = "poll",
+    /**
+     * Parallel packet-up sessions per SOCKS TCP. 0 / 1 = single path (recommended on
+     * Android); 2..=4 = multipath striping for lab benches only.
+     */
+    val cdnfuMultipath: Int = 1
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }
     enum class ResolverMode { MANUAL, AUTO }
     enum class ResolverTransport { UDP, TCP }
     enum class ResolverPathMode { RECURSIVE, AUTHORITATIVE }
-    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY }
+    enum class TunnelProtocol { SLIPSTREAM, S3FU, XRAY, CDNFU }
 }
 
 data class ConfigProfile(
