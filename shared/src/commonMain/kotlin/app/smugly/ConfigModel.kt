@@ -34,8 +34,18 @@ data class Config(
     val s3Psk: String = "",
     val xrayConfigJson: String = "",
     // ---- cdn-fuckup (XHTTP packet-up over CDN / reverse proxy) ----
-    /** Base URL of the edge, e.g. `https://jarvis-media.ru/`. */
+    /** Base URL of the edge, e.g. `https://jarvis-media.ru/` — or a bare edge IP such
+     *  as `http://151.236.109.225/`, paired with [cdnfuHost]. */
     val cdnfuUrl: String = "",
+    /**
+     * Hostname to present when [cdnfuUrl] points at an IP: it becomes the `Host`
+     * header (and HTTP/2 `:authority` / TLS SNI) while the connection goes to that IP.
+     * Blank = take the name from the URL as usual.
+     *
+     * Needed when a CDN only serves the resource from one particular edge, or when DNS
+     * hands out an edge that doesn't answer.
+     */
+    val cdnfuHost: String = "",
     /** ChaCha20-Poly1305 passphrase (empty = VLESS uuid mode, not used in UI). */
     val cdnfuPsk: String = "",
     /** Path cover: image | video | static | mixed. */
@@ -49,7 +59,7 @@ data class Config(
     /** XHTTP meta placement for session/seq/pad: cookie | query. */
     val cdnfuXhttpPlacement: String = "cookie",
     /** Downlink: poll (safe behind buffering edges) | stream | auto. */
-    val cdnfuDownlinkMode: String = "poll",
+    val cdnfuDownlinkMode: String = "stream",
     /**
      * Parallel packet-up sessions per SOCKS TCP. 0 / 1 = single path (recommended on
      * Android); 2..=4 = multipath striping for lab benches only.

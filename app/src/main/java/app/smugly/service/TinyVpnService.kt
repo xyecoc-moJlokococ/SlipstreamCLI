@@ -379,7 +379,7 @@ class TinyVpnService : VpnService() {
         tunnelActive = true
         AppLog.i(
             TAG,
-            "CDNFU start url=${config.cdnfuUrl} mimic=${config.cdnfuMimic} " +
+            "CDNFU start url=${config.cdnfuUrl} host=${config.cdnfuHost} mimic=${config.cdnfuMimic} " +
                 "method=${config.cdnfuUplinkMethod} path=${config.cdnfuUplinkPath} " +
                 "data=${config.cdnfuUplinkData} xhttp=${config.cdnfuXhttpPlacement} " +
                 "dl=${config.cdnfuDownlinkMode} mp=${config.cdnfuMultipath}"
@@ -400,7 +400,7 @@ class TinyVpnService : VpnService() {
             val uplinkPath = cdnKnob(config.cdnfuUplinkPath, "api")
             val uplinkData = cdnKnob(config.cdnfuUplinkData, "body")
             val xhttpPlacement = cdnKnob(config.cdnfuXhttpPlacement, "cookie")
-            val downlinkMode = cdnKnob(config.cdnfuDownlinkMode, "poll")
+            val downlinkMode = cdnKnob(config.cdnfuDownlinkMode, "stream")
             // Force single path on the phone. Multipath=4 under a speedtest/browser
             // (dozens of parallel connects) exhausted the session pool and hung every flow
             // with SOCKS open but zero bytes — "check internet connection" on Ookla.
@@ -423,7 +423,8 @@ class TinyVpnService : VpnService() {
                 uplinkData = uplinkData,
                 xhttpPlacement = xhttpPlacement,
                 downlinkMode = downlinkMode,
-                multipathPaths = multipath
+                multipathPaths = multipath,
+                hostName = config.cdnfuHost.trim()
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 

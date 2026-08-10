@@ -43,6 +43,7 @@ object ConfigJson {
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
             .put("cdnfuUrl", config.cdnfuUrl)
+            .put("cdnfuHost", config.cdnfuHost)
             .put("cdnfuPsk", config.cdnfuPsk)
             .put("cdnfuMimic", config.cdnfuMimic)
             .put("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
@@ -81,13 +82,14 @@ object ConfigJson {
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnfuUrl = json.optString("cdnfuUrl", ""),
+            cdnfuHost = json.optString("cdnfuHost", ""),
             cdnfuPsk = json.optString("cdnfuPsk", ""),
             cdnfuMimic = json.optString("cdnfuMimic", "").ifBlank { "mixed" },
             cdnfuUplinkMethod = json.optString("cdnfuUplinkMethod", "").ifBlank { "POST" },
             cdnfuUplinkPath = json.optString("cdnfuUplinkPath", "").ifBlank { "api" },
             cdnfuUplinkData = json.optString("cdnfuUplinkData", "").ifBlank { "body" },
             cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
-            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "poll" },
+            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "stream" },
             cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
 

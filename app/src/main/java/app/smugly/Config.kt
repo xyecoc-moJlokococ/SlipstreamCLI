@@ -70,13 +70,14 @@ object ConfigStore {
             s3Psk = p.getString("s3Psk", "") ?: "",
             xrayConfigJson = p.getString("xrayConfigJson", "") ?: "",
             cdnfuUrl = p.getString("cdnfuUrl", "") ?: "",
+            cdnfuHost = p.getString("cdnfuHost", "") ?: "",
             cdnfuPsk = p.getString("cdnfuPsk", "") ?: "",
             cdnfuMimic = p.getString("cdnfuMimic", "")?.ifBlank { "mixed" } ?: "mixed",
             cdnfuUplinkMethod = p.getString("cdnfuUplinkMethod", "")?.ifBlank { "POST" } ?: "POST",
             cdnfuUplinkPath = p.getString("cdnfuUplinkPath", "")?.ifBlank { "api" } ?: "api",
             cdnfuUplinkData = p.getString("cdnfuUplinkData", "")?.ifBlank { "body" } ?: "body",
             cdnfuXhttpPlacement = p.getString("cdnfuXhttpPlacement", "")?.ifBlank { "cookie" } ?: "cookie",
-            cdnfuDownlinkMode = p.getString("cdnfuDownlinkMode", "")?.ifBlank { "poll" } ?: "poll",
+            cdnfuDownlinkMode = p.getString("cdnfuDownlinkMode", "")?.ifBlank { "stream" } ?: "stream",
             cdnfuMultipath = p.getInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
     }
@@ -583,6 +584,9 @@ object ConfigStore {
         val config = base.copy(
             protocol = Config.TunnelProtocol.CDNFU,
             cdnfuUrl = url ?: base.cdnfuUrl,
+            // NOT "host" — that is already a legacy alias for the URL just above, and
+            // renaming it would silently break links already in the wild.
+            cdnfuHost = first("hostheader", "host_header", "cdnfuhost", "sni") ?: base.cdnfuHost,
             cdnfuPsk = psk ?: base.cdnfuPsk,
             cdnfuMimic = first("mimic", "path_mimic") ?: base.cdnfuMimic.ifBlank { "mixed" },
             cdnfuUplinkMethod = first("method", "uplink_method") ?: base.cdnfuUplinkMethod.ifBlank { "POST" },
@@ -591,7 +595,7 @@ object ConfigStore {
             cdnfuXhttpPlacement = first("xhttp", "placement", "xhttp_placement")
                 ?: base.cdnfuXhttpPlacement.ifBlank { "cookie" },
             cdnfuDownlinkMode = first("downlink", "dl", "downlink_mode")
-                ?: base.cdnfuDownlinkMode.ifBlank { "poll" },
+                ?: base.cdnfuDownlinkMode.ifBlank { "stream" },
             cdnfuMultipath = first("multipath", "mp", "paths")?.toIntOrNull()?.coerceIn(0, 32)
                 ?: base.cdnfuMultipath
         )
@@ -698,6 +702,7 @@ object ConfigStore {
             .putString("s3Psk", config.s3Psk)
             .putString("xrayConfigJson", config.xrayConfigJson)
             .putString("cdnfuUrl", config.cdnfuUrl)
+            .putString("cdnfuHost", config.cdnfuHost)
             .putString("cdnfuPsk", config.cdnfuPsk)
             .putString("cdnfuMimic", config.cdnfuMimic)
             .putString("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
@@ -765,6 +770,7 @@ object ConfigStore {
             .put("s3Psk", config.s3Psk)
             .put("xrayConfigJson", config.xrayConfigJson)
             .put("cdnfuUrl", config.cdnfuUrl)
+            .put("cdnfuHost", config.cdnfuHost)
             .put("cdnfuPsk", config.cdnfuPsk)
             .put("cdnfuMimic", config.cdnfuMimic)
             .put("cdnfuUplinkMethod", config.cdnfuUplinkMethod)
@@ -803,13 +809,14 @@ object ConfigStore {
             s3Psk = json.optString("s3Psk", ""),
             xrayConfigJson = json.optString("xrayConfigJson", ""),
             cdnfuUrl = json.optString("cdnfuUrl", ""),
+            cdnfuHost = json.optString("cdnfuHost", ""),
             cdnfuPsk = json.optString("cdnfuPsk", ""),
             cdnfuMimic = json.optString("cdnfuMimic", "").ifBlank { "mixed" },
             cdnfuUplinkMethod = json.optString("cdnfuUplinkMethod", "").ifBlank { "POST" },
             cdnfuUplinkPath = json.optString("cdnfuUplinkPath", "").ifBlank { "api" },
             cdnfuUplinkData = json.optString("cdnfuUplinkData", "").ifBlank { "body" },
             cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
-            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "poll" },
+            cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "stream" },
             cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
         )
 

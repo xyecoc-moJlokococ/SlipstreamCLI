@@ -1693,6 +1693,9 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     LabeledField(t(S.CDNFU_URL)) {
         SmuglyTextField(c.cdnfuUrl, { onChange(c.copy(cdnfuUrl = it)) }, hint = t(S.CDNFU_URL_HINT))
     }
+    LabeledField(t(S.CDNFU_HOST)) {
+        SmuglyTextField(c.cdnfuHost, { onChange(c.copy(cdnfuHost = it)) }, hint = t(S.CDNFU_HOST_HINT))
+    }
     LabeledField(t(S.CDNFU_PSK)) {
         SmuglyTextField(c.cdnfuPsk, { onChange(c.copy(cdnfuPsk = it)) }, hint = t(S.CDNFU_PSK_HINT), password = true)
     }
@@ -1737,7 +1740,7 @@ private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
     }
     LabeledField(t(S.CDNFU_DOWNLINK)) {
         val options = listOf("poll", "stream", "auto")
-        val cur = c.cdnfuDownlinkMode.ifBlank { "poll" }
+        val cur = c.cdnfuDownlinkMode.ifBlank { "stream" }
         val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
         PillSelector(options, idx) { i ->
             onChange(c.copy(cdnfuDownlinkMode = options[i]))

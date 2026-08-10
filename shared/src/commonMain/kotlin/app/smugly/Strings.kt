@@ -65,6 +65,8 @@ enum class S(val en: String, val ru: String) {
     // cdn-fuckup (XHTTP packet-up)
     CDNFU_URL("URL", "URL"),
     CDNFU_URL_HINT("https://edge.example/", "https://edge.example/"),
+    CDNFU_HOST("Host header", "Host-заголовок"),
+    CDNFU_HOST_HINT("blank = from URL", "пусто = из URL"),
     CDNFU_PSK("PSK", "PSK"),
     CDNFU_PSK_HINT("passphrase", "пароль (PSK)"),
     CDNFU_MIMIC("Path mimic", "Mimic путей"),

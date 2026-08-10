@@ -235,6 +235,9 @@ object DesktopTunnel {
         val toml = buildString {
             appendLine("listen = ${tomlString("127.0.0.1:$socksPort")}")
             appendLine("url = ${tomlString(c.cdnfuUrl.trim())}")
+            if (c.cdnfuHost.isNotBlank()) {
+                appendLine("host = ${tomlString(c.cdnfuHost.trim())}")
+            }
             appendLine("psk = ${tomlString(c.cdnfuPsk.trim())}")
             appendLine()
             appendLine("[path]")
@@ -253,7 +256,7 @@ object DesktopTunnel {
             appendLine("data_placement = ${tomlString(placement)}")
             appendLine()
             appendLine("[downlink]")
-            appendLine("mode = ${tomlString(c.cdnfuDownlinkMode.trim().ifBlank { "poll" })}")
+            appendLine("mode = ${tomlString(c.cdnfuDownlinkMode.trim().ifBlank { "stream" })}")
             appendLine()
             appendLine("[tls]")
             appendLine("chrome = 137")

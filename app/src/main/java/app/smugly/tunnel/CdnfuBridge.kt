@@ -40,8 +40,13 @@ object CdnfuBridge {
      * @param uplinkPath auto|asset|api (blank → auto).
      * @param uplinkData body|query|cookie|auto (blank → auto).
      * @param xhttpPlacement cookie|query for session/seq/pad meta (blank → query).
-     * @param downlinkMode poll|stream|auto (blank → poll).
+     * @param downlinkMode poll|stream|auto (blank → poll). TCP only — UDP picks its own
+     *   (streaming) downlink, because polling costs one request per datagram.
      * @param multipathPaths 0 = default (4); 1 = single path; 2..=32 = stripe.
+     * @param hostName hostname to present when [url] is a bare edge IP, e.g.
+     *   `url = http://151.236.109.225/` + `hostName = jarvis-media.ru`. It becomes the
+     *   `Host` header (and h2 `:authority` / TLS SNI) while the socket goes to that IP.
+     *   Blank → taken from the URL as usual.
      */
     fun startClient(
         url: String,
@@ -53,12 +58,13 @@ object CdnfuBridge {
         uplinkData: String,
         xhttpPlacement: String,
         downlinkMode: String,
-        multipathPaths: Int
+        multipathPaths: Int,
+        hostName: String = ""
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libcdnfu is not loaded"))
         AppLog.i(
             TAG,
-            "start url=$url mimic=$mimic method=$uplinkMethod path=$uplinkPath " +
+            "start url=$url host=$hostName mimic=$mimic method=$uplinkMethod path=$uplinkPath " +
                 "data=$uplinkData xhttp=$xhttpPlacement dl=$downlinkMode " +
                 "mp=$multipathPaths socks=$socksListen"
         )
@@ -73,7 +79,8 @@ object CdnfuBridge {
                 uplinkData,
                 xhttpPlacement,
                 downlinkMode,
-                multipathPaths
+                multipathPaths,
+                hostName
             )
         }.getOrElse {
             AppLog.e(TAG, "nativeStartClient threw", it)
@@ -109,7 +116,8 @@ object CdnfuBridge {
         uplinkData: String,
         xhttpPlacement: String,
         downlinkMode: String,
-        multipathPaths: Int
+        multipathPaths: Int,
+        hostName: String
     ): Int
 
     private external fun nativeStopClient()
