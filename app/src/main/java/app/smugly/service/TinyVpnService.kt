@@ -450,8 +450,13 @@ class TinyVpnService : VpnService() {
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
 
-            // mapdns: hostname restored on SOCKS CONNECT. rejectNonDnsUdp drops QUIC noise that
-            // would otherwise open dozens of UDP packet-up sessions.
+            // mapdns: hostname restored on SOCKS CONNECT, so DNS never rides as UDP.
+            //
+            // rejectNonDnsUdp stays OFF: it dropped *every* non-DNS datagram, which meant a
+            // game's UDP never reached the tunnel at all — Brawl Stars fell back to TCP and
+            // moved in jerks. The two things it was guarding against are already covered:
+            // DNS by mapdns above, and QUIC by hev's own rejectQuic (always on), so browsers
+            // still fall back to TCP instead of opening dozens of packet-up UDP sessions.
             HevSocks5Tunnel.start(
                 tunFd = tunFd ?: error("TUN fd is null"),
                 socksAddress = "127.0.0.1",
@@ -460,7 +465,7 @@ class TinyVpnService : VpnService() {
                 password = null,
                 udpMode = "udp",
                 mapDns = true,
-                rejectNonDnsUdp = true
+                rejectNonDnsUdp = false
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 
