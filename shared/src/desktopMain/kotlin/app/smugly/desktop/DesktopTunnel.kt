@@ -260,7 +260,11 @@ object DesktopTunnel {
             appendLine()
             appendLine("[tls]")
             appendLine("chrome = 137")
-            appendLine("http1_only = true")
+            // Must stay false. Forcing HTTP/1.1 makes the TurboFlare HTTPS edge buffer
+            // the whole streaming downlink and release it only when the response ends,
+            // which kills UDP outright and costs TCP ~15s a session. It also
+            // contradicts the Chrome 137 ALPN the client advertises.
+            appendLine("http1_only = false")
             appendLine()
             appendLine("[multipath]")
             appendLine("paths = ${c.cdnfuMultipath.coerceIn(1, 32).takeIf { c.cdnfuMultipath > 0 } ?: 4}")

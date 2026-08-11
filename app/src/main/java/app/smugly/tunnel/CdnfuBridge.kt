@@ -40,8 +40,9 @@ object CdnfuBridge {
      * @param uplinkPath auto|asset|api (blank → auto).
      * @param uplinkData body|query|cookie|auto (blank → auto).
      * @param xhttpPlacement cookie|query for session/seq/pad meta (blank → query).
-     * @param downlinkMode poll|stream|auto (blank → poll). TCP only — UDP picks its own
-     *   (streaming) downlink, because polling costs one request per datagram.
+     * @param downlinkMode poll|stream|auto (blank → stream). TCP only — UDP picks its own
+     *   (streaming) downlink, because polling costs one request per datagram. Either way
+     *   the client falls back to polling by itself if the edge buffers chunked bodies.
      * @param multipathPaths 0 = default (4); 1 = single path; 2..=32 = stripe.
      * @param hostName hostname to present when [url] is a bare edge IP, e.g.
      *   `url = http://151.236.109.225/` + `hostName = jarvis-media.ru`. It becomes the

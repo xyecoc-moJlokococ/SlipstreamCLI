@@ -141,6 +141,58 @@ socks5_addr_is_inside_buf (const HevSocks5Addr *addr, const char *start,
     return (size_t)(end - p) >= len;
 }
 
+/* Remember "the app addressed this peer as <name>, at this synthetic address". */
+static void
+name_map_learn (HevSocks5SessionUDP *self, const HevSocks5Addr *addr, int ip,
+                int port)
+{
+    HevSocks5UDPNameMap *slot;
+    unsigned int len = addr->domain.len;
+    int i;
+
+    if (len == 0 || len > HEV_SOCKS5_UDP_NAME_MAX)
+        return;
+
+    for (i = 0; i < HEV_SOCKS5_UDP_NAME_SLOTS; i++) {
+        slot = &self->names[i];
+        if (slot->len == len && !memcmp (slot->name, addr->domain.addr, len)) {
+            slot->addr = ip;
+            slot->port = port;
+            return;
+        }
+    }
+
+    slot = &self->names[self->names_next];
+    self->names_next = (self->names_next + 1) % HEV_SOCKS5_UDP_NAME_SLOTS;
+    memcpy (slot->name, addr->domain.addr, len);
+    slot->len = len;
+    slot->addr = ip;
+    slot->port = port;
+}
+
+/* Reverse of the above: the proxy answered naming a peer, give back the address
+ * the app is actually listening for. Returns 0 when the name is unknown. */
+static int
+name_map_lookup (HevSocks5SessionUDP *self, const HevSocks5Addr *addr, int *ip,
+                 uint16_t *port)
+{
+    unsigned int len = addr->domain.len;
+    int i;
+
+    if (len == 0 || len > HEV_SOCKS5_UDP_NAME_MAX)
+        return 0;
+
+    for (i = 0; i < HEV_SOCKS5_UDP_NAME_SLOTS; i++) {
+        HevSocks5UDPNameMap *slot = &self->names[i];
+        if (slot->len == len && !memcmp (slot->name, addr->domain.addr, len)) {
+            *ip = slot->addr;
+            *port = slot->port;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int
 hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self, unsigned int num)
 {
@@ -172,15 +224,40 @@ hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self, unsigned int num)
         err_t err;
         int ret;
 
-        if (self->addr && self->port) {
+        if (!socks5_addr_is_inside_buf (msgv[i].addr, buf_start, buf_end)) {
+            LOG_D ("%p socks5 session udp fwd b addr invalid", self);
+            continue;
+        }
+
+        if (msgv[i].addr->atype == HEV_SOCKS5_ADDR_TYPE_NAME) {
+            /* A named peer: the app is waiting on the mapdns synthetic address it
+             * resolved, not on whatever the proxy resolved the name to. Look up the
+             * one this very session used on the way out. */
+            int ip;
+            if (!name_map_lookup (self, msgv[i].addr, &ip, &port)) {
+                LOG_D ("%p socks5 session udp fwd b unknown name", self);
+                continue;
+            }
+            ip_addr_set_zero_ip4 (&saddr);
+            ip_2_ip4 (&saddr)->addr = ip;
+        } else if (self->addr && self->port &&
+                   msgv[i].addr->atype == HEV_SOCKS5_ADDR_TYPE_IPV4 &&
+                   !memcmp (msgv[i].addr->ipv4.addr, &self->addr, 4)) {
+            /* Proxy answered with the real address of the last named peer. */
+            ip_addr_set_zero_ip4 (&saddr);
             ip_2_ip4 (&saddr)->addr = self->addr;
             port = self->port;
         } else {
-            if (!socks5_addr_is_inside_buf (msgv[i].addr, buf_start, buf_end)) {
-                LOG_D ("%p socks5 session udp fwd b addr invalid", self);
-                continue;
-            }
-
+            /* Plain peer: use exactly what the proxy reported.
+             *
+             * This used to be an `else` under `if (self->addr && self->port)`, so
+             * one mapdns destination anywhere on the association rewrote the source
+             * of EVERY reply — a WebRTC agent that resolves stun.<host> and then
+             * talks to peers by IP had all of it reported as coming from the STUN
+             * host and dropped. The old branch also left `saddr.type` uninitialised,
+             * which made `udp_sendfrom` fail its version check outright: measured on
+             * device, a hostname-addressed flow got no reply at all while a
+             * literal-addressed one worked. */
             ret = hev_socks5_addr_into_lwip (msgv[i].addr, &saddr, &port);
             if (ret < 0) {
                 LOG_D ("%p socks5 session udp fwd b addr", self);
@@ -237,6 +314,11 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
     hev_socks5_addr_from_lwip (&frame->addr, &pcb->local_ip, pcb->local_port);
 
     if (frame->addr.atype == HEV_SOCKS5_ADDR_TYPE_NAME) {
+        /* Per-name, so several named peers on one association each get their own
+         * synthetic address back. `addr`/`port` stay as the last-named fallback for
+         * a proxy that answers with the resolved IP instead of echoing the name. */
+        name_map_learn (self, &frame->addr, ip_2_ip4 (&pcb->local_ip)->addr,
+                        pcb->local_port);
         self->addr = ip_2_ip4 (&pcb->local_ip)->addr;
         self->port = pcb->local_port;
     }
