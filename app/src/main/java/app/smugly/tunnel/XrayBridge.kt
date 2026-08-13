@@ -182,6 +182,46 @@ object XrayBridge {
             .onFailure { AppLog.w(TAG, "xray stop failed: ${it.message}") }
     }
 
+    /**
+     * A core instance that is **not** the app's tunnel: its own controller, never stored in
+     * [controller], so starting one does not stop the live connection and stopping it does not
+     * touch anything else. Used by the latency probe, which runs a profile for a second or two to
+     * see whether it actually carries traffic.
+     *
+     * The caller owns the returned handle and must close it; the config must already carry the
+     * inbound it should listen on (see [app.smugly.XrayConfigBuilder.withOnlySocksInbound]).
+     */
+    fun startInstance(configJson: String): Result<Instance> {
+        if (!loaded) return Result.failure(IllegalStateException("libxray is not loaded"))
+        if (!initialized) return Result.failure(IllegalStateException("XrayBridge.init was not called"))
+
+        val handler = object : libxray.CoreCallbackHandler {
+            override fun startup(): Long = 0
+            override fun shutdown(): Long = 0
+            override fun onEmitStatus(code: Long, message: String): Long = 0
+        }
+        val core = runCatching { libxray.Libxray.newCoreController(handler) }
+            .getOrElse { return Result.failure(it) }
+        return runCatching { core.startLoop(configJson) }
+            .fold(
+                onSuccess = { Result.success(Instance(core)) },
+                onFailure = { failure ->
+                    runCatching { core.stopLoop() }
+                    Result.failure(failure)
+                }
+            )
+    }
+
+    /** A side instance started by [startInstance]. */
+    class Instance(private val core: libxray.CoreController) : AutoCloseable {
+        val isRunning: Boolean get() = runCatching { core.isRunning }.getOrDefault(false)
+
+        override fun close() {
+            runCatching { core.stopLoop() }
+                .onFailure { AppLog.w(TAG, "probe xray stop failed: ${it.message}") }
+        }
+    }
+
     fun isRunning(): Boolean =
         controller?.let { core -> runCatching { core.isRunning }.getOrDefault(false) } ?: false
 

@@ -129,10 +129,25 @@ class SubscriptionParserTest {
         assertEquals(listOf(vless), SubscriptionParser.parse("$vless\n$vless").links)
     }
 
+    // Every scheme the importer understands must be here. A missing one is dropped with no
+    // error, and a category holding only that protocol disappears from the folder entirely —
+    // which is exactly what `cdnfu://` did to «Обход БС [CDN]».
     @Test
     fun appOwnSchemesAreAccepted() {
-        val body = "slipstream://import?config=abc\ns3fu://import?config=def"
-        assertEquals(2, SubscriptionParser.parse(body).links.size)
+        val body = "slipstream://import?config=abc\ns3fu://import?config=def\n" +
+            "cdnfu://import?url=http%3A%2F%2Fedge.example&psk=deadbeef\nxray://import?config=ghi"
+        assertEquals(4, SubscriptionParser.parse(body).links.size)
+    }
+
+    @Test
+    fun aCategoryHoldingOnlyACdnLinkSurvives() {
+        val body = buildString {
+            appendLine("#category: Обход БС [CDN]")
+            appendLine("cdnfu://import?url=http%3A%2F%2Fedge.example&psk=deadbeef&name=Spain")
+        }
+        val parsed = SubscriptionParser.parse(body)
+        assertEquals(listOf("Обход БС [CDN]"), parsed.categories.map { it.name })
+        assertEquals(1, parsed.links.size)
     }
 
     @Test

@@ -64,7 +64,15 @@ data class Config(
      * Parallel packet-up sessions per SOCKS TCP. 0 / 1 = single path (recommended on
      * Android); 2..=4 = multipath striping for lab benches only.
      */
-    val cdnfuMultipath: Int = 1
+    val cdnfuMultipath: Int = 1,
+    /**
+     * Whole client config as TOML, edited as text in the profile screen — the same file
+     * the `s3fu --config` CLI reads. Blank = derive one from the fields above, which is
+     * what every profile made before this existed does (see [effectiveS3fuToml]).
+     */
+    val s3fuToml: String = "",
+    /** As [s3fuToml], for cdn-fuckup (`cdnfu --config`). */
+    val cdnfuToml: String = ""
 ) {
     enum class Mode { PROXY, VPN }
     enum class AuthMode { NO_AUTH, LOGIN_PASSWORD }

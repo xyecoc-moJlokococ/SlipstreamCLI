@@ -52,6 +52,11 @@ object ConfigJson {
             .put("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
             .put("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
             .put("cdnfuMultipath", config.cdnfuMultipath)
+            // The whole client config as text. Kept alongside the legacy per-field values
+            // rather than replacing them, so a profile written by this build still opens
+            // in an older one (it falls back to the fields) instead of losing its server.
+            .put("s3fuToml", config.s3fuToml)
+            .put("cdnfuToml", config.cdnfuToml)
 
     fun configFromJson(json: JSONObject): Config =
         Config(
@@ -91,6 +96,8 @@ object ConfigJson {
             cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
             cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "stream" },
             cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
+            s3fuToml = json.optString("s3fuToml", ""),
+            cdnfuToml = json.optString("cdnfuToml", ""),
         )
 
     fun profileToJson(profile: ConfigProfile): JSONObject =

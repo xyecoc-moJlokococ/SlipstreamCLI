@@ -209,73 +209,15 @@ object DesktopTunnel {
     private fun engineConfigDir(): File =
         File(AppPaths.filesDir(), "engines").also { it.mkdirs() }
 
-    /** s3fu reads a TOML config; see `crates/s3fu-core/src/config.rs`. */
-    private fun writeS3fuConfig(c: Config, socksPort: Int): File {
-        require(c.s3Endpoint.isNotBlank()) { "S3 endpoint is empty" }
-        require(c.s3Bucket.isNotBlank()) { "S3 bucket is empty" }
-        val toml = buildString {
-            appendLine("endpoint = ${tomlString(c.s3Endpoint.trim())}")
-            appendLine("bucket = ${tomlString(c.s3Bucket.trim())}")
-            appendLine("access_key = ${tomlString(c.s3AccessKey.trim())}")
-            appendLine("secret_key = ${tomlString(c.s3SecretKey.trim())}")
-            if (c.s3Prefix.isNotBlank()) appendLine("prefix = ${tomlString(c.s3Prefix.trim())}")
-            if (c.s3Psk.isNotBlank()) appendLine("psk = ${tomlString(c.s3Psk.trim())}")
-            appendLine("socks_listen = ${tomlString("127.0.0.1:$socksPort")}")
+    private fun writeS3fuConfig(c: Config, socksPort: Int): File =
+        File(engineConfigDir(), "s3fu-client.toml").apply {
+            writeText(DesktopEngineConfigs.s3fu(c, socksPort))
         }
-        val f = File(engineConfigDir(), "s3fu-client.toml")
-        f.writeText(toml)
-        return f
-    }
 
-    /** cdnfu client TOML — mirrors configs/client.toml shape. */
-    private fun writeCdnfuConfig(c: Config, socksPort: Int): File {
-        require(c.cdnfuUrl.isNotBlank()) { "URL is empty" }
-        require(c.cdnfuPsk.isNotBlank()) { "CDN PSK is empty" }
-        val placement = c.cdnfuXhttpPlacement.trim().ifBlank { "cookie" }
-        val toml = buildString {
-            appendLine("listen = ${tomlString("127.0.0.1:$socksPort")}")
-            appendLine("url = ${tomlString(c.cdnfuUrl.trim())}")
-            if (c.cdnfuHost.isNotBlank()) {
-                appendLine("host = ${tomlString(c.cdnfuHost.trim())}")
-            }
-            appendLine("psk = ${tomlString(c.cdnfuPsk.trim())}")
-            appendLine()
-            appendLine("[path]")
-            appendLine("mimic = ${tomlString(c.cdnfuMimic.trim().ifBlank { "mixed" })}")
-            appendLine()
-            appendLine("[uplink]")
-            appendLine("method = ${tomlString(c.cdnfuUplinkMethod.trim().ifBlank { "POST" })}")
-            appendLine("path = ${tomlString(c.cdnfuUplinkPath.trim().ifBlank { "api" })}")
-            appendLine("data = ${tomlString(c.cdnfuUplinkData.trim().ifBlank { "body" })}")
-            appendLine("pipeline = 8")
-            appendLine()
-            appendLine("[xhttp]")
-            appendLine("session_placement = ${tomlString(placement)}")
-            appendLine("seq_placement = ${tomlString(placement)}")
-            appendLine("pad_placement = ${tomlString(placement)}")
-            appendLine("data_placement = ${tomlString(placement)}")
-            appendLine()
-            appendLine("[downlink]")
-            appendLine("mode = ${tomlString(c.cdnfuDownlinkMode.trim().ifBlank { "stream" })}")
-            appendLine()
-            appendLine("[tls]")
-            appendLine("chrome = 137")
-            // Must stay false. Forcing HTTP/1.1 makes the TurboFlare HTTPS edge buffer
-            // the whole streaming downlink and release it only when the response ends,
-            // which kills UDP outright and costs TCP ~15s a session. It also
-            // contradicts the Chrome 137 ALPN the client advertises.
-            appendLine("http1_only = false")
-            appendLine()
-            appendLine("[multipath]")
-            appendLine("paths = ${c.cdnfuMultipath.coerceIn(1, 32).takeIf { c.cdnfuMultipath > 0 } ?: 4}")
-            appendLine()
-            appendLine("[pool]")
-            appendLine("size = 32")
+    private fun writeCdnfuConfig(c: Config, socksPort: Int): File =
+        File(engineConfigDir(), "cdnfu-client.toml").apply {
+            writeText(DesktopEngineConfigs.cdnfu(c, socksPort))
         }
-        val f = File(engineConfigDir(), "cdnfu-client.toml")
-        f.writeText(toml)
-        return f
-    }
 
     /**
      * Xray runs the profile's own JSON, but its **inbounds are replaced**: the profile was written
@@ -290,30 +232,10 @@ object DesktopTunnel {
         require(root.optJSONArray("outbounds")?.length() ?: 0 > 0) {
             "Xray config has no outbounds"
         }
-        root.put(
-            "inbounds",
-            JSONArray().put(
-                JSONObject()
-                    .put("tag", "socks-in")
-                    .put("protocol", "socks")
-                    .put("listen", "127.0.0.1")
-                    .put("port", socksPort)
-                    .put("settings", JSONObject().put("auth", "noauth").put("udp", true))
-                    .put(
-                        "sniffing",
-                        JSONObject()
-                            .put("enabled", true)
-                            .put("destOverride", JSONArray().put("http").put("tls"))
-                    )
-            )
-        )
         val f = File(engineConfigDir(), "xray-client.json")
-        f.writeText(root.toString(2))
+        f.writeText(app.smugly.XrayConfigBuilder.withOnlySocksInbound(c.xrayConfigJson, socksPort))
         return f
     }
-
-    private fun tomlString(value: String): String =
-        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     /**
      * Profiles from panels almost always use `geoip:` / `geosite:` routing tags. Xray loads
@@ -323,7 +245,7 @@ object DesktopTunnel {
      * If they are absent next to the binary, copy from the repo assets / known locations so a
      * fresh install or an incomplete package still works once.
      */
-    private fun ensureXrayGeodata(enginesDir: File?) {
+    internal fun ensureXrayGeodata(enginesDir: File?) {
         if (enginesDir == null) return
         enginesDir.mkdirs()
         for (name in listOf("geoip.dat", "geosite.dat")) {

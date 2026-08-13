@@ -94,6 +94,10 @@ import app.smugly.ui.components.FolderDraft
 import app.smugly.ui.components.FolderEditorDialog
 import app.smugly.ui.components.FolderTabs
 import app.smugly.ui.components.JsonSyntaxHighlightTransformation
+import app.smugly.ui.components.TomlSyntaxHighlightTransformation
+import app.smugly.effectiveCdnfuToml
+import app.smugly.effectiveS3fuToml
+import androidx.compose.ui.text.input.VisualTransformation
 import app.smugly.ui.components.MenuLayer
 import app.smugly.ui.components.MenuRow
 import app.smugly.ui.components.PillSelector
@@ -1378,7 +1382,12 @@ fun ProfileEditorScreen(
 
     PlatformBackHandler(enabled = protocolMenuOpen) { protocolMenuOpen = false }
 
-    val isXray = c.protocol == Config.TunnelProtocol.XRAY
+    // Xray, s3fu and cdnfu are all "the profile IS a config file" protocols: the form is
+    // a full-height editor instead of a list of fields, because those engines have far
+    // more settings than a form can carry (and the app used to expose a fraction of them).
+    val isCodeProfile = c.protocol == Config.TunnelProtocol.XRAY ||
+        c.protocol == Config.TunnelProtocol.S3FU ||
+        c.protocol == Config.TunnelProtocol.CDNFU
 
     Box(
         Modifier
@@ -1399,11 +1408,11 @@ fun ProfileEditorScreen(
                 onConfirm = onSave,
                 onDeleteAction = onDelete
             )
-            // Xray: name/protocol stay fixed; JSON fills remaining height and scrolls only inside
-            // the field. Nested verticalScroll+focus bring-into-view used to yank the page to top
-            // when the user scrolled the form then tapped the JSON box.
-            // Other protocols: short form in a single page scroll.
-            if (isXray) {
+            // Config-file protocols: name/protocol stay fixed; the text fills remaining height
+            // and scrolls only inside the field. Nested verticalScroll+focus bring-into-view used
+            // to yank the page to top when the user scrolled the form then tapped the box.
+            // Slipstream: short form in a single page scroll.
+            if (isCodeProfile) {
                 Column(
                     Modifier
                         .padding(horizontal = 10.dp)
@@ -1428,16 +1437,40 @@ fun ProfileEditorScreen(
                         )
                     }
                 }
-                XrayEditor(
-                    c = c,
-                    onChange = { onChange(draft.copy(config = it)) },
-                    formatJson = formatXray,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp)
-                        .padding(bottom = 8.dp)
-                )
+                val editorModifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp)
+                    .padding(bottom = 8.dp)
+                when (c.protocol) {
+                    Config.TunnelProtocol.S3FU -> CodeEditor(
+                        // Blank stored text means "not edited yet": show the config derived
+                        // from the profile's own values, so the box opens on a real config
+                        // to change rather than an empty page.
+                        text = c.effectiveS3fuToml(),
+                        onTextChange = { onChange(draft.copy(config = c.copy(s3fuToml = it))) },
+                        placeholder = "endpoint = \"https://…\"",
+                        highlight = TomlSyntaxHighlightTransformation,
+                        format = { null },
+                        modifier = editorModifier
+                    )
+                    Config.TunnelProtocol.CDNFU -> CodeEditor(
+                        text = c.effectiveCdnfuToml(),
+                        onTextChange = { onChange(draft.copy(config = c.copy(cdnfuToml = it))) },
+                        placeholder = "url = \"https://…\"",
+                        highlight = TomlSyntaxHighlightTransformation,
+                        format = { null },
+                        modifier = editorModifier
+                    )
+                    else -> CodeEditor(
+                        text = c.xrayConfigJson,
+                        onTextChange = { onChange(draft.copy(config = c.copy(xrayConfigJson = it))) },
+                        placeholder = "{}",
+                        highlight = JsonSyntaxHighlightTransformation,
+                        format = formatXray,
+                        modifier = editorModifier
+                    )
+                }
             } else {
                 Column(
                     Modifier
@@ -1464,20 +1497,13 @@ fun ProfileEditorScreen(
                             }
                         )
                     }
-                    when (c.protocol) {
-                        Config.TunnelProtocol.SLIPSTREAM -> SlipstreamEditor(
-                            c = c,
-                            onChange = { onChange(draft.copy(config = it)) },
-                            onLocalDns = onLocalDns
-                        )
-                        Config.TunnelProtocol.S3FU -> S3fuEditor(c) {
-                            onChange(draft.copy(config = it))
-                        }
-                        Config.TunnelProtocol.CDNFU -> CdnfuEditor(c) {
-                            onChange(draft.copy(config = it))
-                        }
-                        Config.TunnelProtocol.XRAY -> { /* handled above */ }
-                    }
+                    // Only Slipstream reaches here; the config-file protocols took the
+                    // full-height editor branch above.
+                    SlipstreamEditor(
+                        c = c,
+                        onChange = { onChange(draft.copy(config = it)) },
+                        onLocalDns = onLocalDns
+                    )
                 }
             }
         }
@@ -1665,102 +1691,13 @@ private fun SlipstreamEditor(
     HintText(t(S.HINT_BASE64U))
 }
 
-@Composable
-private fun S3fuEditor(c: Config, onChange: (Config) -> Unit) {
-    // No "S3 (s3-fuckup)" section header — protocol pill already names the mode.
-    LabeledField(t(S.S3_ENDPOINT)) {
-        SmuglyTextField(c.s3Endpoint, { onChange(c.copy(s3Endpoint = it)) }, hint = "https://…")
-    }
-    LabeledField(t(S.S3_BUCKET)) {
-        SmuglyTextField(c.s3Bucket, { onChange(c.copy(s3Bucket = it)) }, hint = t(S.S3_BUCKET_HINT))
-    }
-    LabeledField(t(S.S3_ACCESS_KEY)) {
-        SmuglyTextField(c.s3AccessKey, { onChange(c.copy(s3AccessKey = it)) })
-    }
-    LabeledField(t(S.S3_SECRET_KEY)) {
-        SmuglyTextField(c.s3SecretKey, { onChange(c.copy(s3SecretKey = it)) }, password = true)
-    }
-    LabeledField(t(S.S3_PREFIX)) {
-        SmuglyTextField(c.s3Prefix, { onChange(c.copy(s3Prefix = it)) }, hint = t(S.S3_PREFIX_HINT))
-    }
-    LabeledField(t(S.S3_PSK)) {
-        SmuglyTextField(c.s3Psk, { onChange(c.copy(s3Psk = it)) }, hint = t(S.S3_PSK_HINT))
-    }
-}
-
-@Composable
-private fun CdnfuEditor(c: Config, onChange: (Config) -> Unit) {
-    LabeledField(t(S.CDNFU_URL)) {
-        SmuglyTextField(c.cdnfuUrl, { onChange(c.copy(cdnfuUrl = it)) }, hint = t(S.CDNFU_URL_HINT))
-    }
-    LabeledField(t(S.CDNFU_HOST)) {
-        SmuglyTextField(c.cdnfuHost, { onChange(c.copy(cdnfuHost = it)) }, hint = t(S.CDNFU_HOST_HINT))
-    }
-    LabeledField(t(S.CDNFU_PSK)) {
-        SmuglyTextField(c.cdnfuPsk, { onChange(c.copy(cdnfuPsk = it)) }, hint = t(S.CDNFU_PSK_HINT), password = true)
-    }
-    LabeledField(t(S.CDNFU_MIMIC)) {
-        val options = listOf("mixed", "image", "video", "static")
-        val idx = options.indexOf(c.cdnfuMimic.lowercase()).coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuMimic = options[i]))
-        }
-    }
-    LabeledField(t(S.CDNFU_UPLINK_METHOD)) {
-        val options = listOf("POST", "PUT", "GET", "auto")
-        val cur = c.cdnfuUplinkMethod.ifBlank { "POST" }
-        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuUplinkMethod = options[i]))
-        }
-    }
-    LabeledField(t(S.CDNFU_UPLINK_PATH)) {
-        val options = listOf("api", "asset", "auto")
-        val cur = c.cdnfuUplinkPath.ifBlank { "api" }
-        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuUplinkPath = options[i]))
-        }
-    }
-    LabeledField(t(S.CDNFU_UPLINK_DATA)) {
-        val options = listOf("body", "cookie", "query", "auto")
-        val cur = c.cdnfuUplinkData.ifBlank { "body" }
-        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuUplinkData = options[i]))
-        }
-    }
-    LabeledField(t(S.CDNFU_XHTTP_PLACEMENT)) {
-        val options = listOf("cookie", "query")
-        val cur = c.cdnfuXhttpPlacement.ifBlank { "cookie" }
-        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuXhttpPlacement = options[i]))
-        }
-    }
-    LabeledField(t(S.CDNFU_DOWNLINK)) {
-        val options = listOf("poll", "stream", "auto")
-        val cur = c.cdnfuDownlinkMode.ifBlank { "stream" }
-        val idx = options.indexOfFirst { it.equals(cur, ignoreCase = true) }.coerceAtLeast(0)
-        PillSelector(options, idx) { i ->
-            onChange(c.copy(cdnfuDownlinkMode = options[i]))
-        }
-    }
-    // Android VPN always runs multipath=1 (parallel paths starved the session pool under
-    // browsers/speedtests). Show the effective value; editing only re-saves 1.
-    LabeledField(t(S.CDNFU_MULTIPATH)) {
-        SmuglyTextField(
-            "1",
-            { onChange(c.copy(cdnfuMultipath = 1)) },
-            number = true
-        )
-    }
-}
+// S3fuEditor / CdnfuEditor used to live here: one form field per setting, which is
+// exactly the limitation this replaced. Both protocols now use CodeEditor over the
+// whole config file (see TunnelToml for how old profiles are carried across).
 
 /**
- * Scrollables honour this for "bring focused child into view". Returning 0 never moves the
- * viewport — required for the Xray JSON box: wheel-scroll leaves the caret at 0, then the first
- * focus runs bring-into-view for offset 0 and yanks the scroller to the top.
+ * Focus inside the editor must not scroll the page. Nested verticalScroll + the default
+ * bring-into-view used to yank the form to the top the moment the text field was tapped.
  */
 private val NoOpBringIntoViewSpec = object : BringIntoViewSpec {
     override fun calculateScrollDistance(
@@ -1779,22 +1716,23 @@ private val NoOpBringIntoViewResponder = object : BringIntoViewResponder {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun XrayEditor(
-    c: Config,
-    onChange: (Config) -> Unit,
-    /** Pretty-printer; returns null when the text is not JSON. */
-    formatJson: (String) -> String?,
+private fun CodeEditor(
+    text: String,
+    onTextChange: (String) -> Unit,
+    placeholder: String,
+    highlight: VisualTransformation,
+    format: (String) -> String?,
     modifier: Modifier = Modifier
 ) {
     var field by remember {
-        mutableStateOf(TextFieldValue(c.xrayConfigJson, TextRange(0)))
+        mutableStateOf(TextFieldValue(text, TextRange(0)))
     }
-    LaunchedEffect(c.xrayConfigJson) {
-        if (c.xrayConfigJson != field.text) {
+    LaunchedEffect(text) {
+        if (text != field.text) {
             val sel = field.selection
-            val max = c.xrayConfigJson.length
+            val max = text.length
             field = TextFieldValue(
-                c.xrayConfigJson,
+                text,
                 TextRange(sel.start.coerceIn(0, max), sel.end.coerceIn(0, max))
             )
         }
@@ -1824,13 +1762,13 @@ private fun XrayEditor(
                     value = field,
                     onValueChange = { next ->
                         val pasted = next.text.length - field.text.length > 1
-                        val text = if (pasted) formatJson(next.text) ?: next.text else next.text
-                        field = if (text != next.text) {
-                            TextFieldValue(text, TextRange(text.length))
+                        val formatted = if (pasted) format(next.text) ?: next.text else next.text
+                        field = if (formatted != next.text) {
+                            TextFieldValue(formatted, TextRange(formatted.length))
                         } else {
                             next
                         }
-                        onChange(c.copy(xrayConfigJson = field.text))
+                        onTextChange(field.text)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1841,11 +1779,11 @@ private fun XrayEditor(
                         fontFamily = FontFamily.Monospace
                     ),
                     cursorBrush = SolidColor(SmuglyAccent),
-                    visualTransformation = JsonSyntaxHighlightTransformation,
+                    visualTransformation = highlight,
                     decorationBox = { inner ->
                         Box(Modifier.fillMaxWidth()) {
                             if (field.text.isEmpty()) {
-                                Text("{}", color = SmuglyTextMuted, fontSize = 12.sp)
+                                Text(placeholder, color = SmuglyTextMuted, fontSize = 12.sp)
                             }
                             inner()
                         }

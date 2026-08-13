@@ -269,6 +269,21 @@ object XrayConfigBuilder {
     }
 
     /**
+     * The config with **every** inbound replaced by one SOCKS5 listener on 127.0.0.1:[socksPort].
+     * Outbounds, routing and dns are untouched, so what gets measured or relayed is the profile.
+     *
+     * [withSocksPort] only moves the SOCKS inbound and leaves the rest alone, which is right for
+     * the live tunnel but wrong for anything that runs a second instance on the side: panel configs
+     * ship an HTTP inbound on a fixed port too, so two of them would fight over it and the second
+     * would fail to start for a reason that has nothing to do with the profile.
+     */
+    fun withOnlySocksInbound(configJson: String, socksPort: Int): String {
+        val root = runCatching { JSONObject(configJson) }.getOrNull() ?: return configJson
+        root.put("inbounds", JSONArray().put(socksInbound(socksPort)))
+        return root.toString(2)
+    }
+
+    /**
      * Pin an HTTP inbound onto 127.0.0.1:[httpPort], adding one when the config has none.
      *
      * This is what apps are pointed at by `VpnService.setHttpProxy`. It matters beyond

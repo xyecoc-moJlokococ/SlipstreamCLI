@@ -338,6 +338,44 @@ object ResolverSelector {
             .filter { it.isNotEmpty() }
             .distinct()
 
+    /** One resolver a probe may try, with the carrier to try it over. */
+    data class ProbeCandidate(
+        val host: String,
+        val port: Int,
+        val transport: Config.ResolverTransport,
+        val qnameMtu: Int = 0
+    )
+
+    /**
+     * Resolvers a latency probe should try, best first — the same ones a real connect would end up
+     * on, worked out **without touching any state a connect relies on**.
+     *
+     * Deliberately not [chooseFast]: that reports into [lastProgress], which is what the connect
+     * screen renders, so measuring a row's latency would have made the UI announce "DNS probing"
+     * out of nowhere. It also does its own reachability probing, and the probe is about to answer
+     * that question properly by running the tunnel.
+     *
+     * Order mirrors the real thing: a warm cache first (fastest known host, with the transport that
+     * was proven for it), then the configured pool with local/DHCP resolvers in the place the user
+     * put them.
+     */
+    fun probeResolverCandidates(context: Context, config: Config): List<ProbeCandidate> {
+        val port = config.resolverPort.takeIf { it in 1..65535 } ?: 53
+        if (config.resolverMode == Config.ResolverMode.MANUAL) {
+            return parseManualHosts(config.resolverHost)
+                .map { ProbeCandidate(it, port, config.resolverTransport) }
+        }
+        val cached = runCatching { loadResolverCache(context, config) }.getOrNull()
+            ?.takeIf { it.isFresh }
+            ?.resolvers
+            ?.sortedBy { it.totalMs }
+            .orEmpty()
+        val fromCache = cached.map { ProbeCandidate(it.host, port, it.transport, it.qnameMtu) }
+        val pool = runCatching { resolverPoolCandidates(context) }.getOrDefault(emptyList())
+            .map { ProbeCandidate(it, port, Config.ResolverTransport.UDP) }
+        return (fromCache + pool).distinctBy { it.host }
+    }
+
     fun choose(context: Context, config: Config, reason: String, skipHosts: Set<String> = emptySet()): ResolverChoice {
         val generation = beginProbe(reason)
         checkNotCancelled(generation)

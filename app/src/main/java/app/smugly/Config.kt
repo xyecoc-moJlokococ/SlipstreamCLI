@@ -79,6 +79,12 @@ object ConfigStore {
             cdnfuXhttpPlacement = p.getString("cdnfuXhttpPlacement", "")?.ifBlank { "cookie" } ?: "cookie",
             cdnfuDownlinkMode = p.getString("cdnfuDownlinkMode", "")?.ifBlank { "stream" } ?: "stream",
             cdnfuMultipath = p.getInt("cdnfuMultipath", 4).coerceIn(0, 32),
+            // The whole-config TOML has to survive here too. These prefs are the config the
+            // service actually runs; a profile's text lives in the profile JSON, and if it
+            // is not carried across, selecting that profile silently falls back to the
+            // derived config and the operator's edits do nothing.
+            s3fuToml = p.getString("s3fuToml", "") ?: "",
+            cdnfuToml = p.getString("cdnfuToml", "") ?: "",
         )
     }
 
@@ -565,7 +571,11 @@ object ConfigStore {
             s3AccessKey = accessKey ?: base.s3AccessKey,
             s3SecretKey = secretKey ?: base.s3SecretKey,
             s3Prefix = (first("prefix", "s3prefix", "s3_prefix") ?: base.s3Prefix).ifBlank { "s3fu" },
-            s3Psk = psk ?: base.s3Psk
+            s3Psk = psk ?: base.s3Psk,
+            // A panel that has a client config template sends the whole config alongside
+            // the parameters. When present it is what the engine runs; the parameters are
+            // still parsed above so an older app build (and the profile name) still work.
+            s3fuToml = decodeConfigParam(params["toml"])
         )
         val name = first("name", "profilename")
             ?: legacyLogin?.takeIf { it.isNotBlank() }
@@ -597,7 +607,11 @@ object ConfigStore {
             cdnfuDownlinkMode = first("downlink", "dl", "downlink_mode")
                 ?: base.cdnfuDownlinkMode.ifBlank { "stream" },
             cdnfuMultipath = first("multipath", "mp", "paths")?.toIntOrNull()?.coerceIn(0, 32)
-                ?: base.cdnfuMultipath
+                ?: base.cdnfuMultipath,
+            // A panel with a client config template sends the whole config alongside the
+            // parameters. When present it is what the engine runs; the parameters above are
+            // still parsed so an older app build (and the profile name) keep working.
+            cdnfuToml = decodeConfigParam(params["toml"])
         )
         val name = first("name", "profilename")
             ?: runCatching {
@@ -606,6 +620,21 @@ object ConfigStore {
             }.getOrNull()?.takeIf { !it.isNullOrBlank() }
             ?: defaultProfileName(config)
         return ImportedProfile(name, config)
+    }
+
+    /**
+     * The `toml` link parameter: a whole client config the panel rendered for this user.
+     *
+     * Handled separately from [decodeLinkPayload] because that one tries base64 first,
+     * and a short config with no punctuation could decode into binary garbage instead of
+     * failing. A config is recognised by its shape and taken as-is; anything else is
+     * assumed to be base64 so a panel may still send it wrapped.
+     */
+    private fun decodeConfigParam(value: String?): String {
+        val raw = value?.takeIf { it.isNotBlank() } ?: return ""
+        val looksLikeConfig = raw.contains('=') && (raw.contains('\n') || raw.contains('"'))
+        if (looksLikeConfig) return raw
+        return decodeLinkPayload(raw) ?: raw
     }
 
     private fun decodeLinkPayload(value: String?): String? {
@@ -711,6 +740,8 @@ object ConfigStore {
             .putString("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
             .putString("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
             .putInt("cdnfuMultipath", config.cdnfuMultipath)
+            .putString("s3fuToml", config.s3fuToml)
+            .putString("cdnfuToml", config.cdnfuToml)
             .apply()
     }
 

@@ -612,10 +612,12 @@ class DesktopPlatform(
         profile: app.smugly.ConfigProfile,
         onResult: (Result<Int>) -> Unit
     ) {
-        Thread({ onResult(app.smugly.net.LatencyProbe.measure(profile.config)) }, "latency-probe")
-            .apply { isDaemon = true }
-            .start()
+        // Starts the profile's own engine on a throwaway port and times a request through it; a
+        // protocol with no Windows build (Slipstream) falls back to a plain reachability check.
+        app.smugly.net.E2ELatencyProbe.submit(profile.config, probeEngines, onResult)
     }
+
+    private val probeEngines by lazy { app.smugly.desktop.DesktopProbeEngines() }
 
     override fun looksLikeSubscription(text: String): Boolean =
         app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)

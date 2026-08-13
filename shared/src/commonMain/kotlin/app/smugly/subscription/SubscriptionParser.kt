@@ -43,8 +43,11 @@ object SubscriptionParser {
     private val LINK_SCHEMES = listOf(
         "vless://", "vmess://", "trojan://", "ss://", "ssr://",
         "socks://", "hy2://", "hysteria://", "hysteria2://", "tuic://", "wireguard://",
-        // This app's own protocols, so a panel can hand out DNS/S3 tunnels too.
-        "slipstream://", "s3fu://", "xray://"
+        // This app's own protocols, so a panel can hand out its tunnels too. Every scheme
+        // Config.importProfileFromText understands has to be listed here: a link that is
+        // missing is dropped silently, and if it was the only member of a category the
+        // whole group vanishes from the folder with no error anywhere.
+        "slipstream://", "s3fu://", "cdnfu://", "xray://"
     )
 
     /**

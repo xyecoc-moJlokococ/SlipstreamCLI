@@ -41,22 +41,24 @@ object S3fuBridge {
      *   rustls at it via SSL_CERT_FILE (Android exposes no OpenSSL cert dir, so
      *   without it the trust store is empty and every TLS handshake fails).
      */
+    /**
+     * Start the client from a whole config TOML — the same file `s3fu --config` reads.
+     *
+     * This used to take one parameter per setting, so the phone could only reach the few
+     * knobs that had been plumbed through JNI. [socksListen] and [caFile] stay parameters
+     * because they belong to the service, not to the operator's config.
+     */
     fun startClient(
-        endpoint: String,
-        bucket: String,
-        accessKey: String,
-        secretKey: String,
-        prefix: String,
-        psk: String,
+        configToml: String,
         socksListen: String,
         caFile: String
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libs3fu is not loaded"))
-        AppLog.i(TAG, "start endpoint=$endpoint bucket=$bucket prefix=$prefix socks=$socksListen")
+        AppLog.i(TAG, "start socks=$socksListen configBytes=${configToml.length}")
         val code = runCatching {
-            nativeStartClient(endpoint, bucket, accessKey, secretKey, prefix, psk, socksListen, caFile)
+            nativeStartClientToml(configToml, socksListen, caFile)
         }.getOrElse {
-            AppLog.e(TAG, "nativeStartClient threw", it)
+            AppLog.e(TAG, "nativeStartClientToml threw", it)
             return Result.failure(it)
         }
         return if (code == 0) {
@@ -79,13 +81,8 @@ object S3fuBridge {
 
     fun lastError(): String? = if (loaded) runCatching { nativeLastError() }.getOrNull() else null
 
-    private external fun nativeStartClient(
-        endpoint: String,
-        bucket: String,
-        accessKey: String,
-        secretKey: String,
-        prefix: String,
-        psk: String,
+    private external fun nativeStartClientToml(
+        configToml: String,
         socksListen: String,
         caFile: String
     ): Int

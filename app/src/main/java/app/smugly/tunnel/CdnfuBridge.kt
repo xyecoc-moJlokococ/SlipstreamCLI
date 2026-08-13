@@ -49,42 +49,23 @@ object CdnfuBridge {
      *   `Host` header (and h2 `:authority` / TLS SNI) while the socket goes to that IP.
      *   Blank → taken from the URL as usual.
      */
+    /**
+     * Start the client from a whole config TOML — the same file `cdnfu --config` reads.
+     *
+     * This used to take eleven parameters, one per setting someone had plumbed through
+     * JNI, which is why the app exposed a fraction of what the engine supports.
+     * [socksListen] stays a parameter because the service owns the local listen address.
+     */
     fun startClient(
-        url: String,
-        psk: String,
-        mimic: String,
-        socksListen: String,
-        uplinkMethod: String,
-        uplinkPath: String,
-        uplinkData: String,
-        xhttpPlacement: String,
-        downlinkMode: String,
-        multipathPaths: Int,
-        hostName: String = ""
+        configToml: String,
+        socksListen: String
     ): Result<Unit> {
         if (!loaded) return Result.failure(IllegalStateException("libcdnfu is not loaded"))
-        AppLog.i(
-            TAG,
-            "start url=$url host=$hostName mimic=$mimic method=$uplinkMethod path=$uplinkPath " +
-                "data=$uplinkData xhttp=$xhttpPlacement dl=$downlinkMode " +
-                "mp=$multipathPaths socks=$socksListen"
-        )
+        AppLog.i(TAG, "start socks=$socksListen configBytes=${configToml.length}")
         val code = runCatching {
-            nativeStartClient(
-                url,
-                psk,
-                mimic,
-                socksListen,
-                uplinkMethod,
-                uplinkPath,
-                uplinkData,
-                xhttpPlacement,
-                downlinkMode,
-                multipathPaths,
-                hostName
-            )
+            nativeStartClientToml(configToml, socksListen)
         }.getOrElse {
-            AppLog.e(TAG, "nativeStartClient threw", it)
+            AppLog.e(TAG, "nativeStartClientToml threw", it)
             return Result.failure(it)
         }
         return if (code == 0) {
@@ -107,18 +88,9 @@ object CdnfuBridge {
 
     fun lastError(): String? = if (loaded) runCatching { nativeLastError() }.getOrNull() else null
 
-    private external fun nativeStartClient(
-        url: String,
-        psk: String,
-        mimic: String,
-        socksListen: String,
-        uplinkMethod: String,
-        uplinkPath: String,
-        uplinkData: String,
-        xhttpPlacement: String,
-        downlinkMode: String,
-        multipathPaths: Int,
-        hostName: String
+    private external fun nativeStartClientToml(
+        configToml: String,
+        socksListen: String
     ): Int
 
     private external fun nativeStopClient()

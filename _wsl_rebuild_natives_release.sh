@@ -55,15 +55,20 @@ echo "=== cargoBuildArm64 (libslipstream.so) ==="
 test -f app/build/rustJniLibs/android/arm64-v8a/libslipstream.so
 
 echo "=== verify slipstream symbols ==="
-nm -D app/build/rustJniLibs/android/arm64-v8a/libslipstream.so | grep SlipstreamBridge | head -5
-if nm -D app/build/rustJniLibs/android/arm64-v8a/libslipstream.so | grep -q 'Java_app_slipnet_tunnel_SlipstreamBridge'; then
-  echo "FAIL: still has app_slipnet symbols" >&2
-  exit 1
-fi
-if ! nm -D app/build/rustJniLibs/android/arm64-v8a/libslipstream.so | grep -q 'Java_app_smugly_tunnel_SlipstreamBridge'; then
-  echo "FAIL: missing app_smugly symbols" >&2
-  exit 1
-fi
+# Read the table ONCE into a variable instead of piping nm into `grep -q` per check.
+# Under `set -o pipefail` that combination fails at random: grep -q exits on the first
+# match, nm dies of SIGPIPE, the pipeline reports 141 and `if ! …` then takes the failure
+# branch — so this rejected a library whose symbols it had just printed.
+SLIP_SYMS=$(nm -D app/build/rustJniLibs/android/arm64-v8a/libslipstream.so)
+printf '%s\n' "$SLIP_SYMS" | grep SlipstreamBridge | head -5
+case "$SLIP_SYMS" in
+  *Java_app_slipnet_tunnel_SlipstreamBridge*)
+    echo "FAIL: still has app_slipnet symbols" >&2; exit 1 ;;
+esac
+case "$SLIP_SYMS" in
+  *Java_app_smugly_tunnel_SlipstreamBridge*) ;;
+  *) echo "FAIL: missing app_smugly symbols" >&2; exit 1 ;;
+esac
 echo "slipstream symbols OK"
 
 echo "=== s3fu ==="
@@ -75,6 +80,23 @@ echo "=== cdnfu ==="
 export CDNFU_OUT_DIR="$DST/app/build/cdnfuJniLibs/arm64-v8a"
 mkdir -p "$CDNFU_OUT_DIR"
 bash "$CDN_SRC/build-android.sh" 2>&1 | tee /tmp/cdnfu-build.log | tail -30
+
+# The Kotlin bridges bind these by name at runtime: a lib built from sources that no
+# longer export them installs fine and then dies with UnsatisfiedLinkError on connect.
+# Cheaper to catch here than on a phone.
+echo "=== verify tunnel entry points ==="
+for pair in "$S3FU_OUT_DIR/libs3fu.so:S3fuBridge" "$CDNFU_OUT_DIR/libcdnfu.so:CdnfuBridge"; do
+  lib=${pair%%:*}
+  cls=${pair##*:}
+  syms=$(nm -D "$lib")
+  case "$syms" in
+    *"Java_app_smugly_tunnel_${cls}_nativeStartClientToml"*)
+      echo "$cls nativeStartClientToml OK" ;;
+    *)
+      echo "FAIL: $lib does not export Java_app_smugly_tunnel_${cls}_nativeStartClientToml" >&2
+      exit 1 ;;
+  esac
+done
 
 # Stage natives back to Windows tree for future UI-only builds
 mkdir -p "$SRC/app/build/rustJniLibs/android/arm64-v8a"

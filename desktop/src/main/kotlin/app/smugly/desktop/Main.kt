@@ -39,6 +39,16 @@ private fun cliMain(args: Array<String>) {
         }
         args.contains("--engines") -> println(EngineBinaries.report())
         args.contains("--connect") -> runHeadless()
+        args.contains("--latency") ->
+            measureLatency(args.getOrNull(args.indexOf("--latency") + 1))
+        args.contains("--latency-config") -> {
+            val path = args.getOrNull(args.indexOf("--latency-config") + 1)
+                ?: error("usage: --latency-config <file.json>")
+            printLatency(
+                java.io.File(path).name,
+                app.smugly.ConfigJson.configFromString(java.io.File(path).readText())
+            )
+        }
         args.contains("--show-system-proxy") -> {
             println("current: " + WindowsSystemProxy.snapshot().describe())
             println("pending restore: " + WindowsSystemProxy.hasPendingRestore())
@@ -57,10 +67,38 @@ private fun cliMain(args: Array<String>) {
         }
         else -> println(
             "Unknown args. Use --print-platform | --write-default-config | --validate-config | " +
-                "--engines | --connect | --show-system-proxy | --restore-system-proxy, " +
-                "or no args for GUI."
+                "--engines | --connect | --latency [name] | --latency-config <file.json> | " +
+                "--show-system-proxy | --restore-system-proxy, or no args for GUI."
         )
     }
+}
+
+/**
+ * The same end-to-end probe the server rows use, printed with the reason a failure failed — which
+ * a row can only render as a dash. Runs the profile's engine on a throwaway port, so it neither
+ * touches a running tunnel nor the machine's proxy settings.
+ *
+ * `--latency` alone measures every stored profile; a name (or part of one) narrows it down.
+ */
+private fun measureLatency(nameFilter: String?) {
+    val filter = nameFilter?.takeUnless { it.startsWith("--") }
+    val profiles = app.smugly.ui.FileProfileStore().loadProfiles()
+        .filter { filter == null || it.name.contains(filter, ignoreCase = true) }
+    if (profiles.isEmpty()) {
+        println(if (filter == null) "no profiles configured" else "no profile matches '$filter'")
+        return
+    }
+    profiles.forEach { printLatency(it.name, it.config) }
+}
+
+private fun printLatency(name: String, config: app.smugly.Config) {
+    val started = System.currentTimeMillis()
+    val result = app.smugly.net.E2ELatencyProbe.measure(config, DesktopProbeEngines())
+    val took = System.currentTimeMillis() - started
+    result.fold(
+        onSuccess = { println("%-34s %-10s %5d ms   (probe took %d ms)".format(name, config.protocol, it, took)) },
+        onFailure = { println("%-34s %-10s      —   %s".format(name, config.protocol, it.message ?: it::class.java.simpleName)) }
+    )
 }
 
 /**

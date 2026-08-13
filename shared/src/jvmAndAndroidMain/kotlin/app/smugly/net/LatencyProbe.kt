@@ -15,8 +15,14 @@ import org.json.JSONObject
 /**
  * How long the first packet takes to come back from a profile's own server.
  *
- * The point is not a pretty number, it is an answer to "does this profile still work here" —
- * so every protocol is probed at the hop that actually decides that, and nothing is inferred:
+ * **This is the fallback.** [E2ELatencyProbe] runs the profile's real engine and times a request
+ * through the tunnel, which is the number a row should show; this one only answers the weaker
+ * "can that host be reached from here" and exists for the case where a platform has no engine for
+ * the protocol (Slipstream has no Windows build). Reaching a server's port says nothing about
+ * whether the credentials, the REALITY handshake or the exit's DNS work, so prefer the e2e probe
+ * wherever it can run.
+ *
+ * Every protocol is probed at the hop that decides reachability, and nothing is inferred:
  *
  *  * **Slipstream** — a real DNS query to the configured resolver for the tunnel's own domain.
  *    That traverses resolver → authoritative → back, which is the tunnel's carrier; a resolver
@@ -44,7 +50,16 @@ object LatencyProbe {
 
     private fun measureSlipstream(config: Config): Int {
         val host = config.resolverHost.trim()
-        require(host.isNotEmpty()) { "no resolver configured" }
+        // An auto-DNS profile has no resolver until the app picks one, and picking one needs the
+        // network APIs this shared code cannot reach — that is the e2e probe's job. Saying so beats
+        // the old bare "no resolver configured", which is what every auto-DNS card reported.
+        require(host.isNotEmpty()) {
+            if (config.resolverMode == Config.ResolverMode.AUTO) {
+                "auto-DNS picks its resolver at connect time; this platform cannot run the tunnel to find out"
+            } else {
+                "no resolver configured"
+            }
+        }
         val port = if (config.resolverPort in 1..65535) config.resolverPort else 53
         val domain = config.domain.trim().ifEmpty { "example.com" }
         // The engine's own carrier is UDP unless the profile says otherwise, and a resolver that
@@ -81,31 +96,47 @@ object LatencyProbe {
     }
 
     /**
-     * First outbound server in an Xray config. Walked rather than indexed: the JSON comes from
-     * whatever link or panel produced it, and vless/vmess (`vnext`) and shadowsocks/trojan
-     * (`servers`) put the host in different places.
+     * The profile's own server: the first outbound that has one, **in the order the config lists
+     * them**. Xray itself falls back to that outbound when routing picks nothing, so it is the one
+     * a connection actually uses.
+     *
+     * Walking the whole document instead would be at the mercy of JSON key order, which org.json
+     * does not promise — on a chained profile that happily timed a child node or a `dns.servers`
+     * entry instead of the primary, and the row then showed a latency belonging to a different
+     * country. Inside one outbound the walk stays, because vless/vmess (`vnext`) and
+     * shadowsocks/trojan (`servers`) keep the host in different places.
      */
     private fun xrayEndpoint(json: String): Pair<String, Int>? {
         if (json.isBlank()) return null
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return null
-        var found: Pair<String, Int>? = null
-        fun walk(node: Any?) {
-            if (found != null) return
-            when (node) {
-                is JSONObject -> {
-                    val address = node.optString("address").ifBlank { node.optString("host") }
-                    val port = node.optInt("port", -1)
-                    if (address.isNotBlank() && port in 1..65535) {
-                        found = address to port
-                        return
-                    }
-                    for (key in node.keys()) walk(node.opt(key))
+        val outbounds = root.optJSONArray("outbounds")
+        if (outbounds != null) {
+            for (i in 0 until outbounds.length()) {
+                val outbound = outbounds.optJSONObject(i) ?: continue
+                // freedom / blackhole / dns have no server to reach; skipping them keeps the first
+                // *real* peer, not whichever one happens to sort first.
+                when (outbound.optString("protocol").lowercase()) {
+                    "freedom", "blackhole", "dns", "loopback" -> continue
                 }
-                is JSONArray -> for (i in 0 until node.length()) walk(node.opt(i))
+                endpointIn(outbound)?.let { return it }
             }
         }
-        walk(root)
-        return found
+        return endpointIn(root)
+    }
+
+    /** First `address` + `port` pair anywhere under [node]; arrays keep their order. */
+    private fun endpointIn(node: Any?): Pair<String, Int>? = when (node) {
+        is JSONObject -> {
+            val address = node.optString("address").ifBlank { node.optString("host") }
+            val port = node.optInt("port", -1)
+            if (address.isNotBlank() && port in 1..65535) {
+                address to port
+            } else {
+                node.keys().asSequence().firstNotNullOfOrNull { endpointIn(node.opt(it)) }
+            }
+        }
+        is JSONArray -> (0 until node.length()).firstNotNullOfOrNull { endpointIn(node.opt(it)) }
+        else -> null
     }
 
     // ---- primitives ----

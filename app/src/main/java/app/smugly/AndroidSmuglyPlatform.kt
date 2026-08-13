@@ -615,12 +615,14 @@ class AndroidSmuglyPlatform(
         profile: app.smugly.ConfigProfile,
         onResult: (Result<Int>) -> Unit
     ) {
-        // Plain thread, not a coroutine scope: the probe is a blocking socket round trip and the
-        // callback is expected to hop back to the UI itself.
-        Thread({ onResult(app.smugly.net.LatencyProbe.measure(profile.config)) }, "latency-probe")
-            .apply { isDaemon = true }
-            .start()
+        // Runs the profile's real engine and times a request through it, so the number answers
+        // "does this work, and how does it feel" instead of "does the server's port answer". The
+        // probe pool bounds how many tunnels "measure the whole folder" starts at once; the
+        // callback arrives on a probe thread and the UI hops it back itself.
+        app.smugly.net.E2ELatencyProbe.submit(profile.config, probeEngines, onResult)
     }
+
+    private val probeEngines by lazy { app.smugly.net.AndroidProbeEngines(activity) }
 
     override fun looksLikeSubscription(text: String): Boolean =
         app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)

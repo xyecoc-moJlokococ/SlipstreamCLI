@@ -29,6 +29,8 @@ import app.smugly.tunnel.XrayBridge
 import app.smugly.util.AppLog
 import app.smugly.Config
 import app.smugly.ConfigStore
+import app.smugly.effectiveCdnfuToml
+import app.smugly.effectiveS3fuToml
 import app.smugly.ComposeMainActivity
 import app.smugly.R
 import app.smugly.ResolverChoice
@@ -311,13 +313,10 @@ class TinyVpnService : VpnService() {
 
             val socksPort = config.listenPort
             val caPath = ensureCaBundle()
+            // The profile carries the whole config file; a profile from an older build
+            // has none, and effectiveS3fuToml() derives one from its fields.
             S3fuBridge.startClient(
-                endpoint = config.s3Endpoint.trim(),
-                bucket = config.s3Bucket.trim(),
-                accessKey = config.s3AccessKey.trim(),
-                secretKey = config.s3SecretKey.trim(),
-                prefix = config.s3Prefix.trim().ifBlank { "s3fu" },
-                psk = config.s3Psk.trim(),
+                configToml = config.effectiveS3fuToml(),
                 socksListen = "127.0.0.1:$socksPort",
                 caFile = caPath
             ).getOrThrow()
@@ -390,41 +389,15 @@ class TinyVpnService : VpnService() {
             require(CdnfuBridge.isLoaded()) { "libcdnfu failed to load" }
             resetTrafficBase()
 
-            // "auto" on phone used to leave GET/query defaults that fight cookie stealth and
-            // multipath — pin the lab-proven shape unless the profile names a real mode.
-            fun cdnKnob(raw: String, fallback: String): String {
-                val v = raw.trim()
-                return if (v.isEmpty() || v.equals("auto", ignoreCase = true)) fallback else v
-            }
-            val uplinkMethod = cdnKnob(config.cdnfuUplinkMethod, "POST")
-            val uplinkPath = cdnKnob(config.cdnfuUplinkPath, "api")
-            val uplinkData = cdnKnob(config.cdnfuUplinkData, "body")
-            val xhttpPlacement = cdnKnob(config.cdnfuXhttpPlacement, "cookie")
-            val downlinkMode = cdnKnob(config.cdnfuDownlinkMode, "stream")
-            // Force single path on the phone. Multipath=4 under a speedtest/browser
-            // (dozens of parallel connects) exhausted the session pool and hung every flow
-            // with SOCKS open but zero bytes — "check internet connection" on Ookla.
-            // (Desktop multipath can still be used via the native CLI.)
-            val multipath = 1
-
+            // The per-knob plumbing that used to live here moved into the config itself:
+            // the profile now carries the whole cdnfu TOML and the engine parses it, so
+            // there is nothing left to translate. TunnelToml keeps the phone-proven shape
+            // ("auto" coerced to POST/api/body/cookie/stream) when it has to derive a
+            // config from an older profile's fields.
             val socksPort = config.listenPort
-            AppLog.i(
-                TAG,
-                "CDNFU knobs method=$uplinkMethod path=$uplinkPath data=$uplinkData " +
-                    "xhttp=$xhttpPlacement dl=$downlinkMode mp=$multipath mapdns=on"
-            )
             CdnfuBridge.startClient(
-                url = config.cdnfuUrl.trim(),
-                psk = config.cdnfuPsk.trim(),
-                mimic = config.cdnfuMimic.trim().ifBlank { "mixed" },
-                socksListen = "127.0.0.1:$socksPort",
-                uplinkMethod = uplinkMethod,
-                uplinkPath = uplinkPath,
-                uplinkData = uplinkData,
-                xhttpPlacement = xhttpPlacement,
-                downlinkMode = downlinkMode,
-                multipathPaths = multipath,
-                hostName = config.cdnfuHost.trim()
+                configToml = config.effectiveCdnfuToml(),
+                socksListen = "127.0.0.1:$socksPort"
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 

@@ -284,6 +284,8 @@ object SlipstreamBridge {
         runCatching { nativeStopProbeClient(listenPort) }
     }
 
+    /** Whether libslipstream is present at all — same question the other bridges answer. */
+    fun isLoaded(): Boolean = loaded
     fun isRunning(): Boolean = loaded && runCatching { nativeIsClientRunning() }.getOrDefault(false)
     fun isProbeRunning(listenPort: Int = 0): Boolean = loaded && runCatching { nativeIsProbeRunning(listenPort) }.getOrDefault(false)
     fun isReady(): Boolean = loaded && runCatching { nativeIsQuicReady() }.getOrDefault(false)
