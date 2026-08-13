@@ -728,6 +728,15 @@ fun SmuglyCheckbox(checked: Boolean, label: String, onCheckedChange: (Boolean) -
 /** Hold-shrink while reordering — matches original PROFILE_DRAG_SCALE = 0.96f. */
 private const val ProfileDragScale = 0.96f
 
+// Profile row height, in one place. It used to be set by two 48dp icon boxes, which made
+// every card ~72dp tall and put barely eight of them on a phone screen; 40/6/6 turned out
+// to read as too cramped, so this sits between the two — ~64dp per row.
+// Nothing measures rows by a constant any more (the reorder drag reads layoutInfo), so
+// these are free to change.
+private val ProfileCardIcon = 44.dp
+private val ProfileCardPadV = 7.dp
+private val ProfileCardGap = 6.dp
+
 /** How long the card that just lost selection takes to go dark. Selecting itself is instant. */
 private const val SelectFadeOutMs = 350
 
@@ -874,7 +883,7 @@ fun ProfileCard(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp)
+            .padding(bottom = ProfileCardGap)
             .onGloballyPositioned { rowCoords = it }
             // Gesture outside graphicsLayer so scale/translation never warp deltas or hit-testing.
             // Once claimed, the pointer keeps delivering events past the original bounds.
@@ -939,14 +948,14 @@ fun ProfileCard(
             // The card is a selectable surface, not a button — arrow cursor unless reorder is on.
             // Delete and ⋮ still use handClickable and override the cursor themselves.
             .surfaceClickable(onClick = onClick)
-            .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
+            .padding(start = 12.dp, top = ProfileCardPadV, end = 4.dp, bottom = ProfileCardPadV),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Marker centered in the gutter between card edge and title text.
         Box(
             modifier = Modifier
                 .width(36.dp)
-                .height(40.dp),
+                .height(ProfileCardIcon),
             contentAlignment = Alignment.Center
         ) {
             Box(
@@ -992,7 +1001,7 @@ fun ProfileCard(
         if (onDelete != null) {
             Box(
                 Modifier
-                    .size(48.dp)
+                    .size(ProfileCardIcon)
                     .handClickable(onClick = onDelete),
                 contentAlignment = Alignment.Center
             ) {
@@ -1008,7 +1017,7 @@ fun ProfileCard(
         // drawn by the host screen — a card sits inside a clipping scroll container.
         Box(
             Modifier
-                .size(48.dp)
+                .size(ProfileCardIcon)
                 .onGloballyPositioned { onMoreAnchor(it.positionInRoot().y.toInt()) }
                 .handClickable(onClick = onMoreClick),
             contentAlignment = Alignment.Center

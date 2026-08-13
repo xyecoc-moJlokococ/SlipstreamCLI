@@ -810,6 +810,11 @@ object ConfigStore {
             .put("cdnfuXhttpPlacement", config.cdnfuXhttpPlacement)
             .put("cdnfuDownlinkMode", config.cdnfuDownlinkMode)
             .put("cdnfuMultipath", config.cdnfuMultipath)
+            // The whole-config TOML: a profile's own text, or the one the panel put in the
+            // link. Missing here meant every profile was stored without it, so an import
+            // parsed the config correctly and then threw it away on write.
+            .put("s3fuToml", config.s3fuToml)
+            .put("cdnfuToml", config.cdnfuToml)
 
     private fun configFromJson(json: JSONObject): Config =
         Config(
@@ -849,6 +854,8 @@ object ConfigStore {
             cdnfuXhttpPlacement = json.optString("cdnfuXhttpPlacement", "").ifBlank { "cookie" },
             cdnfuDownlinkMode = json.optString("cdnfuDownlinkMode", "").ifBlank { "stream" },
             cdnfuMultipath = json.optInt("cdnfuMultipath", 4).coerceIn(0, 32),
+            s3fuToml = json.optString("s3fuToml", ""),
+            cdnfuToml = json.optString("cdnfuToml", ""),
         )
 
     private inline fun <reified T : Enum<T>> enumValue(value: String?, fallback: T): T =
