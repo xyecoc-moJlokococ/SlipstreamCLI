@@ -18,6 +18,7 @@ object SubscriptionJson {
         .put("lastError", sub.lastError)
         .put("allowReorder", sub.allowReorder)
         .put("showInfo", sub.showInfo)
+        .put("hideProtocol", sub.hideProtocol)
         .put(
             "categories",
             JSONArray().apply {
@@ -66,6 +67,7 @@ object SubscriptionJson {
             lastError = json.optString("lastError"),
             allowReorder = json.optBoolean("allowReorder", false),
             showInfo = json.optBoolean("showInfo", true),
+            hideProtocol = json.optBoolean("hideProtocol", false),
             categories = json.optJSONArray("categories")?.let { arr ->
                 (0 until arr.length()).mapNotNull { i ->
                     val obj = arr.optJSONObject(i) ?: return@mapNotNull null

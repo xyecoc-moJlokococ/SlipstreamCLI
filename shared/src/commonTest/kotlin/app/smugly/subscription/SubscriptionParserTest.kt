@@ -2,6 +2,7 @@ package app.smugly.subscription
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -148,6 +149,25 @@ class SubscriptionParserTest {
         val parsed = SubscriptionParser.parse(body)
         assertEquals(listOf("Обход БС [CDN]"), parsed.categories.map { it.name })
         assertEquals(1, parsed.links.size)
+    }
+
+    // The panel's switch for hiding the engine name under each server. Off unless asked, and
+    // accepted in whatever spelling a panel sends it.
+    @Test
+    fun hideProtocolFlagIsReadFromHeadersAndInlineKeys() {
+        assertFalse(SubscriptionParser.parse(vless).metadata.hideProtocol)
+        assertTrue(
+            SubscriptionParser.parse(vless, mapOf("hide-protocol" to "1")).metadata.hideProtocol
+        )
+        assertTrue(
+            SubscriptionParser.parse(vless, mapOf("Hide_Protocol" to "true")).metadata.hideProtocol
+        )
+        assertTrue(
+            SubscriptionParser.parse("#hide-protocol: yes\n" + vless).metadata.hideProtocol
+        )
+        assertFalse(
+            SubscriptionParser.parse(vless, mapOf("hide-protocol" to "0")).metadata.hideProtocol
+        )
     }
 
     @Test

@@ -23,6 +23,8 @@ object SubscriptionParser {
         val title: String = "",
         /** Hours, as advertised. 0 when the panel did not say. */
         val updateIntervalHours: Long = 0,
+        /** `hide-protocol`: draw the servers without their engine name underneath. */
+        val hideProtocol: Boolean = false,
         val info: SubscriptionInfo = SubscriptionInfo()
     )
 
@@ -108,6 +110,7 @@ object SubscriptionParser {
         return Metadata(
             title = decodeText(get("profile-title").orEmpty()),
             updateIntervalHours = get("profile-update-interval")?.trim()?.toLongOrNull()?.coerceAtLeast(0) ?: 0,
+            hideProtocol = parseFlag(get("hide-protocol")),
             info = userInfo.copy(
                 webPageUrl = get("profile-web-page-url").orEmpty().trim(),
                 supportUrl = get("support-url").orEmpty().trim(),
@@ -116,8 +119,13 @@ object SubscriptionParser {
         )
     }
 
+    /** Panels write flags every which way; accept the usual spellings, default off. */
+    private fun parseFlag(raw: String?): Boolean =
+        raw?.trim()?.lowercase() in setOf("1", "true", "yes", "on")
+
     private fun merge(primary: Metadata, fallback: Metadata) = Metadata(
         title = primary.title.ifBlank { fallback.title },
+        hideProtocol = primary.hideProtocol || fallback.hideProtocol,
         updateIntervalHours = if (primary.updateIntervalHours > 0) {
             primary.updateIntervalHours
         } else {

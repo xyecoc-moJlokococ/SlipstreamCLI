@@ -688,6 +688,7 @@ fun HomeScreen(
                                 profile = profile,
                                 index = index,
                                 inCategory = inCategory,
+                                hideProtocol = pageSubscription?.hideProtocol == true,
                                 rowModifier = rowModifier,
                                 activeId = activeId,
                                 latency = latencies[profile.id],
@@ -1063,6 +1064,8 @@ private fun ServerRow(
     profile: ConfigProfile,
     index: Int,
     inCategory: Boolean,
+    /** Panel asked for the engine name under the title to be hidden for this folder. */
+    hideProtocol: Boolean,
     rowModifier: Modifier,
     activeId: String?,
     latency: app.smugly.ui.LatencyUi?,
@@ -1081,7 +1084,7 @@ private fun ServerRow(
     val isDragging = profile.id == draggingId
     ProfileCard(
         name = profile.name.ifBlank { t(S.PROFILE_NAME_FALLBACK) },
-        subtitle = profileSubtitle(profile),
+        subtitle = if (hideProtocol) "" else profileSubtitle(profile),
         selected = profile.id == activeId,
         onClick = onSelect,
         latency = latency,

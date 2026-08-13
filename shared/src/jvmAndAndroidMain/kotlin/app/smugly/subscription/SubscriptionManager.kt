@@ -94,6 +94,8 @@ object SubscriptionManager {
                     ?.times(60)
                     ?: subscription.updateIntervalMinutes,
                 info = parsed.metadata.info,
+                // Panel-owned like the categories: it decides whether the engine name is shown.
+                hideProtocol = parsed.metadata.hideProtocol,
                 // Replaced, not merged: the panel decides which groups exist, and a category it
                 // dropped must stop being offered here too.
                 categories = parsed.categories,

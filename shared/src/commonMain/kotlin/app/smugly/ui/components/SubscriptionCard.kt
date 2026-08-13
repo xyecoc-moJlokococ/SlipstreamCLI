@@ -215,6 +215,19 @@ fun SubscriptionCard(
             }
         }
 
+        // The panel's announce line. It is the only channel an operator has to say anything to
+        // their users inside the app ("questions -> @support"), and it was parsed and stored all
+        // along but never drawn anywhere.
+        if (info.announce.isNotBlank()) {
+            Text(
+                text = info.announce.trim(),
+                color = SmuglyTextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
         if (subscription.lastError.isNotBlank()) {
             Text(
                 text = subscription.lastError,

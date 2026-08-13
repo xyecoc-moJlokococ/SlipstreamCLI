@@ -33,6 +33,12 @@ data class Subscription(
     /** Whether the traffic / expiry card is drawn above the folder's servers. */
     val showInfo: Boolean = true,
     /**
+     * Panel asked for the protocol line under each server name to be hidden (`hide-protocol`).
+     * Which engine carries a profile is an implementation detail an operator may not want their
+     * users reading off the card; the profile still runs exactly the same.
+     */
+    val hideProtocol: Boolean = false,
+    /**
      * Sub-groups the panel published, in the order it listed them. Empty for a subscription that
      * does not use them — then the folder is a plain list of servers, exactly as before.
      */
