@@ -683,7 +683,12 @@ class TinyVpnService : VpnService() {
             "slipstream not ready after transport fallback resolver=${altChoice.selectedHost}:${altChoice.port} " +
                 "triedTransports=${choice.transport.name.lowercase()},${altTransport.name.lowercase()}"
         }
-        ResolverSelector.rememberTransport(this, config, altChoice.selectedHost, altTransport)
+        // The cached decision was wrong for this network — record the transport that actually came
+        // up, but drop its "measured" mark so the next start runs the real probe matrix again
+        // instead of trusting a guess for another day.
+        ResolverSelector.rememberTransport(
+            this, config, altChoice.selectedHost, altTransport, resetValidation = true
+        )
         ResolverSelector.rememberNetworkTransportPreference(this, altTransport)
         return altChoice to port
     }

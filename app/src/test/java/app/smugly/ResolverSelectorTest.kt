@@ -90,13 +90,18 @@ class ResolverSelectorTest {
 
     // -- shouldSkipTransportValidation: the new fast-path decision --
 
-    private fun cacheHit(qtype: Int, source: String = "auto-cache") = ResolverChoice(
+    private fun cacheHit(
+        qtype: Int,
+        source: String = "auto-cache",
+        validatedAt: Long = System.currentTimeMillis()
+    ) = ResolverChoice(
         hosts = listOf("1.2.3.4"),
         port = 53,
         selectedHost = "1.2.3.4",
         source = source,
         transport = Config.ResolverTransport.TCP,
-        qtype = qtype
+        qtype = qtype,
+        validatedAt = validatedAt
     )
 
     @Test
@@ -121,6 +126,33 @@ class ResolverSelectorTest {
             ResolverSelector.shouldSkipTransportValidation(
                 Config.ResolverMode.AUTO,
                 cacheHit(qtype = 65, source = "auto-fast")
+            )
+        )
+    }
+
+    // Transport is an operator property and operators change which one they throttle. A decision
+    // measured a fortnight ago must not be replayed forever — after a day the next connect
+    // re-measures. This is the difference between "auto picked a transport once" and "auto keeps
+    // picking the right transport".
+    @Test
+    fun re_measures_when_the_cached_decision_is_a_day_old() {
+        val yesterday = System.currentTimeMillis() - 25L * 60L * 60L * 1000L
+        assertFalse(
+            ResolverSelector.shouldSkipTransportValidation(
+                Config.ResolverMode.AUTO,
+                cacheHit(qtype = 65, validatedAt = yesterday)
+            )
+        )
+    }
+
+    // An entry that only ever recorded a transport (a connect that happened to work, or a
+    // fallback) was never measured, so it must not silence the probe.
+    @Test
+    fun does_not_skip_validation_for_a_never_measured_entry() {
+        assertFalse(
+            ResolverSelector.shouldSkipTransportValidation(
+                Config.ResolverMode.AUTO,
+                cacheHit(qtype = 65, validatedAt = 0L)
             )
         )
     }

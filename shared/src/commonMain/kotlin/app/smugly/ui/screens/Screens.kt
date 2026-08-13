@@ -1579,17 +1579,25 @@ private fun SlipstreamEditor(
             number = true
         )
     }
-    LabeledField(t(S.TRANSPORT)) {
-        PillSelector(
-            listOf("UDP", "TCP"),
-            if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0
-        ) { idx ->
-            onChange(
-                c.copy(
-                    resolverTransport = if (idx == 1) Config.ResolverTransport.TCP else Config.ResolverTransport.UDP
+    // Transport belongs to the operator, not to the profile: T2 only carries data over TCP,
+    // Beeline only over UDP. In auto DNS the app measures both at connect and keeps the one
+    // that actually moves data, so a picker here would only be a way to be wrong — the value
+    // is never read in that mode (see ResolverSelector.validateTransport).
+    if (c.resolverMode == Config.ResolverMode.MANUAL) {
+        LabeledField(t(S.TRANSPORT)) {
+            PillSelector(
+                listOf("UDP", "TCP"),
+                if (c.resolverTransport == Config.ResolverTransport.TCP) 1 else 0
+            ) { idx ->
+                onChange(
+                    c.copy(
+                        resolverTransport = if (idx == 1) Config.ResolverTransport.TCP else Config.ResolverTransport.UDP
+                    )
                 )
-            )
+            }
         }
+    } else {
+        HintText(t(S.HINT_TRANSPORT_AUTO))
     }
     val qTypeIdx = DnsQueryTypeOptions.indexOfFirst { it.second == c.dnsQueryType }.coerceAtLeast(0)
     LabeledField(t(S.DNS_QUERY_TYPE)) {

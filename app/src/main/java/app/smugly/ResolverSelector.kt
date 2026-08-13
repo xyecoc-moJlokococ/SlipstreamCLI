@@ -40,7 +40,9 @@ data class ResolverChoice(
     val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
     // Cached qtype from a prior validateTransport() winner (0 = unknown/not yet validated). Lets
     // vpn_start skip the full transport/qtype probe matrix when a fresh cache hit already has one.
-    val qtype: Int = 0
+    val qtype: Int = 0,
+    // When that measurement was taken; the skip only applies while it is still recent.
+    val validatedAt: Long = 0
 )
 
 object ResolverSelector {
@@ -48,8 +50,18 @@ object ResolverSelector {
     // real VpnService: a fresh cache hit with a previously-validated qtype lets vpn_start skip the
     // full transport/qtype probe matrix (the "10-15s on every start" cost) and reuse the known-good
     // combo directly. See ResolverChoice.qtype's doc comment for the safety net this relies on.
-    fun shouldSkipTransportValidation(resolverMode: Config.ResolverMode, choice: ResolverChoice): Boolean =
-        resolverMode == Config.ResolverMode.AUTO && choice.source == "auto-cache" && choice.qtype != 0
+    // Skip the connect-time transport/qtype measurement only for a cache entry that was actually
+    // MEASURED, and measured recently. Transport is an operator property and operators change it
+    // (or the SIM in the phone does): a validation is good for TRANSPORT_VALIDATION_TTL_MS, after
+    // which the next connect pays one probe matrix again rather than replaying a decision that may
+    // be a fortnight old. `qtype != 0` is the "was measured at all" marker -- only validateTransport
+    // ever sets it.
+    fun shouldSkipTransportValidation(resolverMode: Config.ResolverMode, choice: ResolverChoice): Boolean {
+        if (resolverMode != Config.ResolverMode.AUTO) return false
+        if (choice.source != "auto-cache" || choice.qtype == 0) return false
+        val age = System.currentTimeMillis() - choice.validatedAt
+        return choice.validatedAt > 0L && age in 0..TRANSPORT_VALIDATION_TTL_MS
+    }
 
     private const val TAG = "ResolverSelector"
     private const val CACHE_PREFS = "resolver_cache_v1"
@@ -61,6 +73,10 @@ object ResolverSelector {
     private const val CONNECT_TIMEOUT_MS = 1200
     private const val CAPTIVE_CHECK_TIMEOUT_MS = 1500
     private const val CACHE_TTL_MS = 14L * 24L * 60L * 60L * 1000L
+    // How long a measured transport/qtype decision is trusted before the next connect re-measures.
+    // Short enough that an operator flipping which transport it throttles is noticed the same day,
+    // long enough that everyday reconnects stay instant.
+    private const val TRANSPORT_VALIDATION_TTL_MS = 24L * 60L * 60L * 1000L
     private const val CACHE_FULL_REFRESH_MS = 6L * 60L * 60L * 1000L
     private const val PROBE_THREADS = 8
     private const val SPEED_PROBE_BYTES = 5_000
@@ -174,7 +190,9 @@ object ResolverSelector {
         val transport: Config.ResolverTransport = Config.ResolverTransport.UDP,
         val lastOkAt: Long,
         // qtype validated by validateTransport() for this host (0 = not yet validated).
-        val qtype: Int = 0
+        val qtype: Int = 0,
+        // When that validation ran. 0 = never measured, only guessed/remembered from a connect.
+        val validatedAt: Long = 0
     )
 
     internal data class ResolverCacheEntry(
@@ -675,7 +693,8 @@ object ResolverSelector {
                             qnameMtu = item.optInt("qnameMtu", 0),
                             transport = parseTransport(item.optString("transport")),
                             lastOkAt = item.optLong("lastOkAt", updatedAt),
-                            qtype = item.optInt("qtype", 0)
+                            qtype = item.optInt("qtype", 0),
+                            validatedAt = item.optLong("validatedAt", 0L)
                         )
                     )
                 }
@@ -735,7 +754,11 @@ object ResolverSelector {
         config: Config,
         host: String,
         transport: Config.ResolverTransport,
-        qtype: Int = 0
+        qtype: Int = 0,
+        // A connect that only worked after falling back to the other transport proves the cached
+        // decision wrong: drop the "measured" mark so the next start re-runs the real probe instead
+        // of trusting this one for another day.
+        resetValidation: Boolean = false
     ) {
         if (config.resolverMode != Config.ResolverMode.AUTO) return
         val cleanHost = host.trim()
@@ -758,7 +781,8 @@ object ResolverSelector {
                             qnameMtu = item.optInt("qnameMtu", 0),
                             transport = parseTransport(item.optString("transport")),
                             lastOkAt = item.optLong("lastOkAt", 0L),
-                            qtype = item.optInt("qtype", 0)
+                            qtype = item.optInt("qtype", 0),
+                            validatedAt = item.optLong("validatedAt", 0L)
                         )
                     )
                 }
@@ -772,7 +796,16 @@ object ResolverSelector {
             qnameMtu = prior?.qnameMtu ?: 0,
             transport = transport,
             lastOkAt = now,
-            qtype = if (qtype != 0) qtype else (prior?.qtype ?: 0)
+            qtype = when {
+                resetValidation -> 0
+                qtype != 0 -> qtype
+                else -> prior?.qtype ?: 0
+            },
+            validatedAt = when {
+                resetValidation -> 0L
+                qtype != 0 -> now
+                else -> prior?.validatedAt ?: 0L
+            }
         )
         val merged = (existing.filterNot { it.host == cleanHost } + updatedEntry).sortedBy { it.totalMs }
         val arr = JSONArray()
@@ -785,6 +818,7 @@ object ResolverSelector {
                     .put("transport", r.transport.name)
                     .put("lastOkAt", r.lastOkAt)
                     .put("qtype", r.qtype)
+                    .put("validatedAt", r.validatedAt)
             )
         }
         val json = JSONObject()
@@ -857,7 +891,8 @@ object ResolverSelector {
                     skippedCount = skipHosts.size,
                     latencyMs = cachedResolver?.totalMs ?: -1,
                     transport = transport,
-                    qtype = cachedResolver?.qtype ?: 0
+                    qtype = cachedResolver?.qtype ?: 0,
+                    validatedAt = cachedResolver?.validatedAt ?: 0L
                 )
             }
             AppLog.w(

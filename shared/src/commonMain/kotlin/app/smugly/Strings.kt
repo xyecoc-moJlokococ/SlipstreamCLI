@@ -136,6 +136,10 @@ enum class S(val en: String, val ru: String) {
     BACK_BTN("BACK", "НАЗАД"),
 
     // Hint texts
+    HINT_TRANSPORT_AUTO(
+        "Auto DNS measures UDP and TCP on connect and keeps whichever actually carries data on this operator, so there is nothing to pick here. Switch to manual DNS to force one.",
+        "Авто DNS при подключении замеряет UDP и TCP и оставляет тот, который реально везёт данные у этого оператора, — выбирать нечего. Нужен конкретный: переключитесь на ручной DNS."
+    ),
     HINT_DNS_QUERY_TYPE(
         "Some resolvers filter specific answer types; null is less likely to be blocked but carries less data per round trip. The server must accept the same type.",
         "Некоторые резолверы фильтруют определённые типы ответов; null реже блокируется, но несёт меньше данных за один цикл обмена. Сервер должен принимать тот же тип."
