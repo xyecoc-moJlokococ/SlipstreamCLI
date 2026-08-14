@@ -61,7 +61,7 @@ data class FolderDraft(
             enabled = false,
             autoUpdate = false,
             allowReorder = true,
-            showInfo = true
+            showInfo = false
         )
     }
 }
@@ -127,12 +127,14 @@ fun FolderEditorDialog(
                             createMode = mode,
                             url = "",
                             enabled = false,
-                            autoUpdate = false
+                            autoUpdate = false,
+                            showInfo = false
                         )
                         FolderCreateMode.FROM_LINK -> edited.copy(
                             createMode = mode,
                             enabled = true,
-                            autoUpdate = true
+                            autoUpdate = true,
+                            showInfo = true
                         )
                         FolderCreateMode.FROM_FILE -> edited.copy(createMode = mode)
                     }
@@ -229,6 +231,7 @@ fun FolderEditorDialog(
                         url = "",
                         enabled = false,
                         autoUpdate = false,
+                        showInfo = false,
                         createMode = FolderCreateMode.EMPTY,
                         name = edited.name.trim().ifBlank { t(S.FOLDER_DEFAULT_EMPTY_NAME) }
                     )

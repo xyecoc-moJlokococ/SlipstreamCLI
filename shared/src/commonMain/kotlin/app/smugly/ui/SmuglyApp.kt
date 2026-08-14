@@ -111,6 +111,8 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
         var subscriptions by remember { mutableStateOf(ui.loadSubscriptions()) }
         /** Id of the subscription being fetched, or null when idle — drives the spinner. */
         var refreshingSubscriptionId by remember { mutableStateOf<String?>(null) }
+        /** Jump the folder pager to this id once after a create; HomeScreen clears it. */
+        var focusFolderId by remember { mutableStateOf<String?>(null) }
         var activeId by remember {
             mutableStateOf(ui.loadActiveProfileId() ?: profiles.firstOrNull()?.id)
         }
@@ -184,9 +186,15 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
 
         /**
          * Run a subscription operation off the UI thread — these do network I/O.
-         * [onDone] receives the platform's error message, or null on success.
+         * [work] returns the platform's error message, or null on success.
+         * [onDone] runs after a successful reload.
          */
-        fun runSubscription(label: String, id: String?, work: () -> String?) {
+        fun runSubscription(
+            label: String,
+            id: String?,
+            onDone: () -> Unit = {},
+            work: () -> String?
+        ) {
             if (refreshingSubscriptionId != null) return
             refreshingSubscriptionId = id ?: PENDING_SUBSCRIPTION
             scope.launch {
@@ -194,6 +202,7 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                 refreshingSubscriptionId = null
                 reloadProfiles()
                 ui.toast(error ?: label)
+                if (error == null) onDone()
             }
         }
 
@@ -537,6 +546,8 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                             onBlockDrawerGestures = { blockDrawerGestures = it },
                             homeFolderIndex = settings.homeFolderIndex,
                             initialFolderId = settings.lastFolderId,
+                            focusFolderId = focusFolderId,
+                            onFocusFolderConsumed = { focusFolderId = null },
                             onFolderOpened = { id ->
                                 if (id != settings.lastFolderId) {
                                     val next = settings.copy(lastFolderId = id)
@@ -577,24 +588,40 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                             },
                             onSaveFolder = { folder ->
                                 // Networked only when a subscription URL is present; empty folders
-                                // are a pure local write (no "subscription added" toast).
+                                // are a pure local write (no "subscription added" toast, no import overlay).
                                 val hasUrl = folder.url.isNotBlank()
                                 val toastOk = if (hasUrl) t(S.TOAST_SUBSCRIPTION_ADDED) else t(S.TOAST_FOLDER_SAVED)
-                                runSubscription(toastOk, folder.id) {
-                                    ui.saveSubscription(
-                                        id = folder.id,
-                                        name = folder.name.trim(),
-                                        url = folder.url.trim(),
-                                        enabled = folder.enabled && hasUrl,
-                                        updateIntervalMinutes = if (hasUrl && folder.autoUpdate) {
-                                            app.smugly.subscription.Subscription
-                                                .DEFAULT_UPDATE_INTERVAL_MINUTES
-                                        } else {
-                                            0
-                                        },
-                                        allowReorder = folder.allowReorder,
-                                        showInfo = folder.showInfo
-                                    )
+                                val creating = folder.id == null
+                                val knownIds = subscriptions.map { it.id }.toSet()
+                                fun persist(): String? = ui.saveSubscription(
+                                    id = folder.id,
+                                    name = folder.name.trim(),
+                                    url = folder.url.trim(),
+                                    enabled = folder.enabled && hasUrl,
+                                    updateIntervalMinutes = if (hasUrl && folder.autoUpdate) {
+                                        app.smugly.subscription.Subscription
+                                            .DEFAULT_UPDATE_INTERVAL_MINUTES
+                                    } else {
+                                        0
+                                    },
+                                    allowReorder = folder.allowReorder,
+                                    showInfo = folder.showInfo
+                                )
+                                fun openCreatedFolder() {
+                                    if (!creating) return
+                                    focusFolderId = subscriptions.firstOrNull { it.id !in knownIds }?.id
+                                }
+                                if (creating && !hasUrl) {
+                                    scope.launch {
+                                        val error = withContext(Dispatchers.Default) { persist() }
+                                        reloadProfiles()
+                                        ui.toast(error ?: toastOk)
+                                        if (error == null) openCreatedFolder()
+                                    }
+                                } else {
+                                    runSubscription(toastOk, folder.id, onDone = { openCreatedFolder() }) {
+                                        persist()
+                                    }
                                 }
                             },
                             collapsedCategories = settings.collapsedCategories,

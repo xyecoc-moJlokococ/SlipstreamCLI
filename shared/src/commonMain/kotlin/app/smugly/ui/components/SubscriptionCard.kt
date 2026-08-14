@@ -376,8 +376,8 @@ private fun subtitle(subscription: Subscription, nowMs: Long): String {
 }
 
 /**
- * Folder tabs: "Home" plus one per subscription. Hidden entirely when there are no subscriptions,
- * so a user who never imports one sees the app exactly as before.
+ * Folder tabs: local configs plus one per subscription. Hidden entirely when there are no
+ * subscriptions, so a user who never imports one sees the app exactly as before.
  *
  * v2rayNG-style — plain labels with a single underline that *travels* to the tab you pick rather
  * than a highlight appearing in a new place. Tabs keep their natural width (folder names run long)

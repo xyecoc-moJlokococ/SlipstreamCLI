@@ -197,9 +197,51 @@ class SubscriptionRepositoryTest {
         assertTrue(!sub.enabled, "empty folders cannot auto-update")
         assertEquals(0, sub.updateIntervalMinutes)
         assertTrue(sub.allowReorder)
+        assertTrue(!sub.showInfo, "empty folders have no quota/refresh card")
+        assertTrue(!sub.showsInfoCard)
         assertTrue(repo.refreshDue().isEmpty(), "empty folder is never due")
         storage.now += 25L * 60 * 60 * 1000
         assertTrue(repo.refreshDue().isEmpty(), "empty folder stays never-due after time passes")
+    }
+
+    @Test
+    fun empty_folder_is_still_there_after_json_reload() {
+        assertNull(
+            repo.save(
+                id = null,
+                name = "Manual",
+                rawUrl = "",
+                enabled = true,
+                updateIntervalMinutes = 60,
+                allowReorder = true,
+                showInfo = false
+            )
+        )
+        // Same path Android prefs / desktop files take: write JSON, read JSON.
+        storage.subs = SubscriptionJson.listFromString(
+            SubscriptionJson.listToString(storage.subs)
+        ).toMutableList()
+        val sub = repo.list().single()
+        assertEquals("Manual", sub.name)
+        assertEquals("", sub.url)
+        assertTrue(!sub.showsInfoCard)
+    }
+
+    @Test
+    fun empty_folder_cannot_keep_info_card_even_if_asked() {
+        assertNull(
+            repo.save(
+                id = null,
+                name = "Manual",
+                rawUrl = "",
+                enabled = true,
+                updateIntervalMinutes = 60,
+                allowReorder = true,
+                showInfo = true
+            )
+        )
+        assertTrue(!repo.list().single().showInfo)
+        assertTrue(!repo.list().single().showsInfoCard)
     }
 
     @Test

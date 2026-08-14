@@ -33,7 +33,7 @@ fun dnsProbingText(current: Int, total: Int): String =
 
 enum class S(val en: String, val ru: String) {
     // Screens / drawer / section titles
-    HOME("Home", "Главная"),
+    HOME("Home", "Главное"),
     DIAGNOSTICS("Diagnostics", "Диагностика"),
     SETTINGS("Settings", "Настройки"),
     NEW_PROFILE_TITLE("New Profile", "Новый профиль"),
@@ -291,7 +291,7 @@ enum class S(val en: String, val ru: String) {
     SAVE_BTN("Save", "Сохранить"),
 
     // Subscriptions (folders)
-    HOME_FOLDER("Home", "Главная"),
+    HOME_FOLDER("My configs", "Мои конфиги"),
     SUBSCRIPTION_USED("used", "использовано"),
     SUBSCRIPTION_EXPIRES_IN("Days left:", "Осталось дней:"),
     SUBSCRIPTION_EXPIRED("Expired", "Истекла"),

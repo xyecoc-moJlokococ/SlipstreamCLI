@@ -110,7 +110,8 @@ class SubscriptionRepository(private val storage: Storage) {
             if (url.isBlank()) "Folder" else ""
         }
         if (url.isBlank() && resolvedName.isBlank()) return "folder needs a name"
-        // No URL → nothing to refresh. Force updates off so auto-refresh never targets empties.
+        // No URL → nothing to refresh. Force updates and the info card off so empty / file
+        // folders never grow a quota block or a refresh button.
         val resolvedEnabled = if (url.isBlank()) false else enabled
         val resolvedInterval = if (url.isBlank() || !resolvedEnabled) {
             0L
@@ -119,6 +120,7 @@ class SubscriptionRepository(private val storage: Storage) {
         } else {
             0L
         }
+        val resolvedShowInfo = url.isNotBlank() && showInfo
         val existing = id?.let { find(it) }
             // Re-adding a URL that is already here edits that folder instead of making a twin.
             ?: storage.loadSubscriptions().firstOrNull { url.isNotBlank() && it.url == url }
@@ -134,7 +136,7 @@ class SubscriptionRepository(private val storage: Storage) {
             enabled = resolvedEnabled,
             updateIntervalMinutes = resolvedInterval,
             allowReorder = allowReorder,
-            showInfo = showInfo
+            showInfo = resolvedShowInfo
         )
         // Nothing to fetch without a link, so a URL-less folder is simply stored.
         val urlChanged = url.isNotBlank() && (existing == null || existing.url != url)

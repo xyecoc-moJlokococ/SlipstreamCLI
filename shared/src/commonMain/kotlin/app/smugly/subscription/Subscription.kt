@@ -30,7 +30,11 @@ data class Subscription(
      * hand-made order between refreshes is useful.
      */
     val allowReorder: Boolean = true,
-    /** Whether the traffic / expiry card is drawn above the folder's servers. */
+    /**
+     * Whether the traffic / expiry card is drawn above the folder's servers.
+     * Only meaningful for a live subscription URL — empty and file-imported folders
+     * have nothing to refresh, so the card stays off.
+     */
     val showInfo: Boolean = true,
     /**
      * Panel asked for the protocol line under each server name to be hidden (`hide-protocol`).
@@ -49,6 +53,9 @@ data class Subscription(
     companion object {
         const val DEFAULT_UPDATE_INTERVAL_MINUTES = 24L * 60
     }
+
+    /** Quota / refresh card: only a fetchable URL has info worth showing. */
+    val showsInfoCard: Boolean get() = showInfo && url.isNotBlank()
 
     /** True when enough time has passed that a refresh is due. */
     fun isUpdateDue(nowMs: Long): Boolean {

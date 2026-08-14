@@ -47,14 +47,18 @@ object SubscriptionJson {
 
     fun fromJson(json: JSONObject): Subscription? {
         val id = json.optString("id").ifBlank { return null }
-        val url = json.optString("url").ifBlank { return null }
+        // Empty folders are a local group with no subscription link. Rejecting a blank URL
+        // used to save them and then drop them on the next load — the tab never appeared.
+        val url = json.optString("url")
+        val name = json.optString("name")
+        if (url.isBlank() && name.isBlank()) return null
         val info = json.optJSONObject("info") ?: JSONObject()
         return Subscription(
             id = id,
             // Blank stays blank on purpose: a refresh adopts the panel's `profile-title` only when
             // the record has no name of its own, and defaulting to the URL here made that
             // impossible — the URL is a display fallback, not a name.
-            name = json.optString("name"),
+            name = name,
             url = url,
             enabled = json.optBoolean("enabled", true),
             addedAtMs = json.optLong("addedAtMs", 0),
@@ -66,7 +70,7 @@ object SubscriptionJson {
             userAgent = json.optString("userAgent"),
             lastError = json.optString("lastError"),
             allowReorder = json.optBoolean("allowReorder", false),
-            showInfo = json.optBoolean("showInfo", true),
+            showInfo = url.isNotBlank() && json.optBoolean("showInfo", true),
             hideProtocol = json.optBoolean("hideProtocol", false),
             categories = json.optJSONArray("categories")?.let { arr ->
                 (0 until arr.length()).mapNotNull { i ->

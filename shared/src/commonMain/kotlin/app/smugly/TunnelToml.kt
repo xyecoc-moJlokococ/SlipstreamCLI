@@ -111,7 +111,9 @@ object TunnelToml {
         appendLine("udp_poll_depth = 8")
         // The tunnel's NAT lease: dropping the session drops the server's UDP socket, so a
         // hole-punched peer (Parsec, WebRTC) is left sending to a port that no longer exists.
-        appendLine("udp_idle_secs = 90")
+        // 90s matched hev's old udp-read-write-timeout and remapped Parsec after a pause
+        // (2026-08-15). 1h is the same lease hev now uses.
+        appendLine("udp_idle_secs = 3600")
         appendLine()
         appendLine("[xhttp]")
         val placement = knob(c.cdnfuXhttpPlacement, "cookie")

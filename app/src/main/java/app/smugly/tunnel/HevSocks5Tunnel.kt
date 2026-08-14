@@ -120,14 +120,13 @@ object HevSocks5Tunnel {
 
         appendLine("  connect-timeout: 8000")
         appendLine("  tcp-read-write-timeout: 120000")
-        // Idle UDP associations are reaped after this; it also caps how long hev.stop() blocks
-        // draining them on teardown. 15s covered DNS and QUIC keepalives fine, but it is far
-        // too short for a hole-punched peer: reaping the association drops the tunnel's
-        // server-side UDP socket, so the public port changes and Parsec/WebRTC are left
-        // sending to a port that no longer exists. Any lull that long — a paused stream, a
-        // menu, a slow moment on the uplink — cost the call. 90s costs an idle association a
-        // little longer in memory and nothing else.
-        appendLine("  udp-read-write-timeout: 90000")
+        // After the SOCKS UDP ASSOCIATE handshake hev applies this timeout to the
+        // whole session, including the silent TCP control socket. 15s then 90s both
+        // killed live Parsec associates (2026-08-15: 9cc8dac3 closed at 95s with
+        // `udp associate closed`, origin torn down 30s later). YAML 0/-1 falls back
+        // to the 60s library default, so this has to be a large positive. 1h matches
+        // the client udp_idle lease; hev.stop() may block up to this on teardown.
+        appendLine("  udp-read-write-timeout: 3600000")
         appendLine("  log-level: warn")
     }
 

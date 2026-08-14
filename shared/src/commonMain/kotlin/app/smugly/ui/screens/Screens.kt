@@ -152,6 +152,12 @@ fun HomeScreen(
     homeFolderIndex: Int = 0,
     /** Folder to open on entry: a subscription id, or blank for Home. */
     initialFolderId: String = "",
+    /**
+     * One-shot: switch to this subscription after it was just created. Cleared via
+     * [onFocusFolderConsumed] once the pager has moved (or the id is gone).
+     */
+    focusFolderId: String? = null,
+    onFocusFolderConsumed: () -> Unit = {},
     /** Reports the folder now on screen so it can be restored next launch. */
     onFolderOpened: (String) -> Unit = {},
     /** Measured latency per profile id (see LatencyProbe); missing = never measured. */
@@ -294,6 +300,19 @@ fun HomeScreen(
     // one it already flipped to.
     LaunchedEffect(pagerState.settledPage, slots) {
         onFolderOpened(slots.getOrNull(pagerState.settledPage)?.id ?: "")
+    }
+    // A newly created folder is not the launch restore target — jump to it once the tab exists.
+    LaunchedEffect(focusFolderId, slots) {
+        val id = focusFolderId ?: return@LaunchedEffect
+        val target = slots.indexOfFirst { it?.id == id }
+        if (target < 0) {
+            onFocusFolderConsumed()
+            return@LaunchedEffect
+        }
+        if (target != pagerState.currentPage) {
+            pagerState.scrollToPage(target)
+        }
+        onFocusFolderConsumed()
     }
     // Finger-swipe on the pager while a tab-tap left pendingTab set: drop it so the strip
     // follows currentPage. Gated on !tabNavigating so the far-tab hop (scroll to neighbour,
@@ -473,7 +492,10 @@ fun HomeScreen(
                 val live = page == folderIndex
                 val pageDisplayed = if (live && draggingId != null) ordered else pageProfiles
 
-                if (pageDisplayed.isEmpty() && pageSubscription == null) {
+                // Empty local folders (Home / a hand-made group) share this Box so the hint
+                // sits at the same height. Routing them through LazyColumn used to stack
+                // contentPadding and the item's own 112.dp clearance and parked the text higher.
+                if (pageDisplayed.isEmpty() && pageSubscription?.showsInfoCard != true) {
                     // BottomConnectBar is drawn as an overlay (not in this Column), so centering
                     // in raw fillMaxSize sits too low. Same 112.dp clearance LazyColumn uses.
                     Box(
@@ -484,7 +506,11 @@ fun HomeScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = t(S.NO_PROFILES_HINT),
+                            text = if (pageSubscription == null) {
+                                t(S.NO_PROFILES_HINT)
+                            } else {
+                                t(S.NO_PROFILES_IN_FOLDER_HINT)
+                            },
                             color = SmuglyTextSecondary,
                             fontSize = 15.sp,
                             lineHeight = 20.sp,
@@ -808,7 +834,7 @@ fun HomeScreen(
                         // Space for bar (72) + half button (~33) sitting above the bar.
                         contentPadding = PaddingValues(bottom = 112.dp)
                     ) {
-                        pageSubscription?.takeIf { it.showInfo }?.let { sub ->
+                        pageSubscription?.takeIf { it.showsInfoCard }?.let { sub ->
                             item(key = "subscription") {
                                 SubscriptionCard(
                                     subscription = sub,
@@ -823,13 +849,12 @@ fun HomeScreen(
                         // have configurations, this folder just came back without any.
                         if (pageDisplayed.isEmpty()) {
                             item(key = "empty") {
-                                // Match LazyColumn viewport: tall enough that Center lands mid-list
-                                // area above the floating connect bar.
+                                // Only reached when the quota card is on screen: remaining space
+                                // below it. Do not add another 112.dp — LazyColumn already has it.
                                 Box(
                                     Modifier
                                         .fillParentMaxSize()
-                                        .padding(horizontal = 32.dp)
-                                        .padding(bottom = 112.dp),
+                                        .padding(horizontal = 32.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
