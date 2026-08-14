@@ -730,7 +730,7 @@ private const val ProfileDragScale = 0.96f
 
 // Profile row height, in one place. It used to be set by two 48dp icon boxes, which made
 // every card ~72dp tall and put barely eight of them on a phone screen; 40/6/6 turned out
-// to read as too cramped, so this sits between the two — ~64dp per row.
+// to read as too cramped, so this sits between the two.
 // Nothing measures rows by a constant any more (the reorder drag reads layoutInfo), so
 // these are free to change.
 private val ProfileCardIcon = 44.dp
@@ -794,14 +794,10 @@ fun ProfileCard(
     enableReorder: Boolean = true,
     /** Measured round trip to this profile's own server, or null when never measured. */
     latency: app.smugly.ui.LatencyUi? = null,
-    /**
-     * Card fill. Inside a category panel the cards sit on [SmuglyCard] already, so they are drawn
-     * a shade lighter — otherwise the group would be one flat slab with no rows in it.
-     */
-    containerColor: Color = SmuglyCard,
-    /** Applied to the card's root — the list uses it to animate the row into its new slot. */
+    /** Applied to the row's root — the list uses it to animate the row into its new slot. */
     modifier: Modifier = Modifier
 ) {
+    val padV = ProfileCardPadV
     val shape = RoundedCornerShape(12.dp)
     val haptics = LocalHapticFeedback.current
     // A lazy list disposes items that leave the viewport, and disposing the one under the finger
@@ -933,8 +929,8 @@ fun ProfileCard(
                 shadowElevation = elev
             }
             .clip(shape)
-            .background(containerColor)
-            // Always draw border; alpha/color animates so selection "moves" smoothly.
+            .background(SmuglyCard)
+            // Always drawn; color fades so the highlight moves with the tap, not the layout.
             .border(1.dp, borderColor, shape)
             .then(
                 if (enableReorder) {
@@ -948,7 +944,7 @@ fun ProfileCard(
             // The card is a selectable surface, not a button — arrow cursor unless reorder is on.
             // Delete and ⋮ still use handClickable and override the cursor themselves.
             .surfaceClickable(onClick = onClick)
-            .padding(start = 12.dp, top = ProfileCardPadV, end = 4.dp, bottom = ProfileCardPadV),
+            .padding(start = 12.dp, top = padV, end = 4.dp, bottom = padV),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Marker centered in the gutter between card edge and title text.
@@ -970,23 +966,16 @@ fun ProfileCard(
                     )
             )
         }
-        Column(Modifier.weight(1f).padding(start = 4.dp)) {
+        Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
             // Flag emojis in profile titles (🇪🇸 Испания) become letter-pairs on Windows;
             // ProfileNameText draws a real flag image on desktop and keeps emoji elsewhere.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ProfileNameText(
-                    name = name,
-                    color = SmuglyTextPrimary,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Normal,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-                if (latency != null) {
-                    Spacer(Modifier.width(8.dp))
-                    LatencyBadge(latency)
-                }
-            }
+            ProfileNameText(
+                name = name,
+                color = SmuglyTextPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Normal,
+                maxLines = 1
+            )
             // Xray and empty subtitles: no second line (avoids "{..." junk).
             if (subtitle.isNotBlank()) {
                 Text(
@@ -997,6 +986,10 @@ fun ProfileCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+        if (latency != null) {
+            LatencyBadge(latency)
+            Spacer(Modifier.width(4.dp))
         }
         if (onDelete != null) {
             Box(

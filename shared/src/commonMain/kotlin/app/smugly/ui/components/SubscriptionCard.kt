@@ -242,17 +242,13 @@ fun SubscriptionCard(
 }
 
 /**
- * One sub-group inside a subscription folder: its name, what it is for, and its servers — drawn as
- * a single panel rather than a heading floating above loose cards, so it is obvious at a glance
- * which servers the description is talking about.
+ * One sub-group inside a subscription folder: a text-only header card, then the servers as their
+ * own cards underneath. The header is not a wrapper around the rows — that was cards-in-cards.
  *
- * The description is the reason categories exist at all — a panel can say, in the app, what
- * "Обход БС (s3-fuckup)" is actually for. It is optional, and a category without one is just a
- * heading: nothing is invented to fill the space.
+ * Text only: name, optional description, chevron. No icon, no marker.
  *
- * Tapping the header folds the group away, so a long everyday list does not bury the two servers a
- * user came for. Folding happens **inside** the panel ([AnimatedVisibility] clips it), which is
- * also what keeps the cards from sliding out over the next group's text on the way.
+ * Tapping the header folds the group away. Folding is clipped by [AnimatedVisibility], so the
+ * rows slide up into the heading instead of over the next group's text.
  */
 @Composable
 fun CategorySection(
@@ -270,18 +266,15 @@ fun CategorySection(
         animationSpec = tween(CategoryFoldMs, easing = FastOutSlowInEasing),
         label = "categoryChevron"
     )
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(SmuglyCard)
-    ) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(bottom = 6.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(SmuglyCard)
                 .handClickable(onClick = onToggle)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
@@ -328,7 +321,8 @@ fun CategorySection(
                 shrinkTowards = Alignment.Top
             )
         ) {
-            Column(Modifier.padding(horizontal = 8.dp)) { content() }
+            // A hair of inset — same card size as the heading, just enough to read as children.
+            Column(Modifier.padding(horizontal = 4.dp)) { content() }
         }
     }
 }

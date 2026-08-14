@@ -113,7 +113,6 @@ import app.smugly.ui.components.TopBar
 import app.smugly.ui.profileSubtitle
 import app.smugly.ui.theme.SmuglyBg
 import app.smugly.ui.theme.SmuglyCard
-import app.smugly.ui.theme.SmuglyCardSoft
 import app.smugly.ui.theme.SmuglyTextSecondary
 
 @Composable
@@ -675,19 +674,17 @@ fun HomeScreen(
                     /**
                      * One server row.
                      *
-                     * Shared by the flat list and by the cards inside a category panel: a grouped
-                     * folder is the same list with panels around parts of it, and writing the row
-                     * twice is how the two would quietly drift apart.
+                     * Shared by the flat list and by the rows under a category heading: a grouped
+                     * folder is the same list with separators around parts of it, and writing the
+                     * row twice is how the two would quietly drift apart.
                      *
-                     * [inCategory] rows sit on the panel's own fill, so they are drawn a shade
-                     * lighter and never reorder — the panel's contents are the panel's order.
+                     * [inCategory] rows never reorder — the group's contents are the group's order.
                      */
                     val serverCard: @Composable (ConfigProfile, Int, String, Boolean, Modifier) -> Unit =
                         { profile, index, rowKey, inCategory, rowModifier ->
                             ServerRow(
                                 profile = profile,
                                 index = index,
-                                inCategory = inCategory,
                                 hideProtocol = pageSubscription?.hideProtocol == true,
                                 rowModifier = rowModifier,
                                 activeId = activeId,
@@ -848,8 +845,8 @@ fun HomeScreen(
                         }
                 itemsIndexed(rows, key = { _, row -> row.key }) { _, row ->
                     when (row) {
-                        // A category is ONE list item: its text and its cards move, fold and clip
-                        // together. Drawing the heading as its own item is what let a card slide
+                        // A category is ONE list item: its heading and its rows move, fold and clip
+                        // together. Drawing the heading as its own item is what let a row slide
                         // out over the next group's text while the list closed the gap.
                         is FolderRow.Block -> CategorySection(
                             name = row.category.name,
@@ -1024,10 +1021,10 @@ private sealed interface FolderRow {
     /**
      * A whole category — heading, description and servers — as a single item.
      *
-     * Its servers are composed together rather than lazily. That is the point: they are one panel
-     * that folds and moves as a unit, and a category is a handful of servers an operator grouped
-     * on purpose. The unbounded case (a folder with hundreds of servers) has no categories and
-     * still comes through as individual [Server] rows.
+     * Its servers are composed together rather than lazily. That is the point: they fold and move
+     * as a unit, and a category is a handful of servers an operator grouped on purpose. The
+     * unbounded case (a folder with hundreds of servers) has no categories and still comes through
+     * as individual [Server] rows.
      */
     data class Block(
         val category: SubscriptionCategory,
@@ -1054,16 +1051,15 @@ private data class FolderMember(
 )
 
 /**
- * One profile card, wherever it is drawn: loose in the list or inside a category panel.
+ * One profile row, wherever it is drawn: loose in the list or under a category heading.
  *
- * Everything the drag needs is passed in rather than reached for, so the same row works in a
- * panel — where dragging is off — without a second copy of the card.
+ * Everything the drag needs is passed in rather than reached for, so the same row works under a
+ * heading — where dragging is off — without a second copy of the row.
  */
 @Composable
 private fun ServerRow(
     profile: ConfigProfile,
     index: Int,
-    inCategory: Boolean,
     /** Panel asked for the engine name under the title to be hidden for this folder. */
     hideProtocol: Boolean,
     rowModifier: Modifier,
@@ -1089,9 +1085,6 @@ private fun ServerRow(
         onClick = onSelect,
         latency = latency,
         modifier = rowModifier,
-        // Inside a panel the card already sits on SmuglyCard; one shade up keeps the rows visible
-        // instead of melting the whole group into one slab.
-        containerColor = if (inCategory) SmuglyCardSoft else SmuglyCard,
         onDelete = onDelete,
         onMoreClick = onMoreClick,
         onMoreAnchor = onMoreAnchor,
