@@ -119,6 +119,7 @@ object TunnelToml {
         appendLine("seq_placement     = ${q(placement)}")
         appendLine("pad_placement     = ${q(placement)}")
         appendLine("data_placement    = ${q(placement)}")
+        appendLine("cookie_token      = true")
         appendLine()
         appendLine("[multipath]")
         // 0/1 = single path. Striping holds a pool permit per path for a whole TCP flow,
