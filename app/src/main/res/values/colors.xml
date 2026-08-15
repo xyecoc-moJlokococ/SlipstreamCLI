@@ -13,4 +13,6 @@
     <color name="smugly_text_muted">#7A7A7A</color>
     <!-- On dark-red primary buttons. -->
     <color name="smugly_button_text_primary">#FFFFFF</color>
+    <!-- Adaptive launcher background — matches logo-app.png corners. -->
+    <color name="ic_launcher_background">#000000</color>
 </resources>
