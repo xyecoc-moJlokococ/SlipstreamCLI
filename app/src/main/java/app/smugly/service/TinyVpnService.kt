@@ -336,20 +336,24 @@ class TinyVpnService : VpnService() {
                 .addAddress("fd00::2", 128)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer(VPN_DNS_PRIMARY)
-                .addDnsServer(VPN_DNS_SECONDARY)
+                // Same as CDNFU: raw DNS UDP to 1.1.1.1 through S3 is lossy (Telegram
+                // has IPs cached, browsers do not) so the tab never resolves.
+                .addDnsServer(HevSocks5Tunnel.MAPDNS_ADDRESS)
             runCatching { builder.addDisallowedApplication(packageName) }
                 .onFailure { AppLog.w(TAG, "addDisallowedApplication failed: ${it.message}") }
             tunFd = builder.establish() ?: error("VpnService.Builder.establish returned null")
 
             // s3fu implements standard SOCKS5 UDP ASSOCIATE (no auth) -> hev udp='udp'.
+            // mapdns restores hostnames on CONNECT; QUIC is rejected in hev.
             HevSocks5Tunnel.start(
                 tunFd = tunFd ?: error("TUN fd is null"),
                 socksAddress = "127.0.0.1",
                 socksPort = socksPort,
                 username = null,
                 password = null,
-                udpMode = "udp"
+                udpMode = "udp",
+                mapDns = true,
+                rejectNonDnsUdp = false
             ).getOrThrow()
             if (!tunnelActive || lifecycleGeneration != generation) error("VPN start cancelled")
 

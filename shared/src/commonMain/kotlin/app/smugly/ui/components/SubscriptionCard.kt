@@ -90,8 +90,9 @@ import app.smugly.ui.theme.SmuglyTextPrimary
 import app.smugly.ui.theme.SmuglyTextSecondary
 
 /**
- * Header shown above a subscription's servers: what the plan is, how much of it is left, and when
- * it last refreshed.
+ * Status strip above a subscription's servers: that the plan is live, last refresh,
+ * auto-update interval, quota and expiry. The folder name lives on the tab above —
+ * repeating it here just doubled the title, so the heading is a status line instead.
  *
  * The quota bar is drawn **only for limited plans**. An unlimited plan (`total = 0`) reports usage
  * as a plain number — a bar with no ceiling would either read as "full" or as "empty", and both are
@@ -107,6 +108,7 @@ fun SubscriptionCard(
     modifier: Modifier = Modifier
 ) {
     val info = subscription.info
+    val expired = info.daysLeft(nowMs)?.let { it < 0 } == true
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -118,8 +120,8 @@ fun SubscriptionCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = subscription.name.ifBlank { hostOf(subscription.url) },
-                    color = SmuglyTextPrimary,
+                    text = t(if (expired) S.SUBSCRIPTION_INACTIVE else S.SUBSCRIPTION_ACTIVE),
+                    color = if (expired) SmuglyAccent else SmuglyTextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -188,7 +190,7 @@ fun SubscriptionCard(
             expiry?.let {
                 Text(
                     text = it,
-                    color = if (info.daysLeft(nowMs)?.let { d -> d < 0 } == true) SmuglyAccent else SmuglyTextSecondary,
+                    color = if (expired) SmuglyAccent else SmuglyTextSecondary,
                     fontSize = 13.sp,
                     maxLines = 1
                 )
@@ -330,12 +332,6 @@ fun CategorySection(
 /** How long a category takes to fold away — and how long its chevron takes to turn. */
 private const val CategoryFoldMs = 180
 
-/** `https://host/long/path?token=…` -> `host`, so an unnamed folder still reads as a name. */
-private fun hostOf(url: String): String {
-    val afterScheme = url.substringAfter("://", url)
-    return afterScheme.substringBefore('/').substringBefore('?').ifBlank { url }
-}
-
 /** "258.0 GB used" for unlimited plans, "12.0 GB / 100.0 GB" for limited ones. */
 private fun trafficText(subscription: Subscription): String {
     val info = subscription.info
@@ -376,8 +372,9 @@ private fun subtitle(subscription: Subscription, nowMs: Long): String {
 }
 
 /**
- * Folder tabs: local configs plus one per subscription. Hidden entirely when there are no
- * subscriptions, so a user who never imports one sees the app exactly as before.
+ * Folder tabs: local configs (once any exist) plus one per subscription. Always drawn
+ * whenever there is at least one folder — a single tab still shows so the folder is named
+ * and its menu is reachable.
  *
  * v2rayNG-style — plain labels with a single underline that *travels* to the tab you pick rather
  * than a highlight appearing in a new place. Tabs keep their natural width (folder names run long)
@@ -413,7 +410,7 @@ fun FolderTabs(
     onDragActive: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    if (names.size <= 1) return
+    if (names.isEmpty()) return
     // Gesture handlers below live inside `pointerInput`, whose block is only restarted when its
     // keys change. The callbacks close over the caller's *current* folder list, so a block that
     // survives a reorder keeps calling yesterday's lambda: the first drag after launch worked and

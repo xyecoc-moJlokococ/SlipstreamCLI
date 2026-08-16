@@ -91,6 +91,9 @@ class MixedProxyServer(
     private val connectFail = AtomicLong(0)
     private val activeClients = AtomicInteger(0)
 
+    private var lastLimitLogMs = 0L
+    private var droppedSinceLog = 0
+
     @Volatile private var selector: Selector? = null
     @Volatile private var serverChannel: ServerSocketChannel? = null
     @Volatile private var loopThread: Thread? = null
@@ -185,7 +188,16 @@ class MixedProxyServer(
             val ch = ssc.accept() ?: break
             if (activeClients.get() >= maxActiveClients) {
                 runCatching { ch.close() }
-                PlatformLog.log(LogLevel.WARN, TAG, "connection limit $maxActiveClients reached; dropped")
+                droppedSinceLog++
+                val now = System.currentTimeMillis()
+                if (now - lastLimitLogMs >= 2_000L) {
+                    PlatformLog.log(
+                        LogLevel.WARN, TAG,
+                        "connection limit $maxActiveClients reached; dropped $droppedSinceLog"
+                    )
+                    lastLimitLogMs = now
+                    droppedSinceLog = 0
+                }
                 continue
             }
             runCatching {
@@ -322,6 +334,11 @@ class MixedProxyServer(
                         is HttpProxyProtocol.Result.Reject -> {
                             PlatformLog.log(LogLevel.WARN, TAG, "http reject: ${r.reason}")
                             queue(conn.toClient, r.status); conn.closeAfterFlush = true
+                        }
+                        is HttpProxyProtocol.Result.Local -> {
+                            consume(conn.hs, r.consumed)
+                            queue(conn.toClient, r.status)
+                            conn.closeAfterFlush = true
                         }
                         is HttpProxyProtocol.Result.Ok -> {
                             val (raw, portBytes) = HttpProxyProtocol.socksAddress(r.host, r.port)

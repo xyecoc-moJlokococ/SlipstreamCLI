@@ -350,11 +350,7 @@ object ResolverSelector {
      *
      * Separators are comma / semicolon / whitespace so "1.1.1.1, 8.8.8.8" and one-per-line both work.
      */
-    fun parseManualHosts(raw: String): List<String> =
-        raw.split(',', ';', ' ', '\t', '\n', '\r')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
+    fun parseManualHosts(raw: String): List<String> = DnsResolverPool.parseManualHosts(raw)
 
     /** One resolver a probe may try, with the carrier to try it over. */
     data class ProbeCandidate(

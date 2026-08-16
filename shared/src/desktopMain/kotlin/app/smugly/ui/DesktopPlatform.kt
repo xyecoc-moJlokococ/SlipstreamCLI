@@ -289,12 +289,21 @@ class DesktopPlatform(
             )
         }
 
-        // slipstream / s3fu / xray deep links with base64 config=
+        // slipstream / s3fu / cdnfu / xray — both the exported config= blob and the
+        // query-param form the panel actually mints (url/psk/domain/…).
         if (trimmed.startsWith("xray://", ignoreCase = true) ||
             trimmed.startsWith("slipstream://", ignoreCase = true) ||
-            trimmed.startsWith("s3fu://", ignoreCase = true)
+            trimmed.startsWith("s3fu://", ignoreCase = true) ||
+            trimmed.startsWith("cdnfu://", ignoreCase = true)
         ) {
-            return parseDeepLinkProfile(trimmed, preferredName)
+            return app.smugly.desktop.DesktopProfileLinks.parse(
+                trimmed,
+                preferredName = preferredName,
+                base = defaultConfig(
+                    listenPort = runCatching { store.loadGlobalSettings().listenPort }.getOrDefault(1080),
+                    mode = Config.Mode.PROXY
+                )
+            )
         }
 
         if (!trimmed.startsWith("{")) return null
@@ -330,26 +339,6 @@ class DesktopPlatform(
                 )
             }
         }.getOrNull()
-    }
-
-    /** `xray://import?config=<urlsafe-b64-json>` and siblings. */
-    private fun parseDeepLinkProfile(uri: String, preferredName: String): ConfigProfile? {
-        val q = uri.substringAfter('?', "")
-        if (q.isEmpty()) return null
-        val params = q.split('&').mapNotNull { part ->
-            val eq = part.indexOf('=')
-            if (eq <= 0) null
-            else part.substring(0, eq) to part.substring(eq + 1)
-        }.toMap()
-        val b64 = params["config"] ?: params["profile"] ?: params["data"] ?: return null
-        val jsonText = runCatching {
-            val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
-            String(Base64.getUrlDecoder().decode(padded))
-        }.getOrNull() ?: runCatching {
-            val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
-            String(Base64.getDecoder().decode(padded))
-        }.getOrNull() ?: return null
-        return parseProfileFromText(jsonText, preferredName)
     }
 
     override fun exportProfileLink(profile: ConfigProfile): String {
@@ -612,12 +601,14 @@ class DesktopPlatform(
         profile: app.smugly.ConfigProfile,
         onResult: (Result<Int>) -> Unit
     ) {
-        // Starts the profile's own engine on a throwaway port and times a request through it; a
-        // protocol with no Windows build (Slipstream) falls back to a plain reachability check.
+        // Starts the profile's own engine on a throwaway port and times a request through it.
+        // Falls back to a plain reachability check only when that engine binary is missing.
         app.smugly.net.E2ELatencyProbe.submit(profile.config, probeEngines, onResult)
     }
 
-    private val probeEngines by lazy { app.smugly.desktop.DesktopProbeEngines() }
+    private val probeEngines by lazy {
+        app.smugly.desktop.DesktopProbeEngines { store.loadGlobalSettings().dnsResolverPool }
+    }
 
     override fun looksLikeSubscription(text: String): Boolean =
         app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)

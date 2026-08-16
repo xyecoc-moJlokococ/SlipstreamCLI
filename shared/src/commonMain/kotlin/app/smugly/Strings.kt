@@ -267,7 +267,7 @@ enum class S(val en: String, val ru: String) {
     FOLDER_EDIT_TITLE("Folder settings", "Настройки папки"),
     FOLDER_NAME("Folder name", "Название папки"),
     FOLDER_NAME_HINT("My folder", "Моя папка"),
-    FOLDER_DEFAULT_EMPTY_NAME("Folder", "Папка"),
+    FOLDER_DEFAULT_EMPTY_NAME("My folder", "Моя папка"),
     FOLDER_SOURCE("Folder source", "Источник папки"),
     FOLDER_SOURCE_EMPTY("Empty", "Пустая"),
     FOLDER_SOURCE_LINK("From link", "Из ссылки"),
@@ -292,6 +292,8 @@ enum class S(val en: String, val ru: String) {
 
     // Subscriptions (folders)
     HOME_FOLDER("My configs", "Мои конфиги"),
+    SUBSCRIPTION_ACTIVE("Subscription active", "Подписка активна"),
+    SUBSCRIPTION_INACTIVE("Subscription inactive", "Подписка неактивна"),
     SUBSCRIPTION_USED("used", "использовано"),
     SUBSCRIPTION_EXPIRES_IN("Days left:", "Осталось дней:"),
     SUBSCRIPTION_EXPIRED("Expired", "Истекла"),

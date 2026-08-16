@@ -107,6 +107,16 @@ object DnsResolverPool {
     fun parse(raw: String): List<String> =
         raw.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.distinct().toList()
 
+    /**
+     * Split a typed resolver field into hosts. The engine already runs several at once; this is
+     * what lets one profile write `1.1.1.1, 8.8.8.8` or one-per-line and mean it.
+     */
+    fun parseManualHosts(raw: String): List<String> =
+        raw.split(',', ';', ' ', '\t', '\n', '\r')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
     fun isLocalSentinel(entry: String): Boolean =
         entry.equals(LOCAL_SENTINEL, ignoreCase = true) ||
             entry.equals(LOCAL_SENTINEL_LEGACY, ignoreCase = true)
@@ -131,9 +141,10 @@ data class GlobalSettings(
     val language: AppLanguage = AppLanguage.SYSTEM,
     val dnsResolverPool: String = DnsResolverPool.DEFAULT_RAW,
     /**
-     * Where the "Home" folder sits among the tabs. Subscriptions carry their own order in the
-     * subscription list, but Home is not one of them and still has to be draggable, so its slot
-     * lives here.
+     * Where the "Home" folder sits among the tabs, once it exists. Subscriptions carry their
+     * own order in the subscription list, but Home is not one of them and still has to be
+     * draggable, so its slot lives here. Home itself is omitted until the user has a local
+     * profile (imported or created).
      */
     val homeFolderIndex: Int = 0,
     /**

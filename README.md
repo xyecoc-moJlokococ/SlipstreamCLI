@@ -82,16 +82,17 @@ sends *every* scheme there as HTTP, so a SOCKS5-only listener is invisible to th
 Keeping the engine SOCKS5-only also means one code path for traffic counters, local auth and
 connection limits regardless of protocol.
 
-**Supported protocols:** S3 (`s3fu`) and Xray. Slipstream-over-DNS has no Windows build yet — it
-needs picoquic compiled with MSVC + CMake (see `slipstream-rust/scripts/build_picoquic_windows.ps1`).
-Selecting a Slipstream profile on desktop fails with an explicit message rather than silently
-doing nothing.
+**Supported protocols:** Slipstream-over-DNS (`slipstream.exe`), S3 (`s3fu`), CDN (`cdnfu`), and
+Xray. Engines are statically linked (OpenSSL/picoquic baked in) so the folder runs without
+installing extra runtimes — the usual reason a stock Slipstream Windows build used to fail.
 
 ### Build
 
 ```bash
-# engines (WSL: s3fu cross-compiled via cargo-zigbuild; xray via the Windows Go toolchain)
-bash _wsl_build_s3fu_windows.sh
+# engines
+.\build-slipstream-windows.ps1     # picoquic + slipstream.exe (MSVC, static OpenSSL via vcpkg)
+.\build-cdnfu-windows.ps1          # cdnfu.exe (native cargo / MSVC)
+bash _wsl_build_s3fu_windows.sh    # s3fu.exe via cargo-zigbuild in WSL
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o engines/xray.exe ./main   # in Xray-core/
 
 # app runtime (Gradle must run in WSL: :shared needs an Android SDK)

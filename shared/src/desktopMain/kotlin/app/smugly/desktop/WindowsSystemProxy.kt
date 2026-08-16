@@ -28,6 +28,9 @@ import org.json.JSONObject
 object WindowsSystemProxy {
     private const val TAG = "WindowsSystemProxy"
     private const val KEY = """HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"""
+    private const val CONN_KEY = """HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"""
+    private const val CONN_DEFAULT = "DefaultConnectionSettings"
+    private const val CONN_LEGACY = "SavedLegacySettings"
     private const val BACKUP_FILE = "system-proxy-backup.json"
 
     val isWindows: Boolean
@@ -37,14 +40,29 @@ object WindowsSystemProxy {
         val enabled: Boolean,
         val server: String,
         val override: String,
-        val autoConfigUrl: String
+        val autoConfigUrl: String,
+        /** Base64 of DefaultConnectionSettings, so restore puts the Settings UI back too. */
+        val connectionSettingsB64: String = "",
+        val legacySettingsB64: String = "",
+        /**
+         * Other REG_BINARY values under Connections (per-adapter / localized LAN names).
+         * Settings and WinINET often read these instead of DefaultConnectionSettings.
+         */
+        val extraConnectionBlobsB64: Map<String, String> = emptyMap()
     ) {
-        fun toJson(): String = JSONObject()
-            .put("enabled", enabled)
-            .put("server", server)
-            .put("override", override)
-            .put("autoConfigUrl", autoConfigUrl)
-            .toString(2)
+        fun toJson(): String {
+            val extra = JSONObject()
+            extraConnectionBlobsB64.forEach { (k, v) -> extra.put(k, v) }
+            return JSONObject()
+                .put("enabled", enabled)
+                .put("server", server)
+                .put("override", override)
+                .put("autoConfigUrl", autoConfigUrl)
+                .put("connectionSettingsB64", connectionSettingsB64)
+                .put("legacySettingsB64", legacySettingsB64)
+                .put("extraConnectionBlobsB64", extra)
+                .toString(2)
+        }
 
         /** Human-readable form for warnings ("127.0.0.1:2080" / "off"). */
         fun describe(): String = when {
@@ -60,7 +78,14 @@ object WindowsSystemProxy {
                     enabled = o.optBoolean("enabled", false),
                     server = o.optString("server", ""),
                     override = o.optString("override", ""),
-                    autoConfigUrl = o.optString("autoConfigUrl", "")
+                    autoConfigUrl = o.optString("autoConfigUrl", ""),
+                    connectionSettingsB64 = o.optString("connectionSettingsB64", ""),
+                    legacySettingsB64 = o.optString("legacySettingsB64", ""),
+                    extraConnectionBlobsB64 = o.optJSONObject("extraConnectionBlobsB64")
+                        ?.let { extra ->
+                            extra.keys().asSequence().associateWith { extra.optString(it, "") }
+                                .filterValues { it.isNotBlank() }
+                        }.orEmpty()
                 )
             }.getOrNull()
         }
@@ -70,12 +95,18 @@ object WindowsSystemProxy {
 
     // ---- read ----
 
-    fun snapshot(): ProxySnapshot = ProxySnapshot(
-        enabled = readValue("ProxyEnable")?.let { parseDword(it) != 0 } ?: false,
-        server = readValue("ProxyServer").orEmpty(),
-        override = readValue("ProxyOverride").orEmpty(),
-        autoConfigUrl = readValue("AutoConfigURL").orEmpty()
-    )
+    fun snapshot(): ProxySnapshot {
+        val blobs = readAllConnectionBlobs()
+        return ProxySnapshot(
+            enabled = readValue("ProxyEnable")?.let { parseDword(it) != 0 } ?: false,
+            server = readValue("ProxyServer").orEmpty(),
+            override = readValue("ProxyOverride").orEmpty(),
+            autoConfigUrl = readValue("AutoConfigURL").orEmpty(),
+            connectionSettingsB64 = blobs[CONN_DEFAULT].orEmpty(),
+            legacySettingsB64 = blobs[CONN_LEGACY].orEmpty(),
+            extraConnectionBlobsB64 = blobs.filterKeys { it != CONN_DEFAULT && it != CONN_LEGACY }
+        )
+    }
 
     private fun readValue(name: String): String? {
         val out = runCommand(listOf("reg", "query", KEY, "/v", name)) ?: return null
@@ -108,8 +139,15 @@ object WindowsSystemProxy {
             setValue("ProxyServer", "REG_SZ", server)
             setValue("ProxyOverride", "REG_SZ", bypass)
             setValue("ProxyEnable", "REG_DWORD", "1")
-            // A stale PAC url would take priority over the manual server we just set.
-            if (previous.autoConfigUrl.isNotBlank()) deleteValue("AutoConfigURL")
+            setValue("AutoDetect", "REG_DWORD", "0")
+            deleteValue("AutoConfigURL")
+            // WinINET official API (sysproxy.exe). This is what flips the Settings
+            // "Manual proxy setup" toggle (FLAGS_UI). Registry-only writes leave that page empty.
+            if (!applyPerConnection(enabled = true, server = server, bypass = bypass)) {
+                PlatformLog.log(LogLevel.WARN, TAG, "sysproxy helper missing or failed; writing DefaultConnectionSettings only")
+            }
+            writeDefaultBlobs(enabled = true, server = server, bypass = bypass)
+            applyWinHttp(server, bypass)
             notifyWinInet()
             PlatformLog.log(
                 LogLevel.INFO, TAG,
@@ -136,7 +174,11 @@ object WindowsSystemProxy {
             setValue("ProxyOverride", "REG_SZ", saved.override)
             if (saved.autoConfigUrl.isNotBlank()) {
                 setValue("AutoConfigURL", "REG_SZ", saved.autoConfigUrl)
+            } else {
+                deleteValue("AutoConfigURL")
             }
+            restoreConnectionBlob(saved)
+            restoreWinHttp()
             notifyWinInet()
             PlatformLog.log(LogLevel.INFO, TAG, "system proxy restored to ${saved.describe()}")
             true
@@ -164,8 +206,212 @@ object WindowsSystemProxy {
         val seen = LinkedHashSet<String>()
         existing.split(';').map { it.trim() }.filter { it.isNotEmpty() }.forEach { seen += it }
         extra.forEach { if (it.isNotBlank()) seen += it.trim() }
-        if (seen.none { it.equals("<local>", ignoreCase = true) }) seen += "<local>"
-        return seen.joinToString(";")
+        // `<local>` does not always cover 127.0.0.1 (Chrome still proxies it). The
+        // engine and MixedProxy both bind loopback — those must never go back into us.
+        // Do NOT add `::1`: WinINET InternetSetOption returns 87 if the bypass contains
+        // IPv6, and Settings then shows "Manual proxy setup" as Off.
+        listOf("127.0.0.1", "localhost", "<local>").forEach { host ->
+            if (seen.none { it.equals(host, ignoreCase = true) }) seen += host
+        }
+        return sanitizeBypassForWinInet(seen.joinToString(";"))
+    }
+
+    /**
+     * WinINET rejects IPv6 tokens (`::1`) with error 87. Settings reads the same API,
+     * so a rejected call leaves "Manual proxy setup" empty even when ProxyEnable=1.
+     */
+    internal fun sanitizeBypassForWinInet(raw: String): String =
+        raw.split(';').map { it.trim() }.filter { it.isNotEmpty() && !isUnsafeBypassToken(it) }
+            .distinct()
+            .joinToString(";")
+
+    private fun isUnsafeBypassToken(token: String): Boolean =
+        token.contains("::") || token.count { it == ':' } >= 2
+
+    /**
+     * WinHTTP is a separate store from WinINET. curl, some updaters and a few browsers
+     * read it; leaving it "direct" is why those apps keep using the raw ISP path.
+     * Machine-wide and often needs no extra rights for the current user session.
+     */
+    private fun applyWinHttp(server: String, bypass: String) {
+        val bypassArg = bypass.split(';').filter { it.isNotBlank() && it != "<local>" }
+            .take(20).joinToString(";")
+        val ok = runCommand(
+            listOf(
+                "netsh", "winhttp", "set", "proxy",
+                "proxy-server=$server",
+                "bypass-list=${bypassArg.ifBlank { "localhost;127.0.0.1" }}"
+            )
+        ) != null
+        if (!ok) {
+            PlatformLog.log(LogLevel.INFO, TAG, "winhttp proxy not set (often needs admin) — WinINET still applied")
+        }
+    }
+
+    private fun restoreWinHttp() {
+        runCommand(listOf("netsh", "winhttp", "reset", "proxy"))
+    }
+
+    private fun writeConnectionBlob(enabled: Boolean, server: String, bypass: String) {
+        writeDefaultBlobs(enabled, server, bypass)
+    }
+
+    /** Only the two well-known keys. Writing every Connections value corrupts named adapters. */
+    private fun writeDefaultBlobs(enabled: Boolean, server: String, bypass: String) {
+        for (name in listOf(CONN_DEFAULT, CONN_LEGACY)) {
+            val existing = readBinary(name)
+            val blob = WindowsConnectionSettings.encode(
+                enabled = enabled,
+                server = server,
+                bypass = bypass,
+                pacUrl = "",
+                counter = WindowsConnectionSettings.nextCounter(existing)
+            )
+            writeBinary(name, blob)
+        }
+    }
+
+    private fun restoreConnectionBlob(saved: ProxySnapshot) {
+        val def = saved.connectionSettingsB64.takeIf { it.isNotBlank() }
+            ?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
+        val leg = saved.legacySettingsB64.takeIf { it.isNotBlank() }
+            ?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
+        if (def != null) {
+            writeBinary(CONN_DEFAULT, def)
+        } else {
+            writeDefaultBlobs(saved.enabled, saved.server, saved.override)
+        }
+        if (leg != null) writeBinary(CONN_LEGACY, leg)
+        if (saved.enabled) {
+            applyPerConnection(true, saved.server, sanitizeBypassForWinInet(saved.override))
+        } else {
+            applyPerConnection(false, saved.server, sanitizeBypassForWinInet(saved.override))
+        }
+    }
+
+    /**
+     * WinINET official path — same one v2rayN / Clash use. Writes FLAGS + FLAGS_UI so the
+     * Settings "Manual proxy setup" toggle actually flips, and clears AUTOCONFIG_URL so a
+     * leftover PAC cannot override the manual server.
+     */
+    private fun applyPerConnection(enabled: Boolean, server: String, bypass: String): Boolean {
+        val exe = findSysProxy() ?: return false
+        val cmd = if (enabled) {
+            listOf(exe.absolutePath, "set", server, bypass)
+        } else {
+            listOf(exe.absolutePath, "off")
+        }
+        val out = runCommand(cmd, timeoutMs = 15_000)
+        if (out == null) {
+            PlatformLog.log(LogLevel.WARN, TAG, "sysproxy ${cmd.drop(1).joinToString(" ")} failed")
+            return false
+        }
+        PlatformLog.log(LogLevel.INFO, TAG, "sysproxy: ${out.lineSequence().firstOrNull().orEmpty()}")
+        return true
+    }
+
+    private fun findSysProxy(): File? {
+        val names = listOf("sysproxy.exe", "SysProxy.exe")
+        val dirs = buildList {
+            runCatching {
+                WindowsSystemProxy::class.java.protectionDomain.codeSource?.location?.toURI()
+                    ?.let { File(it).parentFile }
+            }.getOrNull()?.let {
+                add(it)
+                add(File(it, "engines"))
+            }
+            add(File(AppPaths.filesDir(), "engines"))
+            System.getProperty("user.dir")?.let { cwd ->
+                add(File(cwd, "engines"))
+                add(File(cwd, "tools/sysproxy"))
+            }
+        }
+        return dirs.distinct().firstNotNullOfOrNull { dir ->
+            names.map { File(dir, it) }.firstOrNull { it.isFile }
+        }
+    }
+
+    private fun connectionValueNames(): List<String> {
+        val script = File(AppPaths.filesDir(), "smugly-list-conn.ps1")
+        return runCatching {
+            script.writeText(
+                "\$k = Get-Item -LiteralPath " +
+                    "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Connections'; " +
+                    "\$k.GetValueNames() | ForEach-Object { \$_ }"
+            )
+            runCommand(
+                listOf(
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", script.absolutePath
+                )
+            )?.lineSequence()
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toList()
+                .orEmpty()
+        }.getOrElse { emptyList() }.also { runCatching { script.delete() } }
+    }
+
+    private fun readAllConnectionBlobs(): Map<String, String> {
+        val names = connectionValueNames()
+        if (names.isEmpty()) {
+            return listOf(CONN_DEFAULT, CONN_LEGACY).mapNotNull { name ->
+                readBinary(name)?.let { name to java.util.Base64.getEncoder().encodeToString(it) }
+            }.toMap()
+        }
+        return names.mapNotNull { name ->
+            readBinary(name)?.let { name to java.util.Base64.getEncoder().encodeToString(it) }
+        }.toMap()
+    }
+
+    private fun readBinary(name: String): ByteArray? {
+        val dir = AppPaths.filesDir()
+        val payload = File(dir, "smugly-read-proxy-bin.json")
+        val script = File(dir, "smugly-read-proxy-bin.ps1")
+        return runCatching {
+            payload.writeText(JSONObject().put("name", name).toString(), Charsets.UTF_8)
+            script.writeText(READ_BINARY_SCRIPT)
+            val out = runCommand(
+                listOf(
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", script.absolutePath,
+                    "-PayloadPath", payload.absolutePath
+                )
+            )?.trim().orEmpty()
+            if (out.isBlank()) null else java.util.Base64.getDecoder().decode(out)
+        }.getOrNull().also {
+            runCatching { script.delete() }
+            runCatching { payload.delete() }
+        }
+    }
+
+    private fun writeBinary(name: String, data: ByteArray) {
+        val dir = AppPaths.filesDir()
+        val payload = File(dir, "smugly-write-proxy-bin.json")
+        val script = File(dir, "smugly-write-proxy-bin.ps1")
+        payload.writeText(
+            JSONObject()
+                .put("name", name)
+                .put("b64", java.util.Base64.getEncoder().encodeToString(data))
+                .toString(),
+            Charsets.UTF_8
+        )
+        script.writeText(WRITE_BINARY_SCRIPT)
+        try {
+            val out = runCommand(
+                listOf(
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", script.absolutePath,
+                    "-PayloadPath", payload.absolutePath
+                )
+            )
+            require(out != null) { "failed to write $name" }
+        } finally {
+            runCatching { script.delete() }
+            runCatching { payload.delete() }
+        }
     }
 
     private fun setValue(name: String, type: String, data: String) {
@@ -258,4 +504,100 @@ object WindowsSystemProxy {
             text
         }
     }.getOrNull()
+
+    private val READ_BINARY_SCRIPT = """
+            param([Parameter(Mandatory=${'$'}true)][string]${'$'}PayloadPath)
+            ${'$'}ErrorActionPreference = 'Stop'
+            ${'$'}j = Get-Content -Raw -Encoding UTF8 -LiteralPath ${'$'}PayloadPath | ConvertFrom-Json
+            ${'$'}k = Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections'
+            ${'$'}b = ${'$'}k.GetValue([string]${'$'}j.name)
+            if (${'$'}null -eq ${'$'}b) { exit 2 }
+            [Convert]::ToBase64String([byte[]]${'$'}b)
+        """.trimIndent()
+
+        private val WRITE_BINARY_SCRIPT = """
+            param([Parameter(Mandatory=${'$'}true)][string]${'$'}PayloadPath)
+            ${'$'}ErrorActionPreference = 'Stop'
+            ${'$'}j = Get-Content -Raw -Encoding UTF8 -LiteralPath ${'$'}PayloadPath | ConvertFrom-Json
+            ${'$'}bytes = [Convert]::FromBase64String([string]${'$'}j.b64)
+            Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' `
+                -Name ([string]${'$'}j.name) -Value ${'$'}bytes -Type Binary
+        """.trimIndent()
+
+        private val WININET_PER_CONN_SCRIPT = """
+            param([Parameter(Mandatory=${'$'}true)][string]${'$'}PayloadPath)
+            ${'$'}ErrorActionPreference = 'Stop'
+            ${'$'}j = Get-Content -Raw -Encoding UTF8 -LiteralPath ${'$'}PayloadPath | ConvertFrom-Json
+            ${'$'}enable = [bool]${'$'}j.enable
+            ${'$'}server = [string]${'$'}j.server
+            ${'$'}bypass = [string]${'$'}j.bypass
+            ${'$'}conns = @()
+            if (${'$'}j.connections) { ${'$'}conns = @(${'$'}j.connections) }
+            ${'$'}code = @'
+            using System;
+            using System.Runtime.InteropServices;
+            public static class SmuglyWinINetApply {
+              public const int INTERNET_OPTION_PER_CONNECTION_OPTION = 75;
+              public const int INTERNET_PER_CONN_FLAGS = 1;
+              public const int INTERNET_PER_CONN_PROXY_SERVER = 2;
+              public const int INTERNET_PER_CONN_PROXY_BYPASS = 3;
+              public const int INTERNET_PER_CONN_AUTOCONFIG_URL = 4;
+              public const int INTERNET_PER_CONN_FLAGS_UI = 10;
+              public const int PROXY_TYPE_DIRECT = 1;
+              public const int PROXY_TYPE_PROXY = 2;
+              [StructLayout(LayoutKind.Sequential)]
+              public struct OPTION { public int dwOption; public int padding; public IntPtr value; }
+              [StructLayout(LayoutKind.Sequential)]
+              public struct LIST {
+                public int dwSize; public int padding; public IntPtr pszConnection;
+                public int dwOptionCount; public int dwOptionError; public IntPtr pOptions;
+              }
+              [DllImport("wininet.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+              public static extern bool InternetSetOption(IntPtr h, int opt, IntPtr buf, int len);
+              public static int Apply(string connection, bool enable, string server, string bypass) {
+                int flags = PROXY_TYPE_DIRECT | (enable ? PROXY_TYPE_PROXY : 0);
+                IntPtr serverPtr = Marshal.StringToHGlobalUni(enable ? (server ?? "") : "");
+                IntPtr bypassPtr = Marshal.StringToHGlobalUni(bypass ?? "");
+                IntPtr pacPtr = Marshal.StringToHGlobalUni("");
+                IntPtr namePtr = string.IsNullOrEmpty(connection) ? IntPtr.Zero : Marshal.StringToHGlobalUni(connection);
+                OPTION[] opts = new OPTION[5];
+                opts[0].dwOption = INTERNET_PER_CONN_FLAGS; opts[0].value = new IntPtr(flags);
+                opts[1].dwOption = INTERNET_PER_CONN_FLAGS_UI; opts[1].value = new IntPtr(flags);
+                opts[2].dwOption = INTERNET_PER_CONN_PROXY_SERVER; opts[2].value = serverPtr;
+                opts[3].dwOption = INTERNET_PER_CONN_PROXY_BYPASS; opts[3].value = bypassPtr;
+                opts[4].dwOption = INTERNET_PER_CONN_AUTOCONFIG_URL; opts[4].value = pacPtr;
+                int optSize = Marshal.SizeOf(typeof(OPTION));
+                IntPtr optsPtr = Marshal.AllocHGlobal(optSize * opts.Length);
+                for (int i = 0; i < opts.Length; i++)
+                  Marshal.StructureToPtr(opts[i], IntPtr.Add(optsPtr, i * optSize), false);
+                LIST list = new LIST();
+                list.dwSize = Marshal.SizeOf(typeof(LIST));
+                list.pszConnection = namePtr;
+                list.dwOptionCount = opts.Length;
+                list.pOptions = optsPtr;
+                IntPtr listPtr = Marshal.AllocHGlobal(list.dwSize);
+                Marshal.StructureToPtr(list, listPtr, false);
+                int err = 0;
+                try {
+                  if (!InternetSetOption(IntPtr.Zero, INTERNET_OPTION_PER_CONNECTION_OPTION, listPtr, list.dwSize))
+                    err = Marshal.GetLastWin32Error();
+                } finally {
+                  Marshal.FreeHGlobal(listPtr); Marshal.FreeHGlobal(optsPtr);
+                  Marshal.FreeHGlobal(serverPtr); Marshal.FreeHGlobal(bypassPtr); Marshal.FreeHGlobal(pacPtr);
+                  if (namePtr != IntPtr.Zero) Marshal.FreeHGlobal(namePtr);
+                }
+                return err;
+              }
+            }
+            '@
+            if (-not ([System.Management.Automation.PSTypeName]'SmuglyWinINetApply').Type) {
+              Add-Type -TypeDefinition ${'$'}code
+            }
+            ${'$'}err = [SmuglyWinINetApply]::Apply(${'$'}null, ${'$'}enable, ${'$'}server, ${'$'}bypass)
+            Write-Output ("default-err=" + ${'$'}err)
+            foreach (${'$'}c in ${'$'}conns) {
+              ${'$'}e = [SmuglyWinINetApply]::Apply([string]${'$'}c, ${'$'}enable, ${'$'}server, ${'$'}bypass)
+              Write-Output ("named-err=" + ${'$'}e + " name=" + ${'$'}c)
+            }
+        """.trimIndent()
 }

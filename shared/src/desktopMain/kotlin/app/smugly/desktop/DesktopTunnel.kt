@@ -17,7 +17,7 @@ import org.json.JSONObject
  * ```
  *   Windows system proxy  ->  127.0.0.1:<listenPort>      MixedProxyServer (HTTP + SOCKS5)
  *                                       |  SOCKS5
- *                             127.0.0.1:<listenPort + 1>  engine process (s3fu.exe / xray.exe)
+ *                             127.0.0.1:<listenPort + 1>  engine (slipstream / s3fu / cdnfu / xray)
  *                                       |
  *                                    tunnel
  * ```
@@ -34,11 +34,12 @@ object DesktopTunnel {
     /**
      * Concurrent client cap for the local mixed proxy when the engine is **not** Slipstream.
      * `Config.maxActiveClients` (default 40) is a DNS-tunnel memory guard for Slipstream only —
-     * applying it to Xray/S3 made browsers hit "connection limit 40 reached; dropped" under
-     * normal multi-tab load. 512 covers multi-tab browsers with headroom; 4096 reserved
-     * ~400+ MB of relay ByteBuffers for connections that almost never exist.
+     * applying it to Xray/S3/CDN made browsers hit "connection limit 40 reached; dropped"
+     * under normal multi-tab load. 2048 covers Chrome's per-host pools with headroom;
+     * the previous 512 filled instantly if an engine inherited the system proxy and
+     * looped back into this listener.
      */
-    private const val NON_SLIPSTREAM_MAX_CLIENTS = 512
+    private const val NON_SLIPSTREAM_MAX_CLIENTS = 2048
 
     /** Result of a connect attempt; [warning] is shown to the user but does not mean failure. */
     data class StartOutcome(
@@ -80,7 +81,7 @@ object DesktopTunnel {
         val enginePort = listenPort + 1
 
         return runCatching {
-            val spec = engineSpec(config, enginePort)
+            val spec = engineSpec(config, enginePort, settings)
             val proc = EngineProcess(spec.name, spec.command, spec.workingDir)
             // Before judging the ports: an engine orphaned by a force-kill is the most likely thing
             // holding them, and it is ours to clean up.
@@ -182,29 +183,31 @@ object DesktopTunnel {
         val workingDir: File?
     )
 
-    private fun engineSpec(config: Config, socksPort: Int): EngineSpec = when (config.protocol) {
-        Config.TunnelProtocol.S3FU -> {
-            val exe = EngineBinaries.require("s3fu")
-            val cfg = writeS3fuConfig(config, socksPort)
-            EngineSpec("s3fu", listOf(exe.absolutePath, "--client", "--config", cfg.absolutePath), exe.parentFile)
+    private fun engineSpec(config: Config, socksPort: Int, settings: GlobalSettings): EngineSpec =
+        when (config.protocol) {
+            Config.TunnelProtocol.S3FU -> {
+                val exe = EngineBinaries.require("s3fu")
+                val cfg = writeS3fuConfig(config, socksPort)
+                EngineSpec("s3fu", listOf(exe.absolutePath, "--client", "--config", cfg.absolutePath), exe.parentFile)
+            }
+            Config.TunnelProtocol.CDNFU -> {
+                val exe = EngineBinaries.require("cdnfu")
+                val cfg = writeCdnfuConfig(config, socksPort)
+                EngineSpec("cdnfu", listOf(exe.absolutePath, "--config", cfg.absolutePath), exe.parentFile)
+            }
+            Config.TunnelProtocol.XRAY -> {
+                val exe = EngineBinaries.require("xray")
+                ensureXrayGeodata(exe.parentFile)
+                val cfg = writeXrayConfig(config, socksPort)
+                // workingDir = engines/: xray resolves geoip.dat / geosite.dat relative to cwd.
+                EngineSpec("xray", listOf(exe.absolutePath, "run", "-c", cfg.absolutePath), exe.parentFile)
+            }
+            Config.TunnelProtocol.SLIPSTREAM -> {
+                val exe = EngineBinaries.requireSlipstream()
+                val cfg = writeSlipstreamConfig(config, socksPort, settings.dnsResolverPool)
+                EngineSpec("slipstream", listOf(exe.absolutePath, "--config", cfg.absolutePath), exe.parentFile)
+            }
         }
-        Config.TunnelProtocol.CDNFU -> {
-            val exe = EngineBinaries.require("cdnfu")
-            val cfg = writeCdnfuConfig(config, socksPort)
-            EngineSpec("cdnfu", listOf(exe.absolutePath, "--config", cfg.absolutePath), exe.parentFile)
-        }
-        Config.TunnelProtocol.XRAY -> {
-            val exe = EngineBinaries.require("xray")
-            ensureXrayGeodata(exe.parentFile)
-            val cfg = writeXrayConfig(config, socksPort)
-            // workingDir = engines/: xray resolves geoip.dat / geosite.dat relative to cwd.
-            EngineSpec("xray", listOf(exe.absolutePath, "run", "-c", cfg.absolutePath), exe.parentFile)
-        }
-        Config.TunnelProtocol.SLIPSTREAM -> error(
-            "The Slipstream DNS engine has no Windows build yet — it needs picoquic built with " +
-                "MSVC + CMake. Use an S3, CDN, or Xray profile on desktop for now."
-        )
-    }
 
     private fun engineConfigDir(): File =
         File(AppPaths.filesDir(), "engines").also { it.mkdirs() }
@@ -217,6 +220,11 @@ object DesktopTunnel {
     private fun writeCdnfuConfig(c: Config, socksPort: Int): File =
         File(engineConfigDir(), "cdnfu-client.toml").apply {
             writeText(DesktopEngineConfigs.cdnfu(c, socksPort))
+        }
+
+    private fun writeSlipstreamConfig(c: Config, socksPort: Int, resolverPoolRaw: String): File =
+        File(engineConfigDir(), "slipstream-client.json").apply {
+            writeText(DesktopEngineConfigs.slipstream(c, socksPort, resolverPoolRaw))
         }
 
     /**
@@ -276,8 +284,8 @@ object DesktopTunnel {
 
 /**
  * Finds the native engine executables. They are not bundled into the jar — they are separate
- * binaries built by `_wsl_build_s3fu_windows.sh` / `_build_xray_windows.ps1` and dropped next to
- * the app, so the search order goes from most explicit to most convenient.
+ * binaries built by the Windows engine scripts and dropped next to the app, so the search
+ * order goes from most explicit to most convenient.
  */
 object EngineBinaries {
     private const val TAG = "EngineBinaries"
@@ -301,6 +309,17 @@ object EngineBinaries {
         return candidates.firstOrNull { it.isFile && it.canExecute() }
             ?: candidates.firstOrNull { it.isFile }
     }
+
+    /**
+     * Cargo emits `slipstream-client.exe`; the packaged layout uses `slipstream.exe`.
+     * Accept either so a raw `cargo build` drop-in still works.
+     */
+    fun findSlipstream(): File? = find("slipstream") ?: find("slipstream-client")
+
+    fun requireSlipstream(): File = findSlipstream() ?: throw IllegalStateException(
+        "engine 'slipstream${exeSuffix}' not found. Put it in ${File(AppPaths.filesDir(), "engines")} " +
+            "or set SMUGLY_ENGINE_DIR."
+    )
 
     /**
      * Locate a non-executable asset that rides next to the engines (geoip.dat, geosite.dat).
@@ -339,8 +358,8 @@ object EngineBinaries {
 
     /** Engines present right now — used by Diagnostics so a missing binary is obvious. */
     fun report(): String = buildString {
-        listOf("s3fu", "cdnfu", "xray").forEach { name ->
-            val f = find(name)
+        listOf("slipstream", "s3fu", "cdnfu", "xray").forEach { name ->
+            val f = if (name == "slipstream") findSlipstream() else find(name)
             appendLine(if (f != null) "$name: ${f.absolutePath}" else "$name: NOT FOUND")
         }
         listOf("geoip.dat", "geosite.dat").forEach { name ->

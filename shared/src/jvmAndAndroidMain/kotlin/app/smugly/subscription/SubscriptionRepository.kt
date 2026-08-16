@@ -2,6 +2,8 @@ package app.smugly.subscription
 
 import app.smugly.Config
 import app.smugly.ConfigProfile
+import app.smugly.platform.LogLevel
+import app.smugly.platform.PlatformLog
 
 /**
  * Everything a subscription does to stored state, over a tiny storage port so Android
@@ -320,12 +322,22 @@ class SubscriptionRepository(private val storage: Storage) {
                 subscriptionId = subscriptionId,
                 categoryId = category
             )
-            is SubscriptionContent.Entry.Link -> storage.profileFromLink(entry.uri, entry.name)
-                ?.copy(id = storage.newId(), subscriptionId = subscriptionId, categoryId = category)
-                ?.let { profile ->
-                    // Prefer the panel's label over whatever the parser derived.
-                    if (entry.name.isNotBlank()) profile.copy(name = entry.name) else profile
+            is SubscriptionContent.Entry.Link -> {
+                val parsed = storage.profileFromLink(entry.uri, entry.name)
+                if (parsed == null) {
+                    val scheme = entry.uri.substringBefore("://", "?")
+                    PlatformLog.log(
+                        LogLevel.WARN, "SubscriptionRepository",
+                        "dropped $scheme link '${entry.name.ifBlank { "(unnamed)" }}' " +
+                            "in category '${category ?: ""}' — importer returned null"
+                    )
                 }
+                parsed
+                    ?.copy(id = storage.newId(), subscriptionId = subscriptionId, categoryId = category)
+                    ?.let { profile ->
+                        if (entry.name.isNotBlank()) profile.copy(name = entry.name) else profile
+                    }
+            }
         }
     }
 }

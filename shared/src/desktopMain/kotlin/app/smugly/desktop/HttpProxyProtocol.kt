@@ -27,6 +27,9 @@ internal object HttpProxyProtocol {
         /** Malformed or unsupported; [status] is a full HTTP response to send before closing. */
         data class Reject(val reason: String, val status: ByteArray) : Result
 
+        /** Answer locally (PAC file) and close — do not open an upstream. */
+        data class Local(val status: ByteArray, val consumed: Int) : Result
+
         data class Ok(
             val host: String,
             val port: Int,
@@ -98,6 +101,10 @@ internal object HttpProxyProtocol {
             return Result.Ok(hp.first, hp.second, isConnect = true, upstreamHead = null, consumed = headEnd)
         }
 
+        if (isPacPath(target)) {
+            return Result.Local(pacResponse(listenHint = target), consumed = headEnd)
+        }
+
         // Absolute-form: scheme://host[:port]/path
         if (!target.startsWith("http://", ignoreCase = true)) {
             // Origin-form means the client thinks we are the origin server, not a proxy.
@@ -165,6 +172,35 @@ internal object HttpProxyProtocol {
             i++
         }
         return -1
+    }
+
+    fun isPacPath(target: String): Boolean {
+        val path = when {
+            target.startsWith("http://", ignoreCase = true) -> {
+                val after = target.substring("http://".length)
+                after.substringAfter('/', missingDelimiterValue = after)
+            }
+            else -> target.trimStart('/')
+        }.substringBefore('?').lowercase()
+        return path == "smugly.pac" || path == "proxy.pac" || path == "wpad.dat"
+    }
+
+    fun pacScript(proxy: String = "127.0.0.1:1080"): String = """
+        function FindProxyForURL(url, host) {
+          if (host == "127.0.0.1" || host == "localhost" || host == "::1") return "DIRECT";
+          if (isPlainHostName(host)) return "DIRECT";
+          return "PROXY $proxy";
+        }
+    """.trimIndent() + "\n"
+
+    fun pacResponse(listenHint: String = ""): ByteArray {
+        val body = pacScript().toByteArray(Charsets.US_ASCII)
+        val head = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: application/x-ns-proxy-autoconfig\r\n" +
+            "Content-Length: ${body.size}\r\n" +
+            "Cache-Control: no-store\r\n" +
+            "Connection: close\r\n\r\n"
+        return head.toByteArray(Charsets.US_ASCII) + body
     }
 
     /** "host:port" / "host" / "[::1]:port" → host + port. */

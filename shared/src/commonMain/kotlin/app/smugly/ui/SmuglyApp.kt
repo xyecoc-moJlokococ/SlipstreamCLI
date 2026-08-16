@@ -113,6 +113,8 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
         var refreshingSubscriptionId by remember { mutableStateOf<String?>(null) }
         /** Jump the folder pager to this id once after a create; HomeScreen clears it. */
         var focusFolderId by remember { mutableStateOf<String?>(null) }
+        /** Incremented after a local profile is imported or created so Home can come into view. */
+        var focusHomeEpoch by remember { mutableStateOf(0) }
         var activeId by remember {
             mutableStateOf(ui.loadActiveProfileId() ?: profiles.firstOrNull()?.id)
         }
@@ -222,6 +224,9 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                 ui.toast(failureMessage)
             } else {
                 reloadProfiles()
+                // Own configs live in Home. Creating it (or revealing it next to a
+                // URL/file folder) is what this increment is for.
+                focusHomeEpoch++
                 ui.toast(t(S.TOAST_PROFILE_IMPORTED))
             }
         }
@@ -548,6 +553,7 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                             initialFolderId = settings.lastFolderId,
                             focusFolderId = focusFolderId,
                             onFocusFolderConsumed = { focusFolderId = null },
+                            focusHomeEpoch = focusHomeEpoch,
                             onFolderOpened = { id ->
                                 if (id != settings.lastFolderId) {
                                     val next = settings.copy(lastFolderId = id)
@@ -744,6 +750,7 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
                                 if (d.profileId == null) {
                                     ui.addProfile(d.name, clean)
                                     ui.toast(t(S.TOAST_PROFILE_CREATED))
+                                    focusHomeEpoch++
                                 } else {
                                     // Edit the stored profile rather than rebuilding one: the
                                     // constructor defaults every field the editor does not carry

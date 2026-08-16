@@ -20,7 +20,7 @@ import org.json.JSONObject
  * "can that host be reached from here" and exists for the case where a platform has no engine for
  * the protocol (Slipstream has no Windows build). Reaching a server's port says nothing about
  * whether the credentials, the REALITY handshake or the exit's DNS work, so prefer the e2e probe
- * wherever it can run.
+ * wherever it can run. Used when the platform has no engine binary for the protocol.
  *
  * Every protocol is probed at the hop that decides reachability, and nothing is inferred:
  *

@@ -22,8 +22,8 @@ import java.util.concurrent.ThreadFactory
  * seconds of handshaking that has nothing to do with how the profile behaves once connected, so the
  * clock starts after the engine reports itself ready.
  *
- * Where a platform cannot run a protocol at all (no Slipstream engine on Windows) the launcher
- * declines and [LatencyProbe] answers the weaker "can this server be reached" question instead.
+ * Where a platform has no engine binary for a protocol the launcher declines and
+ * [LatencyProbe] answers the weaker "can this server be reached" question instead.
  */
 object E2ELatencyProbe {
     private const val TAG = "E2ELatencyProbe"

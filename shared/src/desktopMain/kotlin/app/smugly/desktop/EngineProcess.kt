@@ -98,6 +98,7 @@ class EngineProcess(
                 // s3fu logs to stderr, xray to stdout — merge so ordering is preserved.
                 .redirectErrorStream(true)
             workingDir?.let { pb.directory(it) }
+            isolateFromSystemProxy(pb.environment())
             if (environment.isNotEmpty()) pb.environment().putAll(environment)
             val p = pb.start()
             process = p
@@ -133,6 +134,24 @@ class EngineProcess(
             killTree(p)
         }
         runCatching { pidFile.delete() }
+    }
+
+    /**
+     * Engines are the tunnel. If they inherit the Windows system proxy (this app just set
+     * it to 127.0.0.1:listenPort), their HTTP stack talks to MixedProxy, which talks back
+     * to the engine — a loop that fills the local connection cap in seconds.
+     *
+     * `NO_PROXY=*` covers hostnames. Clearing the `*_PROXY` vars stops stacks that only
+     * look at the environment. wreq still reads the WinINET registry, so cdnfu also
+     * calls `ClientBuilder::no_proxy()`; this env is the belt for everything else.
+     */
+    private fun isolateFromSystemProxy(env: MutableMap<String, String>) {
+        env["NO_PROXY"] = "*"
+        env["no_proxy"] = "*"
+        listOf(
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "ftp_proxy"
+        ).forEach { env.remove(it) }
     }
 
     private fun killTree(p: Process) {

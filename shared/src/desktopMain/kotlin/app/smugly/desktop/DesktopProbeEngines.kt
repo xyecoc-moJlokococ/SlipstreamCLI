@@ -1,6 +1,7 @@
 package app.smugly.desktop
 
 import app.smugly.Config
+import app.smugly.DnsResolverPool
 import app.smugly.XrayConfigBuilder
 import app.smugly.net.E2ELatencyProbe
 import app.smugly.platform.AppPaths
@@ -14,15 +15,15 @@ import java.io.File
  * file, its own process. That is what lets a latency check run while a tunnel is up — writing to
  * [DesktopTunnel]'s `xray-client.json` instead would rewrite the live tunnel's config under it.
  */
-class DesktopProbeEngines : E2ELatencyProbe.Launcher {
+class DesktopProbeEngines(
+    private val resolverPool: () -> String = { DnsResolverPool.DEFAULT_RAW }
+) : E2ELatencyProbe.Launcher {
 
     override fun supports(protocol: Config.TunnelProtocol): Boolean = when (protocol) {
-        // Reachability of the storage/edge/server host is all we could measure without these.
         Config.TunnelProtocol.XRAY -> EngineBinaries.find("xray") != null
         Config.TunnelProtocol.S3FU -> EngineBinaries.find("s3fu") != null
         Config.TunnelProtocol.CDNFU -> EngineBinaries.find("cdnfu") != null
-        // No Windows build of the DNS engine yet (picoquic needs MSVC + CMake).
-        Config.TunnelProtocol.SLIPSTREAM -> false
+        Config.TunnelProtocol.SLIPSTREAM -> EngineBinaries.findSlipstream() != null
     }
 
     // A child process has to be spawned and has to bind its listener; xray is quick, the tunnels
@@ -79,8 +80,12 @@ class DesktopProbeEngines : E2ELatencyProbe.Launcher {
             file.writeText(DesktopEngineConfigs.cdnfu(config, socksPort))
             Spec("cdnfu", listOf(exe.absolutePath, "--config", file.absolutePath), exe.parentFile, file)
         }
-        Config.TunnelProtocol.SLIPSTREAM ->
-            error("the Slipstream DNS engine has no Windows build yet")
+        Config.TunnelProtocol.SLIPSTREAM -> {
+            val exe = EngineBinaries.requireSlipstream()
+            val file = probeConfigFile("slipstream-probe-$socksPort.json")
+            file.writeText(DesktopEngineConfigs.slipstream(config, socksPort, resolverPool()))
+            Spec("slipstream", listOf(exe.absolutePath, "--config", file.absolutePath), exe.parentFile, file)
+        }
     }
 
     /** Named after the port so two probes at once cannot overwrite each other's config. */

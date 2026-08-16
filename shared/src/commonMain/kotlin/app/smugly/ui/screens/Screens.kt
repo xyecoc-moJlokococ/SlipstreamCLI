@@ -80,6 +80,8 @@ import app.smugly.S
 import app.smugly.t
 import app.smugly.ui.ConnectUiState
 import app.smugly.ui.EditorDraft
+import app.smugly.ui.folderSlots
+import app.smugly.ui.hasHomeFolder
 import app.smugly.subscription.Subscription
 import app.smugly.subscription.SubscriptionCategory
 import app.smugly.ui.PlatformBackHandler
@@ -148,7 +150,7 @@ fun HomeScreen(
      * The host disables full-screen drawer-swipe so long-press text selection is not stolen.
      */
     onBlockDrawerGestures: (Boolean) -> Unit = {},
-    /** Where the Home tab sits among the folders. */
+    /** Where the Home tab sits among the folders, once Home exists. */
     homeFolderIndex: Int = 0,
     /** Folder to open on entry: a subscription id, or blank for Home. */
     initialFolderId: String = "",
@@ -158,6 +160,11 @@ fun HomeScreen(
      */
     focusFolderId: String? = null,
     onFocusFolderConsumed: () -> Unit = {},
+    /**
+     * Incremented after a local profile is imported or created so the pager can jump to
+     * Home — including when Home just appeared among existing subscription folders.
+     */
+    focusHomeEpoch: Int = 0,
     /** Reports the folder now on screen so it can be restored next launch. */
     onFolderOpened: (String) -> Unit = {},
     /** Measured latency per profile id (see LatencyProbe); missing = never measured. */
@@ -197,11 +204,11 @@ fun HomeScreen(
     val screenOrigin = remember { intArrayOf(0, 0) }
 
     // --- folders (v2rayNG-style groups) -------------------------------------------------
-    // Folder 0 is always the user's own profiles; one folder per subscription after it.
-    // With no subscriptions there is a single folder and the tab row hides itself.
-    // A real pager, not a hand-rolled gesture: it tracks the finger while dragging and settles
-    // itself. The previous version only acted on drag-end, which is why a swipe showed nothing
-    // until it completed and then jumped.
+    // Home ("My configs") is the user's own profiles; one folder per subscription beside it.
+    // Home is not created up front — it appears only once a local profile exists. With a
+    // single folder the tab row hides itself. A real pager, not a hand-rolled gesture: it
+    // tracks the finger while dragging and settles itself. The previous version only acted
+    // on drag-end, which is why a swipe showed nothing until it completed and then jumped.
     /**
      * Subscription whose folder tab was long-pressed. [folderMenu] keeps the rows populated
      * while the panel fades out; only [folderMenuOpen] is cleared on dismiss.
@@ -215,16 +222,19 @@ fun HomeScreen(
     var folderEditorOpen by remember { mutableStateOf(false) }
     var deletingFolder by remember { mutableStateOf<Subscription?>(null) }
     val scope = rememberCoroutineScope()
-    // Slots are needed to turn the stored folder id back into a page, and they are computed
-    // below — this only reads the same two inputs, so it cannot disagree with them.
-    val initialPage = remember(subscriptions, homeFolderIndex, initialFolderId) {
-        val ordered = subscriptions.toMutableList<Subscription?>()
-            .also { it.add(homeFolderIndex.coerceIn(0, subscriptions.size), null) }
-        ordered.indexOfFirst { (it?.id ?: "") == initialFolderId }.coerceAtLeast(0)
+    // Tab slots in display order; null is the Home folder. Home is not a subscription, so its
+    // position cannot live in the subscription list — it comes from settings and is spliced in
+    // only after the user has a local profile to put there.
+    val showHomeFolder = hasHomeFolder(profiles)
+    val slots = remember(subscriptions, homeFolderIndex, showHomeFolder) {
+        folderSlots(subscriptions, homeFolderIndex, showHomeFolder)
+    }
+    val initialPage = remember(slots, initialFolderId) {
+        slots.indexOfFirst { (it?.id ?: "") == initialFolderId }.coerceAtLeast(0)
     }
     val pagerState = rememberPagerState(
         initialPage = initialPage,
-        pageCount = { subscriptions.size + 1 }
+        pageCount = { slots.size.coerceAtLeast(1) }
     )
     val folderIndex = pagerState.currentPage
     /** Tab the user just tapped, held until the pager finishes travelling to it. */
@@ -237,13 +247,6 @@ fun HomeScreen(
     var tabNavigating by remember { mutableStateOf(false) }
     /** True while a folder tab is being held / dragged. */
     var tabDragging by remember { mutableStateOf(false) }
-    // Tab slots in display order; null is the Home folder. Home is not a subscription, so its
-    // position cannot live in the subscription list — it comes from settings and is spliced in.
-    val slots = remember(subscriptions, homeFolderIndex) {
-        subscriptions.toMutableList<Subscription?>()
-            .also { it.add(homeFolderIndex.coerceIn(0, subscriptions.size), null) }
-            .toList()
-    }
     val folderNames = remember(slots) {
         slots.map { sub -> sub?.let { it.name.ifBlank { it.url } } ?: t(S.HOME_FOLDER) }
     }
@@ -313,6 +316,16 @@ fun HomeScreen(
             pagerState.scrollToPage(target)
         }
         onFocusFolderConsumed()
+    }
+    // A just-imported / just-created local profile lands in Home, which may have been
+    // missing a moment ago (user was on a URL/file folder, or the list was empty).
+    LaunchedEffect(focusHomeEpoch, slots) {
+        if (focusHomeEpoch <= 0) return@LaunchedEffect
+        val target = slots.indexOfFirst { it == null }
+        if (target < 0) return@LaunchedEffect
+        if (target != pagerState.currentPage) {
+            pagerState.scrollToPage(target)
+        }
     }
     // Finger-swipe on the pager while a tab-tap left pendingTab set: drop it so the strip
     // follows currentPage. Gated on !tabNavigating so the far-tab hop (scroll to neighbour,
@@ -442,9 +455,10 @@ fun HomeScreen(
                     // otherwise reordering silently swaps which folder you are looking at.
                     val open = slots.getOrNull(folderIndex)
                     val openNow = next.indexOfFirst { it?.id == open?.id }.coerceAtLeast(0)
+                    val homeIdx = next.indexOfFirst { it == null }
                     onReorderFolders(
                         next.filterNotNull().map { it.id },
-                        next.indexOfFirst { it == null }.coerceAtLeast(0)
+                        if (homeIdx >= 0) homeIdx else homeFolderIndex
                     )
                     pendingTab = openNow
                     tabNavigating = true
