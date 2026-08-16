@@ -35,6 +35,20 @@ class SubscriptionManagerTest {
     }
 
     @Test
+    fun unwrapsAddPathDeepLink() {
+        assertEquals(
+            "https://panel.example.com/sub/abc?client=smugly",
+            SubscriptionManager.normalizeSubscriptionUrl(
+                "smugly://add/https%3A%2F%2Fpanel.example.com%2Fsub%2Fabc%3Fclient%3Dsmugly"
+            )
+        )
+        assertEquals(
+            "https://panel.example.com/sub",
+            SubscriptionManager.normalizeSubscriptionUrl("smugly://import/https://panel.example.com/sub")
+        )
+    }
+
+    @Test
     fun unwrapsBase64SubScheme() {
         // sub://<base64 of the real url>
         val encoded = "aHR0cHM6Ly9wYW5lbC5leGFtcGxlLmNvbS9zdWI="

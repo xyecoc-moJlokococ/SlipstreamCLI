@@ -484,6 +484,31 @@ class AndroidSmuglyPlatform(
         return { dataListeners.remove(onChange) }
     }
 
+    private val pendingImportListeners = mutableListOf<(String) -> Unit>()
+    private var pendingImportUrl: String? = null
+
+    fun offerPendingImport(url: String) {
+        val text = url.trim()
+        if (text.isEmpty()) return
+        handler.post {
+            val listeners = pendingImportListeners.toList()
+            if (listeners.isEmpty()) {
+                pendingImportUrl = text
+            } else {
+                listeners.forEach { it(text) }
+            }
+        }
+    }
+
+    override fun observePendingImport(onImport: (String) -> Unit): () -> Unit {
+        pendingImportListeners.add(onImport)
+        pendingImportUrl?.let { url ->
+            pendingImportUrl = null
+            handler.post { onImport(url) }
+        }
+        return { pendingImportListeners.remove(onImport) }
+    }
+
     /**
      * Profiles / subscriptions were written from outside the Compose tree — the `install-sub`
      * deep link does its fetch on its own thread, and nothing else was telling the UI. The folder

@@ -1,5 +1,6 @@
 package app.smugly
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -44,25 +45,12 @@ class ComposeMainActivity : ComponentActivity() {
 
     private fun handleImportIntent(intent: Intent?) {
         val data = intent?.data ?: return
-        val text = data.toString()
+        val text = extractImportText(intent, data) ?: return
 
-        // A subscription link creates a folder, not a single profile — and it needs the network,
-        // so it cannot run on the main thread.
+        // Hand the URL to Compose so it can show "Importing…" and run the same path as
+        // clipboard / file import. Fetching here hid the overlay and the folder just popped in.
         if (app.smugly.subscription.SubscriptionManager.looksLikeSubscription(text)) {
-            Thread({
-                val error = platform.addSubscription(text)
-                // The fetch happened off the composition's back: without this the folder it just
-                // created stays on screen empty, showing the record as it looked before the
-                // servers arrived, until the app is restarted.
-                platform.notifyDataChanged()
-                runOnUiThread {
-                    android.widget.Toast.makeText(
-                        this,
-                        error ?: t(S.TOAST_SUBSCRIPTION_ADDED),
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }, "subscription-deeplink").start()
+            platform.offerPendingImport(text)
             return
         }
 
@@ -75,5 +63,41 @@ class ComposeMainActivity : ComponentActivity() {
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
+    }
+
+    private fun extractImportText(intent: Intent, data: android.net.Uri): String? {
+        val fromQuery = data.getQueryParameter("url")?.trim().orEmpty()
+        if (fromQuery.startsWith("http://") || fromQuery.startsWith("https://")) return fromQuery
+
+        val raw = data.toString()
+        app.smugly.subscription.SubscriptionManager.normalizeSubscriptionUrl(raw)?.let { return it }
+
+        val host = data.host.orEmpty().lowercase()
+        if (host == "add" || host == "import") {
+            val encoded = data.encodedPath?.trimStart('/') ?: ""
+            if (encoded.isNotEmpty()) {
+                var candidate = android.net.Uri.decode(encoded)
+                val query = data.encodedQuery
+                if (!candidate.contains('?') && !query.isNullOrBlank()) {
+                    candidate = "$candidate?$query"
+                }
+                app.smugly.subscription.SubscriptionManager.normalizeSubscriptionUrl(candidate)
+                    ?.let { return it }
+            }
+        }
+
+        val scheme = data.scheme.orEmpty().lowercase()
+        if (scheme == "smugly" || scheme == "sub" || scheme == "slipstream") {
+            clipboardSubscription()?.let { return it }
+        }
+        return raw
+    }
+
+    private fun clipboardSubscription(): String? {
+        val text = runCatching {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
+        }.getOrNull().orEmpty()
+        return text.takeIf { app.smugly.subscription.SubscriptionManager.looksLikeSubscription(it) }
     }
 }

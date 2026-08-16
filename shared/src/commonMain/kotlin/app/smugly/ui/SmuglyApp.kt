@@ -241,6 +241,13 @@ fun SmuglyApp(platform: SmuglyPlatform, shortcuts: AppShortcuts? = null) {
             importText(text, t(S.TOAST_INVALID_PROFILE_LINK))
         }
 
+        DisposableEffect(ui) {
+            val stop = ui.observePendingImport { url ->
+                importText(url, t(S.TOAST_INVALID_PROFILE_LINK))
+            }
+            onDispose { stop() }
+        }
+
         fun requestDeleteProfile(p: ConfigProfile) {
             // Deleting everything is allowed — the list then shows an "import a configuration"
             // hint instead of forcing a placeholder profile to exist.

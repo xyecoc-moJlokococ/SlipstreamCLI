@@ -42,6 +42,14 @@ object SubscriptionManager {
             return url?.let { normalizeSubscriptionUrl(it) }
         }
 
+        // Happ-style: <scheme>://add/<url> or <scheme>://import/<url>.
+        // Telegram Mini App keeps the path and drops ?query on custom schemes.
+        val addImport = Regex("""^[a-z0-9+.-]+://(?:add|import)/(.+)$""", RegexOption.IGNORE_CASE)
+            .find(text)
+        if (addImport != null) {
+            return normalizeSubscriptionUrl(percentDecode(addImport.groupValues[1]))
+        }
+
         // sub:// wraps the real URL in base64.
         if (text.startsWith("sub://", ignoreCase = true)) {
             val decoded = SubscriptionParser.decodeBase64ToString(text.removePrefix("sub://").removePrefix("SUB://"))

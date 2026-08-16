@@ -110,6 +110,13 @@ interface SmuglyPlatform {
      * Platforms that cannot write behind the UI's back leave the default, which never fires.
      */
     fun observeDataChanged(onChange: () -> Unit): () -> Unit = { }
+
+    /**
+     * A deep link arrived before (or outside) the Compose tree. Deliver the raw text so the UI
+     * can run its own import path — including the "Importing…" overlay — instead of the host
+     * fetching behind its back.
+     */
+    fun observePendingImport(onImport: (String) -> Unit): () -> Unit = { }
     fun validateXrayConfig(json: String): String?
     fun formatXrayJson(json: String): String?
     fun localDnsResolver(): String?
